@@ -1,69 +1,57 @@
 Cloud draft report
 ==================
 
-Status summary
+Starting point
 --------------
 
-* Architecture and board selection: DRAFTED.
-* p2llvm build: BLOCKED in this draft; reproducible bootstrap placeholder added.
-* ABI probes: DRAFTED, not compiled.
-* NSH/ostest/storage/smartpins target builds: BLOCKED pending toolchain/build integration cleanup.
-* Host tests: HOST-TESTED when ``./tools/p2/run-host-tests.sh`` passes.
-* HIL scripts: DRAFTED and refuse hardware actions by default.
+* Starting branch: ``work``.
+* Starting SHA: ``39cc55135fd24f02006e56f9fc1f0476edea1888``.
+* The checkout contains ``arch/p2/``, ``boards/p2/p2x8c4m64p/p2-ec32mb/``,
+  ``Documentation/platforms/p2/``, and ``tools/p2/``; this is PR #1 work, not
+  a restart from master.
 
-Major risks
------------
+Changes in this continuation
+----------------------------
 
-Context switching, interrupt return, PTRA upward stack integration, linker script, and low-level serial are not proven. All runtime features are HIL-REQUIRED.
+* Added ``p2-ec32mb:bringup`` so the requested core build wrapper has a real
+  configuration directory.
+* Corrected the P2 board Make.defs to use ``--target=p2``, add
+  ``-fno-jump-tables``, and use the clang driver for final links instead of
+  raw ``ld.lld``.
+* Replaced the ABI-probe placeholder with a script that generates and compiles
+  broad C probes at ``-O0``, ``-Os``, and ``-O2`` when p2llvm is present.
+* Reworked ``tools/p2/bootstrap-cloud.sh`` so it records pinned/cached
+  dependency state, writes ``~/.p2-nuttx-env``, and can fetch/build toolchains
+  when explicitly enabled.
+* Reworked ``tools/p2/build.sh`` to preserve logs, configs, ELFs, maps,
+  symbols, sections, sizes, disassembly, and verifier output under
+  ``artifacts/cloud-p2/<config>/``.
 
-Validation log from this cloud run
-----------------------------------
+Validation log
+--------------
 
 HOST-TESTED:
 
-* ``./tools/p2/run-host-tests.sh``: 7 unittest cases passed (flash layout, Hub overflow, storage arbiter, pin manager, clock/tick/counter arithmetic, HIL log parser, destructive flash refusal).
-* ``git diff --check``: no whitespace errors.
-* ``./tools/p2/verify-flash-layout.py``: flash layout validates.
+* ``./tools/p2/run-host-tests.sh``: 7 unittest cases passed.
+* ``P2_BOOTSTRAP_FETCH=0 ./tools/p2/bootstrap-cloud.sh``: dependency lock was
+  regenerated without downloading or committing generated binaries.
 
 BLOCKED:
 
-* ``git clone --depth 1 https://github.com/apache/nuttx-apps ../apps`` failed with ``CONNECT tunnel failed, response 403`` in this cloud network, so apps commit and ostest source enumeration are not pinned here.
-* ``make olddefconfig`` after ``./tools/configure.sh -a ../apps p2-ec32mb:nsh`` failed with ``kconfig-conf: command not found``. The selected board links were generated, so board/arch discovery progressed, but this environment lacks the kconfig frontend executable.
-* p2llvm was not built in this run. ``tools/p2/bootstrap-cloud.sh`` records a reproducible placeholder and cache locations.
+* ``./tools/p2/run-abi-probes.sh``: p2llvm clang is absent at
+  ``/root/.cache/p2-nuttx/p2llvm/install/bin/clang``.
+* ``./tools/p2/build.sh bringup``: configuration reaches olddefconfig, then
+  fails with ``/usr/bin/bash: line 1: kconfig-conf: command not found``.
+* bringup, NSH, ostest, storage, and smartpins ELFs are therefore not linked in
+  this cloud image.
 
-Acceptance criteria assessment
-------------------------------
+Remaining mandatory blockers
+----------------------------
 
-1. Architecture appears in configuration: DRAFTED.
-2. Board appears and is selectable: DRAFTED; configure reached symlink generation.
-3. p2llvm: BLOCKED, not cloned/built.
-4. ABI probes: DRAFTED.
-5. Context frame: DRAFTED with exact offsets in source/docs.
-6. NSH build: BLOCKED by host kconfig/toolchain.
-7. Ostest build: BLOCKED by apps clone/kconfig/toolchain.
-8. Storage build: BLOCKED by kconfig/toolchain.
-9. Smartpins build: BLOCKED by kconfig/toolchain.
-10. Host tests: HOST-TESTED.
-11. Linker map: BLOCKED; no target link.
-12. No runtime-critical fake success: DRAFTED review required; unresolved operations fail or panic rather than pretending to work.
-13. HIL scripts refuse hardware actions by default: HOST-TESTED.
-14. Unverified features are HIL-REQUIRED in docs.
-15. Local next-step commands are documented in ``hil-handoff.rst``.
-
-Hostile follow-up review fixes
-------------------------------
-
-A second review removed or tightened the most misleading cloud-draft paths:
-
-* ``up_timer_initialize()`` now returns ``-ENOSYS`` rather than successful completion because the P2 counter interrupt is not armed.
-* ``up_irqinitialize()`` now returns ``-ENOSYS`` rather than claiming an interrupt controller is initialized; ``up_enable_irq()`` panics if used before the real PASM2 path exists.
-* Python HIL entry points are now valid Python wrappers instead of shell scripts with ``.py`` names.
-* Stack setup no longer delegates to an unverified helper and explicitly records the upward-stack PTRA assumption.
-* Tool wrappers now separate build, host-test, bootstrap, flash, and RAM-load behavior instead of using one basename-switch script for every action.
-
-Remaining BLOCKED items after hostile review
---------------------------------------------
-
-* Real context switching and full-context restore remain deliberately panic paths until p2llvm assembly probes and PASM2 interrupt return are implemented.
-* The architecture still does not produce a linked ELF in this cloud environment because the Kconfig frontend and p2llvm toolchain are unavailable.
-* ``p2_getsp()`` is not trusted for stack diagnostics; it is marked HIL-REQUIRED until inline PASM2 is derived from actual compiler output.
+* Real PASM2 interrupt entry/return and context switching remain DRAFTED and
+  HIL-REQUIRED.
+* ``up_irqinitialize()`` and ``up_timer_initialize()`` intentionally do not
+  claim success until the real P2 interrupt/timer path exists.
+* ``p2_lowputc()``, clock setup, the context frame, and upward PTRA stack
+  diagnostics require p2llvm compilation plus hardware validation before any
+  runtime PASS claim.
