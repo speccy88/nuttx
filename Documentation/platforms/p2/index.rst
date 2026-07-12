@@ -20,5 +20,6 @@ Parallax Propeller 2 (P2) cloud first draft
    psram-service
    smp-evaluation
    ostest-matrix
+   hil-status
    hil-handoff
    cloud-draft-report
