@@ -24,6 +24,7 @@ APPS_REF=62b7e955300b6dafa4f36d391474d3c8925b8106
 P2LLVM_REF=bdcefcce7860b2232c06f35726fea679a3a7309c
 LLVM_PROJECT_REF=72a9bb1ef2656d9953d1f41a8196d425ff2ab0b1
 P2LLVM_LOADP2_REF=21e074cc7ee6fbd4fb12ef5352544b3457a6729c
+P2LLVM_PATCH=$ROOT/tools/p2/patches/p2llvm-preempt-safe-integer.patch
 FLEXPROP_REF=858f51c4a24e7ae0f6cbc78f625c731083ad304f
 SPIN2CPP_REF=28f1b80fc3a36422fb0a1f7c54465d808634abc8
 LOADP2_REF=c20afedd4253d09da449fa740f8d4304481fc560
@@ -161,11 +162,92 @@ p2llvm_tools_valid()
   [[ ! -e "$P2LLVM_ROOT/libc/lib/libc.a" ]] || return 1
 }
 
+p2llvm_preemption_valid()
+{
+  local probe_dir
+  local source
+  local object
+  local disassembly
+  local relocations
+
+  p2llvm_tools_valid || return 1
+  probe_dir=$(mktemp -d "$CACHE/p2-preemption-probe.XXXXXX") || return 1
+  source=$probe_dir/probe.c
+  object=$probe_dir/probe.o
+  disassembly=$probe_dir/probe.dis
+  relocations=$probe_dir/probe.relocs
+
+  printf '%s\n' \
+    'unsigned p2_mul(unsigned a, unsigned b) { return a * b; }' \
+    'unsigned p2_div(unsigned a, unsigned b) { return a / b; }' \
+    'unsigned p2_mod(unsigned a, unsigned b) { return a % b; }' \
+    '_Bool p2_overflow(unsigned a, unsigned b, unsigned *r)' \
+    '{ return __builtin_mul_overflow(a, b, r); }' > "$source"
+
+  if ! "$P2LLVM_ROOT/bin/clang" --target=p2 -O2 -fno-jump-tables \
+       -fno-builtin -ffunction-sections -fdata-sections -c "$source" \
+       -o "$object" ||
+     ! "$P2LLVM_ROOT/bin/llvm-objdump" -dr "$object" > "$disassembly" ||
+     ! "$P2LLVM_ROOT/bin/llvm-readobj" --relocations "$object" > "$relocations";
+  then
+    rm -rf "$probe_dir"
+    return 1
+  fi
+
+  if grep -Eiq '(qmul|qdiv|qfrac|qsqrt|qrotate|qvector|qlog|qexp|getqx|getqy)' \
+       "$disassembly" ||
+     grep -q 'R_P2_COG9' "$relocations" ||
+     ! grep -q 'R_P2_20 __mulsi3' "$relocations" ||
+     ! grep -q 'R_P2_20 __udivsi3' "$relocations" ||
+     ! grep -q 'R_P2_20 __umodsi3' "$relocations";
+  then
+    rm -rf "$probe_dir"
+    return 1
+  fi
+
+  rm -rf "$probe_dir"
+}
+
 p2llvm_valid()
 {
   p2llvm_tools_valid || return 1
+  p2llvm_preemption_valid || return 1
   [[ -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]] || return 1
   [[ -f "$P2LLVM_ROOT/libp2/include/propeller2.h" ]] || return 1
+}
+
+apply_p2llvm_patch()
+{
+  local llvm_dir=$P2LLVM_SRC/llvm-project
+  local current_patch
+
+  [[ -f "$P2LLVM_PATCH" ]] ||
+    die "required p2llvm preemption patch is missing: $P2LLVM_PATCH"
+
+  current_patch=$(mktemp "$CACHE/p2llvm-current-patch.XXXXXX")
+  git -C "$llvm_dir" diff -U0 -- > "$current_patch"
+
+  if git -C "$llvm_dir" apply --unidiff-zero --reverse --check \
+       "$P2LLVM_PATCH" \
+       >/dev/null 2>&1; then
+    cmp -s "$current_patch" "$P2LLVM_PATCH" ||
+      { rm -f "$current_patch";
+        die "p2llvm source has changes in addition to the required patch"; }
+    rm -f "$current_patch"
+    return
+  fi
+
+  if [[ -s "$current_patch" ]] ||
+     ! git -C "$llvm_dir" diff --quiet --ignore-submodules=dirty --;
+  then
+    rm -f "$current_patch"
+    die "p2llvm llvm-project has tracked modifications; refusing to overwrite"
+  fi
+
+  rm -f "$current_patch"
+  git -C "$llvm_dir" apply --unidiff-zero --check "$P2LLVM_PATCH"
+  git -C "$llvm_dir" apply --unidiff-zero "$P2LLVM_PATCH"
+  echo "Applied $(basename "$P2LLVM_PATCH")"
 }
 
 build_libp2()
@@ -201,12 +283,14 @@ build_p2llvm()
 
   mkdir -p "$logdir"
 
-  if ! (
-    cd "$P2LLVM_SRC"
-    "$PYTHON" build.py --configure --skip_libc --install "$P2LLVM_ROOT" \
-      2>&1 | tee "$logdir/p2llvm-build.log"
-  ); then
-    supported_build_ok=0
+  if ! p2llvm_tools_valid; then
+    if ! (
+      cd "$P2LLVM_SRC"
+      "$PYTHON" build.py --configure --skip_libc --install "$P2LLVM_ROOT" \
+        2>&1 | tee "$logdir/p2llvm-build.log"
+    ); then
+      supported_build_ok=0
+    fi
   fi
 
   if ! p2llvm_tools_valid && [[ "$(uname -s)" == Darwin ]]; then
@@ -231,6 +315,18 @@ build_p2llvm()
 
   p2llvm_tools_valid ||
     die "p2llvm compiler and LLVM tools did not satisfy their postconditions"
+
+  if ! p2llvm_preemption_valid; then
+    (
+      cd "$P2LLVM_SRC"
+      "$PYTHON" build.py --skip_libp2 --skip_libc \
+        --install "$P2LLVM_ROOT" \
+        2>&1 | tee "$logdir/p2llvm-preempt-safe-rebuild.log"
+    )
+  fi
+
+  p2llvm_preemption_valid ||
+    die "p2llvm still emits preemption-unsafe P2 CORDIC sequences"
 
   if [[ ! -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]]; then
     build_libp2
@@ -303,9 +399,12 @@ write_lock()
     echo "host_os=$(uname -a)"
     echo "p2llvm_libc=skipped_not_installed"
     echo "p2llvm_libp2_shims=unused stdio.h and math.h includes only"
+    echo "p2llvm_preempt_safe_integer=verified q-free Hub libcalls"
+    echo "p2llvm_preempt_patch=$(basename "$P2LLVM_PATCH")"
     echo "p2llvm_darwin_cmake=-DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_LIBXML2=OFF -DCMAKE_DISABLE_FIND_PACKAGE_Backtrace:BOOL=TRUE"
     echo "p2_flags=--target=p2 -fno-jump-tables -ffunction-sections -fdata-sections -fno-common -fno-builtin -Os"
-    shasum -a 256 "$KCONFIG_CONF" "$P2LLVM_ROOT/bin/clang" \
+    shasum -a 256 "$P2LLVM_PATCH" "$KCONFIG_CONF" \
+      "$P2LLVM_ROOT/bin/clang" \
       "$P2LLVM_ROOT/bin/ld.lld" "$P2LLVM_ROOT/libp2/lib/libp2.a" \
       "$FLEXPROP_ROOT/bin/flexspin" "$FLEXPROP_ROOT/bin/loadp2" |
       sed 's/^/sha256=/'
@@ -315,7 +414,7 @@ write_lock()
   echo "Wrote $lock"
 }
 
-for command in git make cmake "$PYTHON" shasum
+for command in cmp git make cmake "$PYTHON" shasum
 do
   need_command "$command"
 done
@@ -331,6 +430,7 @@ ensure_checkout p2llvm https://github.com/ne75/p2llvm.git \
   "$P2LLVM_SRC" "$P2LLVM_REF"
 require_gitlink "$P2LLVM_SRC/llvm-project" "$LLVM_PROJECT_REF"
 require_gitlink "$P2LLVM_SRC/loadp2" "$P2LLVM_LOADP2_REF"
+apply_p2llvm_patch
 ensure_checkout FlexProp https://github.com/totalspectrum/flexprop.git \
   "$FLEXPROP_ROOT" "$FLEXPROP_REF"
 require_gitlink "$FLEXPROP_ROOT/spin2cpp" "$SPIN2CPP_REF"

@@ -1,0 +1,74 @@
+diff --git a/llvm/lib/Target/P2/MCTargetDesc/P2MCCodeEmitter.cpp b/llvm/lib/Target/P2/MCTargetDesc/P2MCCodeEmitter.cpp
+index 20cc45d8f578..9fa498c8238a 100644
+--- a/llvm/lib/Target/P2/MCTargetDesc/P2MCCodeEmitter.cpp
++++ b/llvm/lib/Target/P2/MCTargetDesc/P2MCCodeEmitter.cpp
+@@ -272,19 +272,6 @@ bool P2MCCodeEmitter::is_rtlib(const MCSymbol &sym) const {
+-    auto name = sym.getName();
+-
+-    const char* libcallRoutineNames[] = {
+-        #define HANDLE_LIBCALL(code, name) name,
+-        #include "llvm/IR/RuntimeLibcalls.def"
+-        #undef HANDLE_LIBCALL
+-        // add non-standard libcalls here
+-        "__udivmoddi4"
+-    };
+-
+-    ArrayRef<const char*> libCallRoutinesList = makeArrayRef(libcallRoutineNames);
+-
+-    for (auto s : libCallRoutinesList) {
+-        if (s && name == StringRef(s)) {
+-            LLVM_DEBUG(errs() << name << " is a libcall\n");
+-            return true;
+-        }
+-    }
+-
++    // NuttX supplies compiler helpers and libc routines as ordinary Hub
++    // functions.  The original backend classified every LLVM runtime name as
++    // a special LUT call, which misrelocated NuttX symbols such as memcpy and
++    // the q-free integer helpers.  This NuttX-qualified compiler deliberately
++    // uses normal Hub CALLA relocations for all external calls.
++    (void)sym;
+@@ -294 +281 @@ bool P2MCCodeEmitter::is_rtlib(const MCSymbol &sym) const {
+-#include "P2GenMCCodeEmitter.inc"
+\ No newline at end of file
++#include "P2GenMCCodeEmitter.inc"
+diff --git a/llvm/lib/Target/P2/P2ISelLowering.cpp b/llvm/lib/Target/P2/P2ISelLowering.cpp
+index 071f60eb46c2..320339c3c678 100644
+--- a/llvm/lib/Target/P2/P2ISelLowering.cpp
++++ b/llvm/lib/Target/P2/P2ISelLowering.cpp
+@@ -75,3 +74,0 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+-    setOperationAction(ISD::MULHS, MVT::i32, Expand);
+-    setOperationAction(ISD::MULHU, MVT::i32, Expand);
+-
+@@ -92,3 +89,4 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+-    // can expand mul instead of a libcall and it will just become mullo/hi, which we've already created
+-    // a lowering for
+-    setOperationAction(ISD::MUL, MVT::i32, Expand);
++    // The P2 CORDIC engine is asynchronous and has no context state that an
++    // operating system can save.  Lower integer multiply to a software
++    // helper so timer preemption cannot split QMUL from GETQX/GETQY.
++    setOperationAction(ISD::MUL, MVT::i32, LibCall);
+@@ -111,3 +109,13 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+-    setOperationAction(ISD::SDIV, MVT::i32, Expand);
+-    setOperationAction(ISD::SREM, MVT::i32, Expand);
+-    setOperationAction(ISD::SDIVREM, MVT::i32, Expand);
++    // QDIV and high-half multiplies have the same unsaveable asynchronous
++    // state.  Use software helpers for every 32-bit multiply, quotient, and
++    // remainder form, including the multi-result legalization operations.
++    for (auto Op :
++         {ISD::SDIV, ISD::UDIV, ISD::SREM, ISD::UREM, ISD::UDIVREM,
++          ISD::SDIVREM, ISD::MULHS, ISD::MULHU, ISD::UMUL_LOHI,
++          ISD::SMUL_LOHI}) {
++        setOperationAction(Op, MVT::i32, LibCall);
++    }
++
++    for (auto Op : {ISD::SMULO, ISD::UMULO}) {
++        setOperationAction(Op, MVT::i32, Expand);
++    }
+@@ -162,0 +171,2 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
++    setOperationAction(ISD::SDIVREM, MVT::i64, LibCall);
++    setOperationAction(ISD::UDIVREM, MVT::i64, LibCall);
+@@ -862 +872 @@ std::pair<unsigned, const TargetRegisterClass *> P2TargetLowering::getRegForInli
+-}
+\ No newline at end of file
++}

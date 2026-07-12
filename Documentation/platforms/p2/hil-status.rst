@@ -67,6 +67,37 @@ Current verified state
 * Hash-locked Python HIL environment: PASS with pyserial 3.5 and pyelftools
   0.32.
 * ``tools/p2/bootstrap-local.sh`` clean rerun and target-object probe: PASS.
+* Preemption-safe integer lowering: PASS with the downstream
+  ``p2llvm-preempt-safe-integer.patch``.  The patched compiler SHA-256 is
+  ``32b98318e3a0b822ed944b01e164cb731b02340f2d485a9ab38e8877d83f4913``.
+  Compiler-generated multiply, divide, and remainder operations use ordinary
+  Hub-call relocations to software helpers instead of the asynchronous Q
+  pipeline.  This is required because the P2 CORDIC result state is per-cog
+  and cannot be saved in a task context if a timer interrupt separates a Q
+  operation from GETQX or GETQY.
+* Offline P2 ABI matrix: PASS at ``-O0``, ``-Os``, and ``-O2``.  Sources,
+  exact commands, diagnostics, objects, relocations, disassembly, maps, and
+  linked ELFs are under
+  ``artifacts/hil/abi/20260712T212937Z``.  Direct and indirect calls use
+  CALLA, returns use RETA, helper calls use ``R_P2_20``, data references use
+  ``R_P2_AUG20``, and no ``R_P2_COG9`` relocation was emitted.
+* Context contract: OFFLINE VERIFIED.  The fixed register array contains 37
+  longs: r0-r31, PA, PB, PTRA, PTRB, and the saved interrupt-enable state.
+  The packed C/Z/20-bit-PC resume long is separate at ``[saved PTRA - 4]``;
+  it is consumed by RETA and is not a synthetic register-array slot.
+* Q-free compiler arithmetic runtime: OFFLINE VERIFIED.  All 17 required
+  32-bit and 64-bit multiply, divide, remainder, combined-divmod, and shift
+  helpers passed boundary tests and 5,000 randomized cases per group.  Its
+  P2 object has no undefined symbols, Q instructions, recursive helper
+  relocations, or ``R_P2_COG9`` relocations.
+* Atomic ABI probe: NOT LOCK-FREE.  The compiler reports a maximum lock-free
+  width of zero and lowers 32-bit atomics to external ``__atomic_*_4``
+  helpers.  NuttX must provide a serialized runtime before atomics can be
+  claimed.
+* Known compiler limit: a separate 64-bit ``__builtin_mul_overflow`` probe at
+  ``-O0`` still terminates in an LLVM backend selection error.  Ordinary
+  64-bit multiply, divide, and remainder are supported at all three tested
+  optimization levels; 64-bit overflow builtins are not claimed.
 * Standalone native-p2 hello ELF: COMPILED and ELF-VERIFIED.  The first
   ``PT_LOAD`` physical address is zero, ``main`` is at ``0x0a00``, initial
   PTRA is ``0x78000``, and there are no undefined symbols.
@@ -88,7 +119,8 @@ Current verified state
 Next acceptance gate
 --------------------
 
-Run and inspect the p2llvm ABI probes, then define the complete saved context.
-Do not integrate NuttX preemption until the asynchronous P2 CORDIC result state
-used by compiler-emitted multiply/divide sequences is made safe across timer
-interrupts and the standalone one-million-switch context test passes.
+Build and inspect the standalone CT1/INT1 preemptive context switcher, run one
+physical smoke cycle, and then require one million timer-driven switches with
+two independent upward-growing stacks, register patterns, stack canaries,
+nested calls, spills, varargs, and 64-bit arithmetic.  Do not integrate NuttX
+preemption until that hardware gate passes.
