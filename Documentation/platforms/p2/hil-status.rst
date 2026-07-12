@@ -69,12 +69,19 @@ Current verified state
 * ``tools/p2/bootstrap-local.sh`` clean rerun and target-object probe: PASS.
 * Preemption-safe integer lowering: PASS with the downstream
   ``p2llvm-preempt-safe-integer.patch``.  The patched compiler SHA-256 is
-  ``32b98318e3a0b822ed944b01e164cb731b02340f2d485a9ab38e8877d83f4913``.
+  ``71086f5eb8e1bf779201e04008ece0fd41513bca8b5b1792c123c6a7671e8457``.
   Compiler-generated multiply, divide, and remainder operations use ordinary
   Hub-call relocations to software helpers instead of the asynchronous Q
   pipeline.  This is required because the P2 CORDIC result state is per-cog
   and cannot be saved in a task context if a timer interrupt separates a Q
   operation from GETQX or GETQY.
+* High-half multiply and constant-division lowering: PASS OFFLINE.  LLVM has
+  no libcall legalization for ``MULHS`` or ``MULHU``; the downstream backend
+  now expands them with exact Q-free limb arithmetic and keeps non-power-of-
+  two constant division on the direct software-helper path.  The former
+  ``gmtime_r`` ``i64 mulhs`` selector crash is fixed.  Signed and unsigned
+  32/64-bit high products and overflow probes pass at ``-O0``, ``-Os``, and
+  ``-O2``.
 * Offline P2 ABI matrix: PASS at ``-O0``, ``-Os``, and ``-O2``.  Sources,
   exact commands, diagnostics, objects, relocations, disassembly, maps, and
   linked ELFs are under
@@ -92,12 +99,9 @@ Current verified state
   relocations, or ``R_P2_COG9`` relocations.
 * Atomic ABI probe: NOT LOCK-FREE.  The compiler reports a maximum lock-free
   width of zero and lowers 32-bit atomics to external ``__atomic_*_4``
-  helpers.  NuttX must provide a serialized runtime before atomics can be
-  claimed.
-* Known compiler limit: a separate 64-bit ``__builtin_mul_overflow`` probe at
-  ``-O0`` still terminates in an LLVM backend selection error.  Ordinary
-  64-bit multiply, divide, and remainder are supported at all three tested
-  optimization levels; 64-bit overflow builtins are not claimed.
+  helpers.  The P2 configurations now select NuttX's interrupt-serialized
+  architecture atomic runtime; link and hardware execution remain to be
+  verified before atomics are claimed.
 * Standalone native-p2 hello ELF: COMPILED and ELF-VERIFIED.  The first
   ``PT_LOAD`` physical address is zero, ``main`` is at ``0x0a00``, initial
   PTRA is ``0x78000``, and there are no undefined symbols.
@@ -112,15 +116,35 @@ Current verified state
   ``artifacts/hil/20260712T211034.259011Z-hello``.
 * Standalone ``tools/p2/load-ram.sh`` entry point: PASS with a separate
   RAM-only ELF load under ``artifacts/hil/20260712T211115Z-load-ram``.
+* Initial one-million-switch diagnostic: FAIL as designed evidence under
+  ``artifacts/hil/20260712T220309.810700Z-context``.  It reached exactly
+  1,000,000 switches but reported ``P2CTX:FAIL MASK=8``.  Linked disassembly
+  proved that p2llvm leaves outgoing variadic arguments live at and above the
+  unadvanced task PTRA before CALLA, while the original ISR wrote IRET1 and
+  registers at that same PTRA.  The rare preemption window corrupted only
+  the variadic arguments.
+* Detached interrupt-frame correction: PASS ON HARDWARE.  INT1 now saves
+  IRET1, r0-r31, PA, PB, PTRA, PTRB, and interrupt state into fixed guarded
+  Hub scratch before clobbering task state, runs C on a dedicated 2 KiB
+  guarded ISR stack, and copies the selected 37+1-long context through
+  detached task frames.  The linked verifier reconstructs all 16 AUGS-formed
+  scratch addresses and rejects task-PTRA ISR writes.
+* Required timer preemption stress gate: PASS at exactly 1,000,000 CT1
+  switches.  Both tasks retained register windows, independent stack
+  canaries, nested spills, outgoing variadic arguments, and 64-bit arithmetic;
+  the scratch and ISR-stack guards also passed.  The RAM-only physical run,
+  exact ELF SHA-256
+  ``5b36d51df4e64d5810964de236e72422b5473b077aef81cee74d047b264ea525``,
+  console log, marker set, map, sources, and toolchain lock are preserved at
+  ``artifacts/hil/20260712T222926.532895Z-context``.
 * Serial device ownership after HIL: PASS; the loader released the port.
-* NuttX runtime status: NOT TESTED; the inherited PR still contains explicit
-  panic and not-implemented paths.
+* NuttX runtime status: NOT YET TESTED.  Startup, console, stack, and build
+  integration are active work, but the detached resume word and real
+  interrupt veneer have not yet been integrated into the kernel.
 
 Next acceptance gate
 --------------------
 
-Build and inspect the standalone CT1/INT1 preemptive context switcher, run one
-physical smoke cycle, and then require one million timer-driven switches with
-two independent upward-growing stacks, register patterns, stack canaries,
-nested calls, spills, varargs, and 64-bit arithmetic.  Do not integrate NuttX
-preemption until that hardware gate passes.
+Integrate the detached 37+1-long frame and dedicated ISR stack into the NuttX
+TCB/interrupt path, finish the native startup/console link, and require a
+RAM-loaded NuttX early-boot banner before enabling the scheduler tick and NSH.

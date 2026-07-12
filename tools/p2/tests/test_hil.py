@@ -115,6 +115,12 @@ GOOD_OUTPUT = (
     b"P2HELLO:READY\r\nP2HELLO:ECHO=?\r\n"
 )
 
+GOOD_CONTEXT_OUTPUT = (
+    b"loader output\nP2CTX:START\r\n"
+    b"P2CTX:SWITCHES=1000000\r\nP2CTX:REGS=OK\r\n"
+    b"P2CTX:STACKS=OK\r\nP2CTX:PASS\r\n"
+)
+
 
 class HilTests(unittest.TestCase):
     def setUp(self):
@@ -218,9 +224,30 @@ class HilTests(unittest.TestCase):
         self.assertNotIn("-PATCH", expected)
         self.assertNotIn("-FLASH", expected)
         self.assertTrue(all(session.terminated for session in sessions))
-        overall = json.loads((self.directory / "two-cycles" / "status.json").read_text())
+        overall = json.loads(
+            (self.directory / "two-cycles" / "status.json").read_text()
+        )
         self.assertEqual(overall["status"], "PASS")
         self.assertEqual(overall["cycles_passed"], 2)
+
+    def test_context_protocol_requires_exact_markers_without_uart_script(self):
+        session = FakeSession(self.clock, [GOOD_CONTEXT_OUTPUT])
+        factory = SessionFactory([session])
+        lock = RecordingLock()
+        argv = self.argv("context") + ["--protocol", "context"]
+
+        rc = self.invoke(argv, self.env(), factory, lock)
+
+        self.assertEqual(rc, hil.EXIT_OK)
+        command = factory.commands[0]
+        self.assertNotIn("-e", command)
+        self.assertNotIn("send(?)", command)
+        self.assertEqual(command[-2:], ("-t", str(self.image.resolve())))
+        markers = json.loads(
+            (self.directory / "context" / "cycle-001" / "markers.json").read_text()
+        )
+        self.assertTrue(markers["complete"])
+        self.assertEqual(markers["reset_count"], 1)
 
     def test_missing_marker_fails_and_records_exact_missing_marker(self):
         output = GOOD_OUTPUT.replace(b"P2HELLO:ECHO=?\r\n", b"")
@@ -231,9 +258,13 @@ class HilTests(unittest.TestCase):
         rc = self.invoke(self.argv("missing"), self.env(), factory, lock)
 
         self.assertEqual(rc, hil.EXIT_HIL_FAILURE)
-        markers = json.loads((self.directory / "missing" / "cycle-001" / "markers.json").read_text())
+        markers = json.loads(
+            (self.directory / "missing" / "cycle-001" / "markers.json").read_text()
+        )
         self.assertIn("P2HELLO:ECHO=?", markers["missing"])
-        status = json.loads((self.directory / "missing" / "cycle-001" / "status.json").read_text())
+        status = json.loads(
+            (self.directory / "missing" / "cycle-001" / "status.json").read_text()
+        )
         self.assertIn("bounded timeout", status["reason"])
 
     def test_panic_wins_even_when_success_markers_share_the_chunk(self):
@@ -244,7 +275,9 @@ class HilTests(unittest.TestCase):
         rc = self.invoke(self.argv("panic"), self.env(), factory, lock)
 
         self.assertEqual(rc, hil.EXIT_HIL_FAILURE)
-        status = json.loads((self.directory / "panic" / "cycle-001" / "status.json").read_text())
+        status = json.loads(
+            (self.directory / "panic" / "cycle-001" / "status.json").read_text()
+        )
         self.assertIn("panic/assert marker", status["reason"])
 
     def test_bounded_timeout_terminates_and_closes_loader(self):
@@ -258,18 +291,24 @@ class HilTests(unittest.TestCase):
         self.assertTrue(session.terminated)
         self.assertTrue(session.closed)
         self.assertGreaterEqual(self.clock.value, 0.3)
-        status = json.loads((self.directory / "timeout" / "cycle-001" / "status.json").read_text())
+        status = json.loads(
+            (self.directory / "timeout" / "cycle-001" / "status.json").read_text()
+        )
         self.assertIn("bounded timeout", status["reason"])
 
     def test_nonzero_loader_exit_is_a_failure(self):
-        session = FakeSession(self.clock, [b"Could not open serial port\n", "eof"], returncode=7)
+        session = FakeSession(
+            self.clock, [b"Could not open serial port\n", "eof"], returncode=7
+        )
         factory = SessionFactory([session])
         lock = RecordingLock()
 
         rc = self.invoke(self.argv("loader-exit"), self.env(), factory, lock)
 
         self.assertEqual(rc, hil.EXIT_HIL_FAILURE)
-        status = json.loads((self.directory / "loader-exit" / "cycle-001" / "status.json").read_text())
+        status = json.loads(
+            (self.directory / "loader-exit" / "cycle-001" / "status.json").read_text()
+        )
         self.assertEqual(status["loader_returncode"], 7)
         self.assertIn("loadp2 exited with code 7", status["reason"])
 

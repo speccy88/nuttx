@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the native P2 standalone hello protocol under one board lock.
+"""Run a native P2 standalone protocol under one board lock.
 
 This orchestrator deliberately lets ``loadp2`` be the only process which
 opens the serial port.  Its terminal mode provides the console capture after
@@ -17,6 +17,7 @@ import pathlib
 import re
 import selectors
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -26,9 +27,13 @@ from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, 
 
 import monitor
 
-
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-DEFAULT_IMAGE = REPO_ROOT / "tools" / "p2" / "standalone" / "hello" / "build" / "p2hello.elf"
+DEFAULT_IMAGE = (
+    REPO_ROOT / "tools" / "p2" / "standalone" / "hello" / "build" / "p2hello.elf"
+)
+DEFAULT_CONTEXT_IMAGE = (
+    REPO_ROOT / "tools" / "p2" / "standalone" / "context" / "build" / "p2context.elf"
+)
 DEFAULT_LOCK_FILE = pathlib.Path("/tmp/nuttx-p2-hil.lock")
 DEFAULT_TOOLCHAIN_LOCK = REPO_ROOT / "tools" / "p2" / "toolchain.lock"
 LOADP2_SCRIPT = "pausems(500)send(?)"
@@ -55,7 +60,10 @@ PROTOCOL_FAILURE_PATTERNS = (
 
 DISCONNECT_PATTERNS = (
     ("Could not find a P2", re.compile(r"Could not find a P2", re.IGNORECASE)),
-    ("device disconnected", re.compile(r"device\s+(?:was\s+)?disconnected", re.IGNORECASE)),
+    (
+        "device disconnected",
+        re.compile(r"device\s+(?:was\s+)?disconnected", re.IGNORECASE),
+    ),
     ("device not configured", re.compile(r"device not configured", re.IGNORECASE)),
     ("input/output error", re.compile(r"input/output error", re.IGNORECASE)),
 )
@@ -83,6 +91,24 @@ HELLO_MARKERS = (
     MarkerSpec("P2HELLO:ECHO=?", re.compile(r"P2HELLO:ECHO=\?")),
 )
 
+CONTEXT_MARKERS = (
+    MarkerSpec("P2CTX:START", re.compile(r"P2CTX:START")),
+    MarkerSpec(
+        "P2CTX:SWITCHES=1000000",
+        re.compile(r"P2CTX:SWITCHES=1000000"),
+    ),
+    MarkerSpec("P2CTX:REGS=OK", re.compile(r"P2CTX:REGS=OK")),
+    MarkerSpec("P2CTX:STACKS=OK", re.compile(r"P2CTX:STACKS=OK")),
+    MarkerSpec("P2CTX:PASS", re.compile(r"P2CTX:PASS")),
+)
+
+CONTEXT_FAILURE_PATTERNS = (
+    (
+        "P2CTX failure",
+        re.compile(r"P2CTX:FAIL MASK=[0-9]+\r?\n", re.IGNORECASE),
+    ),
+)
+
 
 class SafetyError(ValueError):
     """The requested HIL operation is not sufficiently constrained."""
@@ -90,6 +116,7 @@ class SafetyError(ValueError):
 
 @dataclass(frozen=True)
 class HilConfig:
+    protocol: str
     port: str
     image: pathlib.Path
     loadp2: pathlib.Path
@@ -103,6 +130,9 @@ class HilConfig:
     timeout: float
     lock_timeout: float
     expected: Tuple[MarkerSpec, ...]
+    reset_pattern: re.Pattern
+    protocol_failure_patterns: Tuple[Tuple[str, re.Pattern], ...]
+    loadp2_script: str
     image_sha256: str
     loadp2_sha256: str
 
@@ -120,8 +150,17 @@ class CycleResult:
 class MarkerParser:
     """Streaming marker parser which detects split markers and bad output."""
 
-    def __init__(self, expected: Sequence[MarkerSpec]) -> None:
+    def __init__(
+        self,
+        expected: Sequence[MarkerSpec],
+        reset_pattern: re.Pattern = HELLO_MARKERS[0].pattern,
+        protocol_failure_patterns: Sequence[
+            Tuple[str, re.Pattern]
+        ] = PROTOCOL_FAILURE_PATTERNS,
+    ) -> None:
         self.expected = tuple(expected)
+        self.reset_pattern = reset_pattern
+        self.protocol_failure_patterns = tuple(protocol_failure_patterns)
         self.found: Dict[str, int] = {}
         self.captures: Dict[str, str] = {}
         self.panic_marker: Optional[str] = None
@@ -131,7 +170,7 @@ class MarkerParser:
         self.order_valid = True
         all_patterns = [spec.pattern for spec in self.expected]
         all_patterns.extend(pattern for _, pattern in PANIC_PATTERNS)
-        all_patterns.extend(pattern for _, pattern in PROTOCOL_FAILURE_PATTERNS)
+        all_patterns.extend(pattern for _, pattern in self.protocol_failure_patterns)
         all_patterns.extend(pattern for _, pattern in DISCONNECT_PATTERNS)
         longest = max((len(pattern.pattern) for pattern in all_patterns), default=64)
         self._overlap = max(4096, longest * 2)
@@ -157,8 +196,7 @@ class MarkerParser:
                             self.captures[name] = value
                     break
 
-        entry_pattern = HELLO_MARKERS[0].pattern
-        for match in entry_pattern.finditer(combined):
+        for match in self.reset_pattern.finditer(combined):
             if base + match.end() > previous_total:
                 self.reset_count += 1
 
@@ -168,7 +206,7 @@ class MarkerParser:
             )
         if self.protocol_failure is None:
             self.protocol_failure = self._first_new_match(
-                combined, base, previous_total, PROTOCOL_FAILURE_PATTERNS
+                combined, base, previous_total, self.protocol_failure_patterns
             )
         if self.disconnect_marker is None:
             self.disconnect_marker = self._first_new_match(
@@ -177,7 +215,9 @@ class MarkerParser:
 
         self._total += len(text)
         self._tail = combined[-self._overlap :]
-        offsets = [self.found[spec.label] for spec in self.expected if spec.label in self.found]
+        offsets = [
+            self.found[spec.label] for spec in self.expected if spec.label in self.found
+        ]
         self.order_valid = offsets == sorted(offsets)
 
     @staticmethod
@@ -197,7 +237,9 @@ class MarkerParser:
 
     @property
     def missing(self) -> Tuple[str, ...]:
-        return tuple(spec.label for spec in self.expected if spec.label not in self.found)
+        return tuple(
+            spec.label for spec in self.expected if spec.label not in self.found
+        )
 
     @property
     def complete(self) -> bool:
@@ -208,17 +250,17 @@ class MarkerParser:
         if self.panic_marker is not None:
             return "panic/assert marker observed: {}".format(self.panic_marker)
         if self.protocol_failure is not None:
-            return "hello protocol failure observed: {}".format(self.protocol_failure)
+            return "protocol failure observed: {}".format(self.protocol_failure)
         if self.disconnect_marker is not None:
             return "serial disconnect/load failure observed: {}".format(
                 self.disconnect_marker
             )
         if self.reset_count > 1:
-            return "unexpected reset repetition: P2HELLO:ENTRY count={}".format(
+            return "unexpected entry/reset repetition: count={}".format(
                 self.reset_count
             )
         if not self.order_valid:
-            return "hello markers were observed out of protocol order"
+            return "protocol markers were observed out of order"
         return None
 
     def as_dict(self) -> Dict[str, object]:
@@ -363,7 +405,9 @@ def pinned_sha256(executable: pathlib.Path, lock_path: pathlib.Path) -> str:
     try:
         lines = lock_path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        raise SafetyError("pinned toolchain lock is unavailable: {}".format(exc)) from exc
+        raise SafetyError(
+            "pinned toolchain lock is unavailable: {}".format(exc)
+        ) from exc
 
     actual_path = executable.resolve()
     pattern = re.compile(r"^sha256=([0-9a-fA-F]{64})\s+(.+)$")
@@ -395,7 +439,62 @@ def pinned_sha256(executable: pathlib.Path, lock_path: pathlib.Path) -> str:
 
 
 def write_json(path: pathlib.Path, value: object) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def preserve_hil_inputs(config: HilConfig) -> Tuple[str, ...]:
+    """Copy the exact volatile image inputs into the HIL artifact bundle."""
+
+    input_dir = config.artifact_dir / "inputs"
+    input_dir.mkdir()
+    candidates = [config.image, config.toolchain_lock]
+    copied = []
+
+    for suffix in (".bin", ".map"):
+        candidate = config.image.with_suffix(suffix)
+        if candidate.is_file():
+            candidates.append(candidate)
+
+    if config.protocol == "context":
+        context_dir = REPO_ROOT / "tools" / "p2" / "standalone" / "context"
+        candidates.extend(
+            context_dir / name
+            for name in (
+                "Makefile",
+                "README.md",
+                "context.c",
+                "context.ld",
+                "context_switch.S",
+                "test_verify.py",
+                "verify.py",
+            )
+        )
+        candidates.extend(
+            (
+                REPO_ROOT / "arch" / "p2" / "include" / "context.h",
+                REPO_ROOT / "arch" / "p2" / "src" / "common" / "p2_softarith.c",
+                REPO_ROOT / "tools" / "p2" / "hil.py",
+                REPO_ROOT / "tools" / "p2" / "test-context.py",
+            )
+        )
+
+    used_names = set()
+    for source in candidates:
+        if not source.is_file():
+            continue
+        name = source.name
+        if name in used_names:
+            name = "{}-{}".format(source.parent.name, name)
+        if name in used_names:
+            raise SafetyError("duplicate HIL input basename: {}".format(name))
+        used_names.add(name)
+        destination = input_dir / name
+        shutil.copy2(source, destination)
+        copied.append(str(destination.relative_to(config.artifact_dir)))
+
+    return tuple(copied)
 
 
 def read_environment_file(
@@ -416,9 +515,13 @@ def read_environment_file(
     except FileNotFoundError:
         return parsed
     except OSError as exc:
-        raise SafetyError("cannot read environment file {}: {}".format(path, exc)) from exc
+        raise SafetyError(
+            "cannot read environment file {}: {}".format(path, exc)
+        ) from exc
 
-    variable = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+    variable = re.compile(
+        r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"
+    )
     assignment = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
     for number, original in enumerate(lines, 1):
         line = original.strip()
@@ -426,16 +529,12 @@ def read_environment_file(
             continue
         match = assignment.match(line)
         if match is None or "$(" in line or "`" in line or ";" in line:
-            raise SafetyError(
-                "unsupported assignment in {}:{}".format(path, number)
-            )
+            raise SafetyError("unsupported assignment in {}:{}".format(path, number))
         name, encoded = match.groups()
         try:
             words = shlex.split(encoded, posix=True)
         except ValueError as exc:
-            raise SafetyError(
-                "malformed value in {}:{}".format(path, number)
-            ) from exc
+            raise SafetyError("malformed value in {}:{}".format(path, number)) from exc
         if len(words) > 1:
             raise SafetyError("ambiguous value in {}:{}".format(path, number))
         value = words[0] if words else ""
@@ -466,7 +565,9 @@ def default_owner_probe(port: str) -> Tuple[int, ...]:
             check=False,
         )
     except OSError as exc:
-        raise SafetyError("cannot inspect serial ownership with lsof: {}".format(exc)) from exc
+        raise SafetyError(
+            "cannot inspect serial ownership with lsof: {}".format(exc)
+        ) from exc
     if result.returncode == 1:
         return ()
     if result.returncode != 0:
@@ -477,13 +578,16 @@ def default_owner_probe(port: str) -> Tuple[int, ...]:
         try:
             owners.append(int(line.strip()))
         except ValueError as exc:
-            raise SafetyError("lsof returned a non-PID owner: {!r}".format(line)) from exc
+            raise SafetyError(
+                "lsof returned a non-PID owner: {!r}".format(line)
+            ) from exc
     return tuple(owners)
 
 
-def default_build_runner() -> int:
+def default_build_runner(protocol: str = "hello") -> int:
+    standalone = "context" if protocol == "context" else "hello"
     return subprocess.run(
-        ["make", "-C", str(REPO_ROOT / "tools" / "p2" / "standalone" / "hello")],
+        ["make", "-C", str(REPO_ROOT / "tools" / "p2" / "standalone" / standalone)],
         cwd=str(REPO_ROOT),
         check=False,
     ).returncode
@@ -503,8 +607,27 @@ def exact_hello_markers(extra_literals: Sequence[str]) -> Tuple[MarkerSpec, ...]
     return tuple(markers)
 
 
+def exact_protocol_markers(
+    protocol: str, extra_literals: Sequence[str]
+) -> Tuple[MarkerSpec, ...]:
+    if protocol == "hello":
+        return exact_hello_markers(extra_literals)
+
+    markers = list(CONTEXT_MARKERS)
+    labels = {marker.label for marker in markers}
+    for literal in extra_literals:
+        if not literal:
+            raise SafetyError("--expect cannot be empty")
+        label = "literal:{}".format(literal)
+        if label in labels:
+            raise SafetyError("duplicate --expect marker: {}".format(literal))
+        labels.add(label)
+        markers.append(MarkerSpec(label, re.compile(re.escape(literal))))
+    return tuple(markers)
+
+
 def build_command(config: HilConfig) -> Tuple[str, ...]:
-    command = (
+    command = [
         str(config.loadp2),
         "-p",
         config.port,
@@ -515,11 +638,11 @@ def build_command(config: HilConfig) -> Tuple[str, ...]:
         "-ZERO",
         "-v",
         config.reset_flag,
-        "-e",
-        LOADP2_SCRIPT,
-        "-t",
-        str(config.image),
-    )
+    ]
+    if config.loadp2_script:
+        command.extend(("-e", config.loadp2_script))
+    command.extend(("-t", str(config.image)))
+    command = tuple(command)
     forbidden = {"-PATCH", "-FLASH"}
     if forbidden.intersection(command):
         raise SafetyError("forbidden loadp2 option entered the RAM-only command")
@@ -552,11 +675,13 @@ class HilRunner:
     def run(self) -> bool:
         config = self.config
         config.artifact_dir.mkdir(parents=True, exist_ok=False)
+        preserved_inputs = preserve_hil_inputs(config)
         started = self.utc_now()
         overall = {
             "status": "RUNNING",
             "started_utc": utc_timestamp(started),
             "cycles_requested": config.cycles,
+            "protocol": config.protocol,
             "cycles_passed": 0,
             "port": config.port,
             "image": str(config.image),
@@ -569,6 +694,7 @@ class HilRunner:
             "console_baud": config.console_baud,
             "reset_flag": config.reset_flag,
             "timeout_seconds_per_cycle": config.timeout,
+            "preserved_inputs": preserved_inputs,
         }
         write_json(config.artifact_dir / "metadata.json", overall)
         passed = 0
@@ -587,7 +713,9 @@ class HilRunner:
                             )
                         )
                     if sha256_file(config.image) != config.image_sha256:
-                        raise SafetyError("image changed after validation; refusing to load")
+                        raise SafetyError(
+                            "image changed after validation; refusing to load"
+                        )
                     result = self._run_cycle(cycle)
                     if not result.passed:
                         overall["failure_reason"] = result.reason
@@ -607,7 +735,11 @@ class HilRunner:
         command = build_command(config)
         started_utc = self.utc_now()
         started = self.monotonic()
-        parser = MarkerParser(config.expected)
+        parser = MarkerParser(
+            config.expected,
+            config.reset_pattern,
+            config.protocol_failure_patterns,
+        )
         raw_bytes = 0
         returncode = None
         intentionally_terminated = False
@@ -618,7 +750,7 @@ class HilRunner:
         command_record = {
             "argv": list(command),
             "shell_escaped": shlex.join(command),
-            "loadp2_script": LOADP2_SCRIPT,
+            "loadp2_script": config.loadp2_script,
         }
         write_json(cycle_dir / "command.json", command_record)
         metadata = {
@@ -678,19 +810,27 @@ class HilRunner:
                                 returncode = session.poll()
                                 if returncode is not None:
                                     if returncode != 0:
-                                        reason = "loadp2 exited with code {}".format(returncode)
+                                        reason = "loadp2 exited with code {}".format(
+                                            returncode
+                                        )
                                     else:
-                                        reason = "loadp2 terminal disconnected after markers"
+                                        reason = (
+                                            "loadp2 terminal disconnected after markers"
+                                        )
                                     break
                                 passed = True
-                                reason = "all required P2HELLO markers observed"
+                                reason = "all required {} markers observed".format(
+                                    config.protocol
+                                )
                                 intentionally_terminated = True
                                 break
                         else:
                             returncode = session.poll()
                             if returncode is not None:
                                 if returncode != 0:
-                                    reason = "loadp2 exited with code {}".format(returncode)
+                                    reason = "loadp2 exited with code {}".format(
+                                        returncode
+                                    )
                                 else:
                                     reason = "loadp2 terminal disconnected before protocol completed"
                                 break
@@ -756,12 +896,13 @@ class HilRunner:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="RAM-load and verify the native P2 standalone hello protocol",
+        description="RAM-load and verify a native P2 standalone protocol",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--protocol", choices=("hello", "context"), default="hello")
     parser.add_argument("--port")
-    parser.add_argument("--image", default=str(DEFAULT_IMAGE))
+    parser.add_argument("--image")
     parser.add_argument("--cycles", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--lock-timeout", type=float, default=0.0)
@@ -775,7 +916,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="LITERAL",
-        help="additional literal marker required after the fixed P2HELLO protocol",
+        help="additional literal marker required after the fixed protocol",
     )
     return parser
 
@@ -795,7 +936,9 @@ def config_from_args(
     if not pathlib.Path(port).is_absolute():
         raise SafetyError("P2_PORT must be an absolute device path")
     if not port_validator(port):
-        raise SafetyError("serial device is absent or not a character device: {}".format(port))
+        raise SafetyError(
+            "serial device is absent or not a character device: {}".format(port)
+        )
 
     loadp2_text = env.get("LOADP2", "")
     if not loadp2_text:
@@ -819,18 +962,25 @@ def config_from_args(
         raise SafetyError("toolchain lock is unavailable: {}".format(exc)) from exc
     loadp2_sha = pinned_sha256(loadp2, toolchain_lock)
 
-    image = pathlib.Path(args.image).expanduser()
+    if args.image is not None:
+        image_text = args.image
+    elif args.protocol == "context":
+        image_text = str(DEFAULT_CONTEXT_IMAGE)
+    else:
+        image_text = str(DEFAULT_IMAGE)
+
+    image = pathlib.Path(image_text).expanduser()
     try:
         image = image.resolve(strict=True)
     except OSError as exc:
-        raise SafetyError("hello image is unavailable: {}".format(exc)) from exc
+        raise SafetyError("P2 image is unavailable: {}".format(exc)) from exc
     if not image.is_file() or image.stat().st_size == 0:
-        raise SafetyError("hello image is missing or empty: {}".format(image))
+        raise SafetyError("P2 image is missing or empty: {}".format(image))
     with image.open("rb") as source:
         if source.read(4) != b"\x7fELF":
-            raise SafetyError("hello image is not an ELF file: {}".format(image))
+            raise SafetyError("P2 image is not an ELF file: {}".format(image))
     if image == loadp2:
-        raise SafetyError("hello image cannot be the LOADP2 executable")
+        raise SafetyError("P2 image cannot be the LOADP2 executable")
     image_sha = sha256_file(image)
 
     loader_baud = args.loader_baud or int(env.get("P2_LOADER_BAUD", "2000000"))
@@ -855,9 +1005,11 @@ def config_from_args(
     else:
         raise SafetyError("P2_RESET_METHOD must be loadp2, dtr, or rts")
 
-    board_lock = pathlib.Path(
-        env.get("P2_LOCK_FILE", str(DEFAULT_LOCK_FILE))
-    ).expanduser().resolve()
+    board_lock = (
+        pathlib.Path(env.get("P2_LOCK_FILE", str(DEFAULT_LOCK_FILE)))
+        .expanduser()
+        .resolve()
+    )
     if args.artifact_dir:
         artifact_dir = pathlib.Path(args.artifact_dir).expanduser().resolve()
     else:
@@ -865,12 +1017,13 @@ def config_from_args(
             REPO_ROOT
             / "artifacts"
             / "hil"
-            / "{}-hello".format(run_stamp(utc_now()))
+            / "{}-{}".format(run_stamp(utc_now()), args.protocol)
         )
     if artifact_dir.exists():
         raise SafetyError("artifact directory already exists: {}".format(artifact_dir))
 
     return HilConfig(
+        protocol=args.protocol,
         port=port,
         image=image,
         loadp2=loadp2,
@@ -883,7 +1036,18 @@ def config_from_args(
         cycles=args.cycles,
         timeout=args.timeout,
         lock_timeout=args.lock_timeout,
-        expected=exact_hello_markers(args.expect),
+        expected=exact_protocol_markers(args.protocol, args.expect),
+        reset_pattern=(
+            CONTEXT_MARKERS[0].pattern
+            if args.protocol == "context"
+            else HELLO_MARKERS[0].pattern
+        ),
+        protocol_failure_patterns=(
+            CONTEXT_FAILURE_PATTERNS
+            if args.protocol == "context"
+            else PROTOCOL_FAILURE_PATTERNS
+        ),
+        loadp2_script="" if args.protocol == "context" else LOADP2_SCRIPT,
         image_sha256=image_sha,
         loadp2_sha256=loadp2_sha,
     )
@@ -900,7 +1064,7 @@ def main(
     ),
     lock_factory: Callable[..., object] = monitor.BoardLock,
     owner_probe: Callable[[str], Tuple[int, ...]] = default_owner_probe,
-    build_runner: Callable[[], int] = default_build_runner,
+    build_runner: Callable[[str], int] = default_build_runner,
     port_validator: Callable[[str], bool] = is_character_device,
 ) -> int:
     args = build_parser().parse_args(argv)
@@ -917,9 +1081,13 @@ def main(
 
     try:
         if args.build_standalone:
-            build_rc = build_runner()
+            build_rc = build_runner(args.protocol)
             if build_rc != 0:
-                raise SafetyError("standalone hello build failed with exit code {}".format(build_rc))
+                raise SafetyError(
+                    "standalone {} build failed with exit code {}".format(
+                        args.protocol, build_rc
+                    )
+                )
         config = config_from_args(args, environment, utc_now, port_validator)
         runner = HilRunner(
             config,
