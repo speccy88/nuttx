@@ -182,6 +182,12 @@ config ARCH_Z80
 	---help---
 		ZiLOG 8-bit architectures (z80, ez80, z8).
 
+config ARCH_P2
+	bool "Parallax Propeller 2"
+	select ARCH_TOOLCHAIN_CLANG
+	---help---
+		Draft architecture support for Parallax Propeller 2.
+
 config ARCH_OR1K
 	bool "OpenRISC"
 	---help---
@@ -225,6 +231,7 @@ config ARCH
 	default "xtensa"  if ARCH_XTENSA
 	default "z16"     if ARCH_Z16
 	default "z80"     if ARCH_Z80
+	default "p2"      if ARCH_P2
 	default "or1k"    if ARCH_OR1K
 	default "sparc"   if ARCH_SPARC
 	default "tricore" if ARCH_TRICORE
@@ -270,6 +277,9 @@ source "arch/z16/Kconfig"
 endif
 if ARCH_Z80
 source "arch/z80/Kconfig"
+endif
+if ARCH_P2
+source "arch/p2/Kconfig"
 endif
 if ARCH_OR1K
 source "arch/or1k/Kconfig"

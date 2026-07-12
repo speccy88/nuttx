@@ -1,0 +1,43 @@
+if ARCH_P2
+
+comment "Parallax Propeller 2 Options"
+
+choice
+	prompt "P2 chip selection"
+	default ARCH_CHIP_P2X8C4M64P
+
+config ARCH_CHIP_P2X8C4M64P
+	bool "P2X8C4M64P"
+	select ARCH_HAVE_IRQTRIGGER
+
+config ARCH_CHIP_P2_CUSTOM
+	bool "Custom P2 chip"
+	select ARCH_CHIP_CUSTOM
+endchoice
+
+config ARCH_CHIP
+	string
+	default "p2x8c4m64p" if ARCH_CHIP_P2X8C4M64P
+
+config P2_SYSCLK_HZ
+	int "P2 system clock frequency"
+	default 180000000
+
+config P2_XTAL_HZ
+	int "P2 module TCXO frequency"
+	default 20000000
+
+config P2_UPWARD_STACK
+	bool
+	default y
+
+config P2_STORAGE
+	bool "P2 Edge storage arbitration draft"
+	default n
+
+config P2_SMARTPIN
+	bool "P2 Smart Pin ownership draft"
+	default n
+
+source "arch/p2/src/p2x8c4m64p/Kconfig"
+endif

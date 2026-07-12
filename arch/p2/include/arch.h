@@ -1,0 +1,4 @@
+#ifndef __ARCH_P2_INCLUDE_ARCH_H
+#define __ARCH_P2_INCLUDE_ARCH_H
+#define ARCH_STACK_PTR_ALIGN 4
+#endif

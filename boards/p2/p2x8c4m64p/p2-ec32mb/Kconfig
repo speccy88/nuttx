@@ -1,0 +1,14 @@
+if ARCH_BOARD_P2_EC32MB
+config ARCH_BOARD
+	string
+	default "p2-ec32mb"
+config ARCH_BOARD_COMMON
+	string
+	default ""
+config BOARD_LOOPSPERMSEC
+	int
+	default 18000
+config P2_EC32MB_AUTOMOUNT
+	bool "Draft mount flash/SD during board init"
+	default n
+endif

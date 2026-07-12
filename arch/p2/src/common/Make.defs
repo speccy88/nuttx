@@ -1,0 +1,1 @@
+CMN_CSRCS += p2_initialize.c p2_irq.c p2_timer.c p2_serial.c p2_initialstate.c p2_switchcontext.c p2_allocateheap.c p2_stack.c p2_registerdump.c p2_asserts.c

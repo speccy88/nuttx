@@ -1,0 +1,41 @@
+#ifndef __ARCH_P2_INCLUDE_CONTEXT_H
+#define __ARCH_P2_INCLUDE_CONTEXT_H
+#define P2_REG_R0 0
+#define P2_REG_R1 1
+#define P2_REG_R2 2
+#define P2_REG_R3 3
+#define P2_REG_R4 4
+#define P2_REG_R5 5
+#define P2_REG_R6 6
+#define P2_REG_R7 7
+#define P2_REG_R8 8
+#define P2_REG_R9 9
+#define P2_REG_R10 10
+#define P2_REG_R11 11
+#define P2_REG_R12 12
+#define P2_REG_R13 13
+#define P2_REG_R14 14
+#define P2_REG_R15 15
+#define P2_REG_R16 16
+#define P2_REG_R17 17
+#define P2_REG_R18 18
+#define P2_REG_R19 19
+#define P2_REG_R20 20
+#define P2_REG_R21 21
+#define P2_REG_R22 22
+#define P2_REG_R23 23
+#define P2_REG_R24 24
+#define P2_REG_R25 25
+#define P2_REG_R26 26
+#define P2_REG_R27 27
+#define P2_REG_R28 28
+#define P2_REG_R29 29
+#define P2_REG_R30 30
+#define P2_REG_R31 31
+#define P2_REG_PTRA 32
+#define P2_REG_PC 33
+#define P2_REG_CZ 34
+#define P2_REG_IRQRET 35
+#define P2_XCPT_REGS 36
+#define P2_REG_BYTES 4
+#endif

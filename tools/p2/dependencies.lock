@@ -1,0 +1,9 @@
+nuttx_commit=f5e3bb24595b78c5e329d13b1ad559a294ed3ef9
+nuttx_apps_commit=BLOCKED_not_cloned
+p2llvm_commit=BLOCKED_not_cloned
+p2llvm_llvm_project_commit=BLOCKED_not_cloned
+loadp2_commit=BLOCKED_not_cloned
+host_cc=cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+cmake=cmake version 3.28.3
+ninja=1.11.1
+build_flags=DRAFTED

@@ -1,0 +1,10 @@
+ENTRY(__start)
+MEMORY { hub (rwx) : ORIGIN = 0x00000000, LENGTH = 512K }
+SECTIONS
+{
+  .text : { KEEP(*(.start)) *(.text .text.*) *(.rodata .rodata.*) } > hub
+  .data : { *(.data .data.*) } > hub
+  .bss (NOLOAD) : { _sbss = .; *(.bss .bss.* COMMON) _ebss = .; } > hub
+  . = ALIGN(16); _sheap = .; . += 4096; _einitialstack = .; _eheap = ORIGIN(hub) + LENGTH(hub);
+  ASSERT(. <= ORIGIN(hub) + LENGTH(hub), "P2 Hub RAM overflow")
+}
