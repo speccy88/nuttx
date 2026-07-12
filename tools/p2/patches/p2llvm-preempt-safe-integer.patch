@@ -33,7 +33,7 @@ index 20cc45d8f578..9fa498c8238a 100644
 \ No newline at end of file
 +#include "P2GenMCCodeEmitter.inc"
 diff --git a/llvm/lib/Target/P2/P2ISelLowering.cpp b/llvm/lib/Target/P2/P2ISelLowering.cpp
-index 071f60eb46c2..320339c3c678 100644
+index 071f60eb46c2..2f9b20703a0e 100644
 --- a/llvm/lib/Target/P2/P2ISelLowering.cpp
 +++ b/llvm/lib/Target/P2/P2ISelLowering.cpp
 @@ -75,3 +74,0 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
@@ -48,27 +48,233 @@ index 071f60eb46c2..320339c3c678 100644
 +    // operating system can save.  Lower integer multiply to a software
 +    // helper so timer preemption cannot split QMUL from GETQX/GETQY.
 +    setOperationAction(ISD::MUL, MVT::i32, LibCall);
-@@ -111,3 +109,13 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+@@ -111,3 +109,20 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
 -    setOperationAction(ISD::SDIV, MVT::i32, Expand);
 -    setOperationAction(ISD::SREM, MVT::i32, Expand);
 -    setOperationAction(ISD::SDIVREM, MVT::i32, Expand);
-+    // QDIV and high-half multiplies have the same unsaveable asynchronous
-+    // state.  Use software helpers for every 32-bit multiply, quotient, and
-+    // remainder form, including the multi-result legalization operations.
++    // QDIV has the same unsaveable asynchronous state.  Use software helpers
++    // for every 32-bit quotient and remainder form.
 +    for (auto Op :
 +         {ISD::SDIV, ISD::UDIV, ISD::SREM, ISD::UREM, ISD::UDIVREM,
-+          ISD::SDIVREM, ISD::MULHS, ISD::MULHU, ISD::UMUL_LOHI,
-+          ISD::SMUL_LOHI}) {
++          ISD::SDIVREM}) {
 +        setOperationAction(Op, MVT::i32, LibCall);
 +    }
 +
-+    for (auto Op : {ISD::SMULO, ISD::UMULO}) {
++    // SelectionDAG has no runtime-libcall ABI for high-half multiplication.
++    // Lower it to exact limb arithmetic, whose ordinary low multiplies use
++    // __mulsi3.  Expand the two-result forms through MUL plus MULH[SU].
++    for (auto Op : {ISD::MULHS, ISD::MULHU}) {
++        setOperationAction(Op, MVT::i32, Custom);
++        setOperationAction(Op, MVT::i64, Custom);
++    }
++
++    for (auto Op : {ISD::SMULO, ISD::UMULO, ISD::UMUL_LOHI,
++                    ISD::SMUL_LOHI}) {
 +        setOperationAction(Op, MVT::i32, Expand);
 +    }
-@@ -162,0 +171,2 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+@@ -143 +157,0 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+-    setOperationAction(ISD::MULHU, MVT::i64, Expand);
+@@ -162,0 +177,2 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
 +    setOperationAction(ISD::SDIVREM, MVT::i64, LibCall);
 +    setOperationAction(ISD::UDIVREM, MVT::i64, LibCall);
-@@ -862 +872 @@ std::pair<unsigned, const TargetRegisterClass *> P2TargetLowering::getRegForInli
+@@ -231,0 +248,158 @@ SDValue P2TargetLowering::lowerLibcall64(RTLIB::Libcall lc, SDValue Op, Selectio
++
++static SDValue p2BuildMULHU32(SDValue Left, SDValue Right, const SDLoc &DL,
++                              SelectionDAG &DAG) {
++    SDValue Mask = DAG.getConstant(0xffff, DL, MVT::i32);
++    SDValue Shift = DAG.getConstant(16, DL, MVT::i32);
++    SDValue LeftLow = DAG.getNode(ISD::AND, DL, MVT::i32, Left, Mask);
++    SDValue LeftHigh = DAG.getNode(ISD::SRL, DL, MVT::i32, Left, Shift);
++    SDValue RightLow = DAG.getNode(ISD::AND, DL, MVT::i32, Right, Mask);
++    SDValue RightHigh = DAG.getNode(ISD::SRL, DL, MVT::i32, Right, Shift);
++    SDValue Product0 = DAG.getNode(ISD::MUL, DL, MVT::i32,
++                                   LeftLow, RightLow);
++    SDValue Product1 = DAG.getNode(ISD::MUL, DL, MVT::i32,
++                                   LeftHigh, RightLow);
++    SDValue Product2 = DAG.getNode(ISD::MUL, DL, MVT::i32,
++                                   LeftLow, RightHigh);
++    SDValue Product3 = DAG.getNode(ISD::MUL, DL, MVT::i32,
++                                   LeftHigh, RightHigh);
++
++    // All four products are exact in 32 bits.  The middle accumulator is at
++    // most 3 * 0xffff, so these additions cannot overflow.
++    SDValue Middle = DAG.getNode(ISD::SRL, DL, MVT::i32, Product0, Shift);
++    Middle = DAG.getNode(ISD::ADD, DL, MVT::i32, Middle,
++                         DAG.getNode(ISD::AND, DL, MVT::i32,
++                                     Product1, Mask));
++    Middle = DAG.getNode(ISD::ADD, DL, MVT::i32, Middle,
++                         DAG.getNode(ISD::AND, DL, MVT::i32,
++                                     Product2, Mask));
++
++    SDValue High = DAG.getNode(ISD::ADD, DL, MVT::i32, Product3,
++                               DAG.getNode(ISD::SRL, DL, MVT::i32,
++                                           Product1, Shift));
++    High = DAG.getNode(ISD::ADD, DL, MVT::i32, High,
++                       DAG.getNode(ISD::SRL, DL, MVT::i32,
++                                   Product2, Shift));
++    return DAG.getNode(ISD::ADD, DL, MVT::i32, High,
++                       DAG.getNode(ISD::SRL, DL, MVT::i32, Middle, Shift));
++}
++
++static std::pair<SDValue, SDValue>
++p2BuildAddCarry32(SDValue Left, SDValue Right, const SDLoc &DL,
++                  SelectionDAG &DAG) {
++    SDValue Sum = DAG.getNode(ISD::ADD, DL, MVT::i32, Left, Right);
++    SDValue Both = DAG.getNode(ISD::AND, DL, MVT::i32, Left, Right);
++    SDValue Either = DAG.getNode(ISD::OR, DL, MVT::i32, Left, Right);
++    SDValue NotSum = DAG.getNode(ISD::XOR, DL, MVT::i32, Sum,
++                                 DAG.getAllOnesConstant(DL, MVT::i32));
++    SDValue CarryBits = DAG.getNode(ISD::OR, DL, MVT::i32, Both,
++                                    DAG.getNode(ISD::AND, DL, MVT::i32,
++                                                Either, NotSum));
++    SDValue Carry = DAG.getNode(ISD::SRL, DL, MVT::i32, CarryBits,
++                                DAG.getConstant(31, DL, MVT::i32));
++    return std::make_pair(Sum, Carry);
++}
++
++static SDValue p2BuildI64(SDValue Low, SDValue High, const SDLoc &DL,
++                          SelectionDAG &DAG) {
++    SDValue Result = SDValue(
++        DAG.getMachineNode(TargetOpcode::IMPLICIT_DEF, DL, MVT::i64), 0);
++    Result = DAG.getTargetInsertSubreg(P2::sub0, DL, MVT::i64, Result, Low);
++    return DAG.getTargetInsertSubreg(P2::sub1, DL, MVT::i64, Result, High);
++}
++
++SDValue P2TargetLowering::lowerMULHU32(SDValue Op,
++                                      SelectionDAG &DAG) const {
++    return p2BuildMULHU32(Op->getOperand(0), Op->getOperand(1), SDLoc(Op), DAG);
++}
++
++SDValue P2TargetLowering::lowerMULHS32(SDValue Op,
++                                      SelectionDAG &DAG) const {
++    SDLoc DL(Op);
++    SDValue Left = Op->getOperand(0);
++    SDValue Right = Op->getOperand(1);
++    SDValue High = p2BuildMULHU32(Left, Right, DL, DAG);
++    SDValue SignShift = DAG.getConstant(31, DL, MVT::i32);
++    SDValue LeftMask = DAG.getNode(ISD::SRA, DL, MVT::i32,
++                                   Left, SignShift);
++    SDValue RightMask = DAG.getNode(ISD::SRA, DL, MVT::i32,
++                                    Right, SignShift);
++
++    // For two's-complement operands, signed_high(a*b) is
++    // unsigned_high(a*b) - (a<0 ? b : 0) - (b<0 ? a : 0).
++    High = DAG.getNode(ISD::SUB, DL, MVT::i32, High,
++                       DAG.getNode(ISD::AND, DL, MVT::i32,
++                                   LeftMask, Right));
++    return DAG.getNode(ISD::SUB, DL, MVT::i32, High,
++                       DAG.getNode(ISD::AND, DL, MVT::i32,
++                                   RightMask, Left));
++}
++
++SDValue P2TargetLowering::lowerMULHU64(SDValue Op,
++                                      SelectionDAG &DAG) const {
++    SDLoc DL(Op);
++    SDValue Left = Op->getOperand(0);
++    SDValue Right = Op->getOperand(1);
++    SDValue LeftLow = DAG.getTargetExtractSubreg(P2::sub0, DL, MVT::i32,
++                                                 Left);
++    SDValue LeftHigh = DAG.getTargetExtractSubreg(P2::sub1, DL, MVT::i32,
++                                                  Left);
++    SDValue RightLow = DAG.getTargetExtractSubreg(P2::sub0, DL, MVT::i32,
++                                                  Right);
++    SDValue RightHigh = DAG.getTargetExtractSubreg(P2::sub1, DL, MVT::i32,
++                                                   Right);
++
++    SDValue P00High = p2BuildMULHU32(LeftLow, RightLow, DL, DAG);
++    SDValue P01Low = DAG.getNode(ISD::MUL, DL, MVT::i32,
++                                 LeftLow, RightHigh);
++    SDValue P01High = p2BuildMULHU32(LeftLow, RightHigh, DL, DAG);
++    SDValue P10Low = DAG.getNode(ISD::MUL, DL, MVT::i32,
++                                 LeftHigh, RightLow);
++    SDValue P10High = p2BuildMULHU32(LeftHigh, RightLow, DL, DAG);
++    SDValue P11Low = DAG.getNode(ISD::MUL, DL, MVT::i32,
++                                 LeftHigh, RightHigh);
++    SDValue P11High = p2BuildMULHU32(LeftHigh, RightHigh, DL, DAG);
++
++    // The carries from the low 64-bit product into limbs 1 and 2 are part of
++    // the upper 64 bits.
++    auto Limb1A = p2BuildAddCarry32(P00High, P01Low, DL, DAG);
++    auto Limb1B = p2BuildAddCarry32(Limb1A.first, P10Low, DL, DAG);
++    SDValue Carry1 = DAG.getNode(ISD::ADD, DL, MVT::i32,
++                                 Limb1A.second, Limb1B.second);
++
++    auto Limb2A = p2BuildAddCarry32(P01High, P10High, DL, DAG);
++    auto Limb2B = p2BuildAddCarry32(Limb2A.first, P11Low, DL, DAG);
++    auto Limb2C = p2BuildAddCarry32(Limb2B.first, Carry1, DL, DAG);
++    SDValue Carry2 = DAG.getNode(ISD::ADD, DL, MVT::i32,
++                                 Limb2A.second, Limb2B.second);
++    Carry2 = DAG.getNode(ISD::ADD, DL, MVT::i32,
++                         Carry2, Limb2C.second);
++    SDValue Limb3 = DAG.getNode(ISD::ADD, DL, MVT::i32, P11High, Carry2);
++    return p2BuildI64(Limb2C.first, Limb3, DL, DAG);
++}
++
++SDValue P2TargetLowering::lowerMULHS64(SDValue Op,
++                                      SelectionDAG &DAG) const {
++    SDLoc DL(Op);
++    SDValue Left = Op->getOperand(0);
++    SDValue Right = Op->getOperand(1);
++    SDValue High = lowerMULHU64(Op, DAG);
++    SDValue LeftHigh = DAG.getTargetExtractSubreg(P2::sub1, DL, MVT::i32,
++                                                  Left);
++    SDValue RightHigh = DAG.getTargetExtractSubreg(P2::sub1, DL, MVT::i32,
++                                                   Right);
++    SDValue SignShift = DAG.getConstant(31, DL, MVT::i32);
++    SDValue LeftMask32 = DAG.getNode(ISD::SRA, DL, MVT::i32,
++                                     LeftHigh, SignShift);
++    SDValue RightMask32 = DAG.getNode(ISD::SRA, DL, MVT::i32,
++                                      RightHigh, SignShift);
++    SDValue LeftMask64 = p2BuildI64(LeftMask32, LeftMask32, DL, DAG);
++    SDValue RightMask64 = p2BuildI64(RightMask32, RightMask32, DL, DAG);
++
++    High = DAG.getNode(ISD::SUB, DL, MVT::i64, High,
++                       DAG.getNode(ISD::AND, DL, MVT::i64,
++                                   LeftMask64, Right));
++    return DAG.getNode(ISD::SUB, DL, MVT::i64, High,
++                       DAG.getNode(ISD::AND, DL, MVT::i64,
++                                   RightMask64, Left));
++}
++
+@@ -310,0 +485,13 @@ SDValue P2TargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
++            break;
++        case ISD::MULHU:
++            if (Op->getValueType(0) == MVT::i32)
++                return lowerMULHU32(Op, DAG);
++            if (Op->getValueType(0) == MVT::i64)
++                return lowerMULHU64(Op, DAG);
++            break;
++        case ISD::MULHS:
++            if (Op->getValueType(0) == MVT::i32)
++                return lowerMULHS32(Op, DAG);
++            if (Op->getValueType(0) == MVT::i64)
++                return lowerMULHS64(Op, DAG);
++            break;
+@@ -862 +1049 @@ std::pair<unsigned, const TargetRegisterClass *> P2TargetLowering::getRegForInli
 -}
 \ No newline at end of file
 +}
+diff --git a/llvm/lib/Target/P2/P2ISelLowering.h b/llvm/lib/Target/P2/P2ISelLowering.h
+index 9914d0d45b24..f6fa0095742d 100644
+--- a/llvm/lib/Target/P2/P2ISelLowering.h
++++ b/llvm/lib/Target/P2/P2ISelLowering.h
+@@ -69,0 +70,9 @@ namespace llvm {
++        // P2 high-half multiply is expanded into several software low
++        // multiplies.  Preserve power-of-two folds, but prefer the direct
++        // software divide helper to magic-number division for other constants.
++        bool isIntDivCheap(EVT VT, AttributeList Attr) const override {
++            (void)VT;
++            (void)Attr;
++            return true;
++        }
++
+@@ -128,0 +138,5 @@ namespace llvm {
++        SDValue lowerMULHU32(SDValue Op, SelectionDAG &DAG) const;
++        SDValue lowerMULHS32(SDValue Op, SelectionDAG &DAG) const;
++        SDValue lowerMULHU64(SDValue Op, SelectionDAG &DAG) const;
++        SDValue lowerMULHS64(SDValue Op, SelectionDAG &DAG) const;
++
+@@ -134 +148 @@ namespace llvm {
+-#endif // P2ISELLOWERING_H
+\ No newline at end of file
++#endif // P2ISELLOWERING_H

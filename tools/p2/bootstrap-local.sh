@@ -166,40 +166,102 @@ p2llvm_preemption_valid()
 {
   local probe_dir
   local source
+  local ir_source
   local object
+  local ir_object
   local disassembly
   local relocations
+  local optimization
 
   p2llvm_tools_valid || return 1
   probe_dir=$(mktemp -d "$CACHE/p2-preemption-probe.XXXXXX") || return 1
   source=$probe_dir/probe.c
-  object=$probe_dir/probe.o
+  ir_source=$probe_dir/probe.ll
   disassembly=$probe_dir/probe.dis
   relocations=$probe_dir/probe.relocs
 
   printf '%s\n' \
+    'typedef unsigned int u32;' \
+    'typedef int i32;' \
+    'typedef unsigned long long u64;' \
+    'typedef long long i64;' \
     'unsigned p2_mul(unsigned a, unsigned b) { return a * b; }' \
     'unsigned p2_div(unsigned a, unsigned b) { return a / b; }' \
     'unsigned p2_mod(unsigned a, unsigned b) { return a % b; }' \
+    'int p2_sdiv(int a, int b) { return a / b; }' \
+    'int p2_smod(int a, int b) { return a % b; }' \
     '_Bool p2_overflow(unsigned a, unsigned b, unsigned *r)' \
-    '{ return __builtin_mul_overflow(a, b, r); }' > "$source"
+    '{ return __builtin_mul_overflow(a, b, r); }' \
+    '_Bool p2_soverflow64(i64 a, i64 b, i64 *r)' \
+    '{ return __builtin_mul_overflow(a, b, r); }' \
+    '_Bool p2_uoverflow64(u64 a, u64 b, u64 *r)' \
+    '{ return __builtin_mul_overflow(a, b, r); }' \
+    'u32 p2_mulhu32(u32 a, u32 b)' \
+    '{ return (u32)(((u64)a * (u64)b) >> 32); }' \
+    'i32 p2_mulhs32(i32 a, i32 b)' \
+    '{ return (i32)(((i64)a * (i64)b) >> 32); }' \
+    'i32 p2_sdivc32(i32 a) { return a / 365; }' \
+    'u32 p2_udivc32(u32 a) { return a / 365; }' \
+    'i64 p2_sdivc64(i64 a) { return a / 86400; }' \
+    'u64 p2_udivc64(u64 a) { return a / 86400; }' \
+    'i64 p2_sdivp2(i64 a) { return a / 256; }' \
+    'u64 p2_udivp2(u64 a) { return a / 256; }' > "$source"
 
-  if ! "$P2LLVM_ROOT/bin/clang" --target=p2 -O2 -fno-jump-tables \
-       -fno-builtin -ffunction-sections -fdata-sections -c "$source" \
-       -o "$object" ||
-     ! "$P2LLVM_ROOT/bin/llvm-objdump" -dr "$object" > "$disassembly" ||
-     ! "$P2LLVM_ROOT/bin/llvm-readobj" --relocations "$object" > "$relocations";
-  then
-    rm -rf "$probe_dir"
-    return 1
-  fi
+  printf '%s\n' \
+    'target triple = "p2"' \
+    'define i64 @p2_mulhu64(i64 %a, i64 %b) {' \
+    '  %ax = zext i64 %a to i128' \
+    '  %bx = zext i64 %b to i128' \
+    '  %p = mul i128 %ax, %bx' \
+    '  %h = lshr i128 %p, 64' \
+    '  %r = trunc i128 %h to i64' \
+    '  ret i64 %r' \
+    '}' \
+    'define i64 @p2_mulhs64(i64 %a, i64 %b) {' \
+    '  %ax = sext i64 %a to i128' \
+    '  %bx = sext i64 %b to i128' \
+    '  %p = mul i128 %ax, %bx' \
+    '  %h = ashr i128 %p, 64' \
+    '  %r = trunc i128 %h to i64' \
+    '  ret i64 %r' \
+    '}' > "$ir_source"
+
+  : > "$disassembly"
+  : > "$relocations"
+  for optimization in O0 Os O2
+  do
+    object=$probe_dir/probe-$optimization.o
+    ir_object=$probe_dir/probe-high64-$optimization.o
+
+    if ! "$P2LLVM_ROOT/bin/clang" --target=p2 -"$optimization" \
+         -fno-jump-tables -fno-builtin -ffunction-sections \
+         -fdata-sections -c "$source" -o "$object" ||
+       ! "$P2LLVM_ROOT/bin/clang" --target=p2 -"$optimization" \
+         -fno-jump-tables -x ir -c "$ir_source" -o "$ir_object" ||
+       ! "$P2LLVM_ROOT/bin/llvm-objdump" -dr "$object" \
+         >> "$disassembly" ||
+       ! "$P2LLVM_ROOT/bin/llvm-objdump" -dr "$ir_object" \
+         >> "$disassembly" ||
+       ! "$P2LLVM_ROOT/bin/llvm-readobj" --relocations "$object" \
+         >> "$relocations" ||
+       ! "$P2LLVM_ROOT/bin/llvm-readobj" --relocations "$ir_object" \
+         >> "$relocations";
+    then
+      rm -rf "$probe_dir"
+      return 1
+    fi
+  done
 
   if grep -Eiq '(qmul|qdiv|qfrac|qsqrt|qrotate|qvector|qlog|qexp|getqx|getqy)' \
        "$disassembly" ||
      grep -q 'R_P2_COG9' "$relocations" ||
      ! grep -q 'R_P2_20 __mulsi3' "$relocations" ||
+     ! grep -q 'R_P2_20 __divsi3' "$relocations" ||
      ! grep -q 'R_P2_20 __udivsi3' "$relocations" ||
-     ! grep -q 'R_P2_20 __umodsi3' "$relocations";
+     ! grep -q 'R_P2_20 __modsi3' "$relocations" ||
+     ! grep -q 'R_P2_20 __umodsi3' "$relocations" ||
+     ! grep -q 'R_P2_20 __divdi3' "$relocations" ||
+     ! grep -q 'R_P2_20 __udivdi3' "$relocations";
   then
     rm -rf "$probe_dir"
     return 1
@@ -399,7 +461,7 @@ write_lock()
     echo "host_os=$(uname -a)"
     echo "p2llvm_libc=skipped_not_installed"
     echo "p2llvm_libp2_shims=unused stdio.h and math.h includes only"
-    echo "p2llvm_preempt_safe_integer=verified q-free Hub libcalls"
+    echo "p2llvm_preempt_safe_integer=verified q-free Hub libcalls and limb-expanded mulh"
     echo "p2llvm_preempt_patch=$(basename "$P2LLVM_PATCH")"
     echo "p2llvm_darwin_cmake=-DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_LIBXML2=OFF -DCMAKE_DISABLE_FIND_PACKAGE_Backtrace:BOOL=TRUE"
     echo "p2_flags=--target=p2 -fno-jump-tables -ffunction-sections -fdata-sections -fno-common -fno-builtin -Os"
