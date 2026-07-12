@@ -1,9 +1,15 @@
-nuttx_commit=f5e3bb24595b78c5e329d13b1ad559a294ed3ef9
-nuttx_apps_commit=BLOCKED_not_cloned
-p2llvm_commit=BLOCKED_not_cloned
-p2llvm_llvm_project_commit=BLOCKED_not_cloned
-loadp2_commit=BLOCKED_not_cloned
+nuttx_commit=39cc55135fd24f02006e56f9fc1f0476edea1888
+nuttx_upstream_base=
+nuttx_apps_commit=62b7e955300b6dafa4f36d391474d3c8925b8106
+p2llvm_commit=bdcefcce7860b2232c06f35726fea679a3a7309c
+p2llvm_llvm_project_commit=bdcefcce7860b2232c06f35726fea679a3a7309c
+loadp2_commit=BLOCKED_not_available
+host_os=Linux 4143cc8ba89e 6.12.47 #1 SMP Mon Oct 27 10:01:15 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
 host_cc=cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
 cmake=cmake version 3.28.3
 ninja=1.11.1
-build_flags=DRAFTED
+python=Python 3.14.4
+kconfig_conf=BLOCKED_missing
+clang=BLOCKED_missing
+loadp2=BLOCKED_missing
+p2_flags=--target=p2 -fno-jump-tables -ffunction-sections -fdata-sections -fno-common -fno-builtin -nostdlib

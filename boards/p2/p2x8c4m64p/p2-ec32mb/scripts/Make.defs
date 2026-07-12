@@ -1,20 +1,20 @@
 include $(TOPDIR)/.config
 include $(TOPDIR)/tools/Config.mk
 
-P2LLVM_ROOT ?= $(HOME)/.cache/p2llvm/install
+P2LLVM_ROOT ?= $(HOME)/.cache/p2-nuttx/p2llvm/install
 P2_CLANG ?= $(P2LLVM_ROOT)/bin/clang
 P2_LLD ?= $(P2LLVM_ROOT)/bin/ld.lld
 CC = $(P2_CLANG)
 CXX = $(P2_CLANG)++
 CPP = $(P2_CLANG) -E
-LD = $(P2_LLD)
+LD = $(P2_CLANG)
 AR = llvm-ar
 NM = llvm-nm
 OBJCOPY = llvm-objcopy
 OBJDUMP = llvm-objdump
 STRIP = llvm-strip
 
-ARCHCPUFLAGS = --target=propeller2-unknown-none -fno-builtin -fno-common -ffunction-sections -fdata-sections
+ARCHCPUFLAGS = --target=p2 -fno-jump-tables -fno-builtin -fno-common -ffunction-sections -fdata-sections
 ARCHWARNINGS = -Wall -Wextra -Wshadow -Wundef -Wstrict-prototypes
 ARCHOPTIMIZATION ?= -Os
 ARCHINCLUDES = -I$(TOPDIR)$(DELIM)include
@@ -22,5 +22,5 @@ CFLAGS = $(ARCHCPUFLAGS) $(ARCHWARNINGS) $(ARCHOPTIMIZATION) $(ARCHINCLUDES) $(E
 CXXFLAGS = $(ARCHCPUFLAGS) $(ARCHWARNINGS) $(ARCHOPTIMIZATION) $(ARCHINCLUDES) $(EXTRAFLAGS)
 CPPFLAGS = $(ARCHCPUFLAGS) $(ARCHINCLUDES)
 AFLAGS = $(ARCHCPUFLAGS) $(ARCHINCLUDES) -D__ASSEMBLY__
-LDFLAGS += --gc-sections -Map=nuttx.map
+LDFLAGS += --target=p2 -nostdlib -Wl,--gc-sections -Wl,-Map=nuttx.map
 MKDEP = $(TOPDIR)$(DELIM)tools$(DELIM)mknulldeps.sh
