@@ -32,6 +32,7 @@ class PsramSourceTests(unittest.TestCase):
             "CONFIG_P2_EC32MB_PSRAM_CANCEL_GRACE_TICKS=100",
             "CONFIG_TESTING_P2PSRAM=y",
             "CONFIG_TESTING_P2PSRAM_RANDOM_COUNT=1024",
+            "# CONFIG_SYSTEM_DD is not set",
         ):
             self.assertIn(setting, profile)
 
