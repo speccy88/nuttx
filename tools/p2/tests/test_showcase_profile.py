@@ -20,6 +20,7 @@ class ShowcaseProfileTests(unittest.TestCase):
             "CONFIG_BOARD_LATE_INITIALIZE=y",
             "CONFIG_ETC_ROMFS=y",
             "CONFIG_NSH_READLINE=y",
+            "CONFIG_NFILE_DESCRIPTORS_PER_BLOCK=16",
             "CONFIG_READLINE_TABCOMPLETION=y",
             "CONFIG_READLINE_CMD_HISTORY=y",
             "CONFIG_TTY_SIGINT=y",
@@ -49,6 +50,8 @@ class ShowcaseProfileTests(unittest.TestCase):
             config = self.config(board)
             for symbol in required:
                 self.assertIn(symbol, config, f"{board}: missing {symbol}")
+            self.assertNotIn("CONFIG_NFILE_DESCRIPTORS=", config)
+            self.assertNotIn("CONFIG_PREALLOC_TIMERS=", config)
             self.assertIn("# CONFIG_ARCH_LEDS is not set", config)
             self.assertIn("# CONFIG_FSUTILS_MKFATFS is not set", config)
             self.assertIn("# CONFIG_FSUTILS_MKSMARTFS is not set", config)
