@@ -12,6 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
 
 import hil
+import storage_protocol
 
 
 class ManualClock:
@@ -327,6 +328,33 @@ class HilTests(unittest.TestCase):
             "\n".join(values) + "\n", encoding="utf-8"
         )
 
+    def write_storage_config(self):
+        values = [
+            "{}={}".format(name, value)
+            for name, value in hil.STORAGE_REQUIRED_CONFIG
+        ]
+        values.extend(
+            "{}={}".format(name, value)
+            for name, value in hil.STORAGE_ACTION_REQUIRED_CONFIG
+        )
+        (self.directory / ".config").write_text(
+            "\n".join(values) + "\n", encoding="utf-8"
+        )
+
+    def storage_boot_output(self):
+        return GOOD_BOOT_OUTPUT + (
+            b"P2STORAGE:W25=PRIVATE JEDEC=EF4018\r\n"
+            b"P2STORAGE:W25_GEOMETRY BLOCK=256 ERASE=4096 "
+            b"ERASEBLOCKS=4096 BYTES=16777216\r\n"
+            b"P2STORAGE:W25_LAYOUT BOOT=0x00000000+0x00080000 "
+            b"DATA=0x00080000+0x00f80000 FIRSTBLOCK=2048 "
+            b"NBLOCKS=63488\r\n"
+            b"P2STORAGE:W25_BOOT_CRC32=89ABCDEF\r\n"
+            b"P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO\r\n"
+            b"P2STORAGE:MMCSD=/dev/mmcsd0\r\n"
+            b"nsh> "
+        )
+
     def test_execute_and_hil_environment_are_both_required_before_lock_or_process(self):
         factory = SessionFactory([])
         lock = RecordingLock()
@@ -414,7 +442,7 @@ class HilTests(unittest.TestCase):
                 "--cycles",
                 "5",
                 "--timeout",
-                "1800",
+                "3600",
                 "--ostest-assertions",
                 "disabled",
                 "--ostest-profile",
@@ -476,7 +504,7 @@ class HilTests(unittest.TestCase):
                 "--cycles",
                 "1",
                 "--timeout",
-                "1800",
+                "3600",
                 "--ostest-assertions",
                 "enabled",
                 "--ostest-profile",
@@ -520,7 +548,7 @@ class HilTests(unittest.TestCase):
                 "--cycles",
                 "1",
                 "--timeout",
-                "1800",
+                "3600",
                 "--ostest-assertions",
                 "enabled",
                 "--ostest-profile",
@@ -714,6 +742,117 @@ class HilTests(unittest.TestCase):
         values["CONFIG_TESTING_P2SMARTPINS_SPI"] = "y"
         with self.assertRaisesRegex(hil.SafetyError, "SPI stage is blocked"):
             hil.validate_smartpins_config(values)
+
+    def test_storage_actions_enforce_erase_and_sd_gates_before_serial(self):
+        factory = SessionFactory([])
+        lock = RecordingLock()
+        environment = self.env()
+        environment["P2_ALLOW_FLASH_WRITE"] = "1"
+        argv = self.argv("storage-no-erase") + [
+            "--protocol",
+            "storage",
+            "--storage-action",
+            "flash-write",
+            "--storage-sequence",
+            "1234ABCD",
+        ]
+
+        rc = self.invoke(argv, environment, factory, lock)
+
+        self.assertEqual(rc, hil.EXIT_SAFETY)
+        self.assertEqual(factory.commands, [])
+        self.assertEqual(lock.entered, 0)
+
+        environment["P2_ALLOW_FLASH_ERASE"] = "1"
+        argv = self.argv("storage-no-sd-gate") + [
+            "--protocol",
+            "storage",
+            "--storage-action",
+            "sd-write",
+            "--storage-sequence",
+            "1234ABCD",
+        ]
+        rc = self.invoke(argv, environment, factory, lock)
+        self.assertEqual(rc, hil.EXIT_SAFETY)
+        self.assertEqual(factory.commands, [])
+        self.assertEqual(lock.entered, 0)
+
+    def test_storage_action_config_pins_paths_sizes_counts_and_interrupt_window(self):
+        values = dict(hil.STORAGE_ACTION_REQUIRED_CONFIG)
+        hil.validate_storage_action_config(values)
+
+        for name, bad in (
+            ("CONFIG_TESTING_P2STORAGE_FLASH_DEVPATH", '"/dev/mtdsmart0"'),
+            ("CONFIG_TESTING_P2STORAGE_RECORD_SIZE", "512"),
+            ("CONFIG_TESTING_P2STORAGE_BUS_ALTERNATE_COUNT", "16"),
+            ("CONFIG_TESTING_P2STORAGE_INTERRUPT_HOLD_MSEC", "1000"),
+        ):
+            with self.subTest(name=name):
+                drifted = dict(values)
+                drifted[name] = bad
+                with self.assertRaisesRegex(hil.SafetyError, name):
+                    hil.validate_storage_action_config(drifted)
+
+    def test_storage_action_sends_exact_nonce_command_after_prompt(self):
+        self.write_storage_config()
+        sequence = "1234ABCD"
+        checksum = storage_protocol.stream_checksum("flash", sequence)
+        response = (
+            "p2storage flash-write {} {}\r\n"
+            "P2STORAGE:BEGIN:COMMAND=flash-write\r\n"
+            "P2STORAGE:FLASH:WRITE:SEQUENCE={}:BYTES=1048576:"
+            "FNV1A={}:PASS\r\n"
+            "P2STORAGE:READY:RESET=FLASH:SEQUENCE={}\r\n"
+            "P2STORAGE:PASS:FLASH-WRITE\r\n"
+        ).format(
+            storage_protocol.ACKNOWLEDGEMENT,
+            sequence,
+            sequence,
+            checksum,
+            sequence,
+        ).encode("ascii")
+        session = FakeSession(
+            self.clock, [self.storage_boot_output(), response]
+        )
+        factory = SessionFactory([session])
+        lock = RecordingLock()
+        environment = self.env()
+        environment.update(
+            {
+                "P2_ALLOW_FLASH_WRITE": "1",
+                "P2_ALLOW_FLASH_ERASE": "1",
+            }
+        )
+        argv = self.argv("storage-flash-write") + [
+            "--protocol",
+            "storage",
+            "--storage-action",
+            "flash-write",
+            "--storage-sequence",
+            sequence,
+        ]
+
+        with mock.patch.object(hil, "REPO_ROOT", self.directory):
+            rc = self.invoke(argv, environment, factory, lock)
+
+        self.assertEqual(rc, hil.EXIT_OK)
+        self.assertEqual(
+            session.writes,
+            [storage_protocol.command_bytes("flash-write", sequence)],
+        )
+        marker_status = json.loads(
+            (
+                self.directory
+                / "storage-flash-write"
+                / "cycle-001"
+                / "markers.json"
+            ).read_text()
+        )
+        self.assertTrue(marker_status["complete"])
+        self.assertTrue(marker_status["storage_protocol"]["complete"])
+        self.assertEqual(
+            marker_status["storage_protocol"]["expected_checksum"], checksum
+        )
 
     def test_boot_protocol_ram_loads_nuttx_and_requires_ordered_startup_markers(self):
         session = FakeSession(self.clock, [GOOD_BOOT_OUTPUT])

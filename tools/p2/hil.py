@@ -36,6 +36,19 @@ from smartpins_protocol import (
     parse_smartpins,
     stages_from_kconfig as smartpins_stages_from_kconfig,
 )
+from storage_protocol import (
+    ALTERNATE_TRANSACTIONS as STORAGE_ALTERNATE_TRANSACTIONS,
+    BOARD_MARKER_PATTERNS as STORAGE_BOARD_MARKER_PATTERNS,
+    FAILURE_PATTERNS as STORAGE_ACTION_FAILURE_PATTERNS,
+    FLASH_WRITABLE_ACTIONS,
+    SD_DESTRUCTIVE_ACTIONS,
+    command_bytes as storage_command_bytes,
+    first_error as storage_first_error,
+    normalize_sequence as normalize_storage_sequence,
+    parse_storage_response,
+    response_marker_patterns as storage_response_marker_patterns,
+    sequence_required as storage_sequence_required,
+)
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 DEFAULT_IMAGE = (
@@ -122,6 +135,22 @@ STORAGE_REQUIRED_CONFIG = (
     ("CONFIG_MMCSD_IDMODE_CLOCK", "400000"),
     ("CONFIG_MMCSD_SPICLOCK", "1000000"),
     ("CONFIG_MMCSD_SPIMODE", "0"),
+)
+
+STORAGE_ACTION_REQUIRED_CONFIG = (
+    ("CONFIG_TESTING_P2STORAGE", "y"),
+    ("CONFIG_TESTING_P2STORAGE_DESTRUCTIVE", "y"),
+    ("CONFIG_TESTING_P2STORAGE_FLASH_DEVPATH", '"/dev/smart0"'),
+    ("CONFIG_TESTING_P2STORAGE_FLASH_MOUNTPOINT", '"/mnt/flash"'),
+    ("CONFIG_TESTING_P2STORAGE_SD_DEVPATH", '"/dev/mmcsd0"'),
+    ("CONFIG_TESTING_P2STORAGE_SD_MOUNTPOINT", '"/mnt/sd"'),
+    ("CONFIG_TESTING_P2STORAGE_RECORD_SIZE", "256"),
+    ("CONFIG_TESTING_P2STORAGE_STREAM_SIZE", "1048576"),
+    ("CONFIG_TESTING_P2STORAGE_FLASH_CYCLE_COUNT", "16"),
+    ("CONFIG_TESTING_P2STORAGE_SD_STRESS_COUNT", "64"),
+    ("CONFIG_TESTING_P2STORAGE_BUS_ALTERNATE_COUNT", "1000"),
+    ("CONFIG_TESTING_P2STORAGE_FLASH_FULL_MAX_BYTES", "20971520"),
+    ("CONFIG_TESTING_P2STORAGE_INTERRUPT_HOLD_MSEC", "10000"),
 )
 
 PANIC_PATTERNS = (
@@ -239,11 +268,17 @@ STORAGE_MARKERS = BOOT_MARKERS + (
     MarkerSpec("nsh> prompt", re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE)),
 )
 
+STORAGE_ACTION_BOOT_MARKERS = BOOT_MARKERS + tuple(
+    MarkerSpec(label, pattern) for label, pattern in STORAGE_BOARD_MARKER_PATTERNS
+) + (
+    MarkerSpec("nsh> prompt", re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE)),
+)
+
 STORAGE_FAILURE_PATTERNS = (
     ("P2BOOT:DATA=FAIL", re.compile(r"P2BOOT:DATA=FAIL")),
     ("P2BOOT:BSS=FAIL", re.compile(r"P2BOOT:BSS=FAIL")),
     ("P2 storage binding failure", re.compile(r"P2STORAGE:[A-Z0-9_]+=FAIL:")),
-)
+) + STORAGE_ACTION_FAILURE_PATTERNS
 
 NSH_COMMAND_MARKERS = (
     nsh_command_result_marker(
@@ -521,6 +556,24 @@ def validate_storage_config(values: Mapping[str, str]) -> None:
     if mismatches:
         raise SafetyError(
             "storage image does not match the binding profile: {}".format(
+                ", ".join(mismatches)
+            )
+        )
+
+
+def validate_storage_action_config(values: Mapping[str, str]) -> None:
+    """Require every value which changes the destructive console protocol."""
+
+    mismatches = [
+        "{}={} (required {})".format(
+            name, values.get(name, "<unset>"), expected
+        )
+        for name, expected in STORAGE_ACTION_REQUIRED_CONFIG
+        if values.get(name) != expected
+    ]
+    if mismatches:
+        raise SafetyError(
+            "storage action image does not match the locked protocol: {}".format(
                 ", ".join(mismatches)
             )
         )
@@ -862,6 +915,9 @@ class HilConfig:
     smartpins_config_sha256: str
     smartpins_stages: Tuple[str, ...]
     storage_config_sha256: str
+    storage_action: str
+    storage_sequence: str
+    storage_alternate_count: int
     image_sha256: str
     loadp2_sha256: str
 
@@ -1265,12 +1321,23 @@ def preserve_hil_inputs(config: HilConfig) -> Tuple[str, ...]:
                 REPO_ROOT / "tools" / "p2" / "test-smartpins.py",
                 REPO_ROOT / "tools" / "p2" / "test-storage.py",
                 REPO_ROOT / "tools" / "p2" / "smartpins_protocol.py",
+                REPO_ROOT / "tools" / "p2" / "storage_plan.py",
+                REPO_ROOT / "tools" / "p2" / "storage_protocol.py",
+                REPO_ROOT / "tools" / "p2" / "test-flashfs.py",
+                REPO_ROOT / "tools" / "p2" / "test-sd.py",
                 REPO_ROOT / "tools" / "p2" / "verify-elf.py",
             )
         )
 
     if config.protocol == "ostest" and config.ostest_profile:
         candidates.append(ostest_profile_path(config.ostest_profile))
+
+    if config.protocol == "storage" and config.storage_action:
+        p2storage_dir = REPO_ROOT.parent / "apps" / "testing" / "p2storage"
+        candidates.extend(
+            p2storage_dir / name
+            for name in ("Kconfig", "Make.defs", "Makefile", "p2storage_main.c")
+        )
 
     used_names = set()
     for source in candidates:
@@ -1439,6 +1506,9 @@ def exact_protocol_markers(
     extra_literals: Sequence[str],
     ostest_config: Optional[Mapping[str, str]] = None,
     smartpins_stages: Sequence[str] = (),
+    storage_action: str = "",
+    storage_sequence: str = "",
+    storage_alternate_count: int = STORAGE_ALTERNATE_TRANSACTIONS,
 ) -> Tuple[MarkerSpec, ...]:
     if protocol == "hello":
         markers = list(HELLO_MARKERS)
@@ -1460,7 +1530,18 @@ def exact_protocol_markers(
             for label, pattern in smartpins_marker_patterns(smartpins_stages)
         ]
     elif protocol == "storage":
-        markers = list(STORAGE_MARKERS)
+        if storage_action:
+            markers = list(STORAGE_ACTION_BOOT_MARKERS)
+            markers.extend(
+                MarkerSpec(label, pattern)
+                for label, pattern in storage_response_marker_patterns(
+                    storage_action,
+                    storage_sequence or None,
+                    storage_alternate_count,
+                )
+            )
+        else:
+            markers = list(STORAGE_MARKERS)
     else:
         raise SafetyError("unsupported HIL protocol: {}".format(protocol))
 
@@ -1608,9 +1689,20 @@ class HilRunner:
             overall.update(
                 {
                     "storage_config_sha256": config.storage_config_sha256,
-                    "w25_exposure": "private MTD; no /dev node",
+                    "storage_action": config.storage_action or None,
+                    "storage_sequence": config.storage_sequence or None,
+                    "storage_alternate_transactions": (
+                        config.storage_alternate_count
+                        if config.storage_action == "alternate"
+                        else None
+                    ),
+                    "w25_raw_exposure": "private",
+                    "smartfs_exposure": "/dev/smart0 data partition only",
                     "mmcsd_exposure": "/dev/mmcsd0 generic block device",
-                    "filesystem_action": "none; no mount or format",
+                    "filesystem_action": (
+                        config.storage_action or "none; no mount or format"
+                    ),
+                    "automatic_format": False,
                     "flash_binding_side_effect": (
                         "w25_initialize may clear hardware protection status bits"
                     ),
@@ -1693,6 +1785,7 @@ class HilRunner:
         )
         protocol_text: List[str] = []
         smartpins_result = None
+        storage_result = None
         raw_bytes = 0
         returncode = None
         intentionally_terminated = False
@@ -1712,7 +1805,13 @@ class HilRunner:
                 config.send_payload.decode("ascii") if config.send_payload else None
             ),
             "interactive_commands": (
-                list(NSH_COMMANDS) if config.protocol == "nsh" else None
+                list(NSH_COMMANDS)
+                if config.protocol == "nsh"
+                else (
+                    [config.send_payload.decode("ascii").rstrip("\r")]
+                    if config.storage_action
+                    else None
+                )
             ),
         }
         write_json(cycle_dir / "command.json", command_record)
@@ -1736,6 +1835,14 @@ class HilRunner:
                 {
                     "sleep_min_seconds": NSH_SLEEP_MIN_SECONDS,
                     "sleep_max_seconds": NSH_SLEEP_MAX_SECONDS,
+                }
+            )
+        elif config.storage_action:
+            metadata.update(
+                {
+                    "storage_action": config.storage_action,
+                    "storage_sequence": config.storage_sequence or None,
+                    "automatic_format": False,
                 }
             )
         write_json(cycle_dir / "metadata.json", metadata)
@@ -1775,7 +1882,7 @@ class HilRunner:
                             raw_log.flush()
                             raw_bytes += len(data)
                             decoded = normalizer.feed(data)
-                            if config.protocol == "smartpins":
+                            if config.protocol == "smartpins" or config.storage_action:
                                 protocol_text.append(decoded)
                             previously_found = set(parser.found)
                             parser.feed(decoded)
@@ -1844,6 +1951,18 @@ class HilRunner:
                                             )
                                         )
                                         break
+                                if config.storage_action:
+                                    storage_result = parse_storage_response(
+                                        "".join(protocol_text),
+                                        config.storage_action,
+                                        config.storage_sequence or None,
+                                        config.storage_alternate_count,
+                                    )
+                                    if not storage_result["complete"]:
+                                        reason = (
+                                            "storage protocol validation failed: {}"
+                                        ).format(storage_first_error(storage_result))
+                                        break
                                 returncode = session.poll()
                                 if returncode is not None:
                                     if returncode != 0:
@@ -1882,7 +2001,7 @@ class HilRunner:
                     trailing = normalizer.finish()
                     if trailing:
                         parser.feed(trailing)
-                        if config.protocol == "smartpins":
+                        if config.protocol == "smartpins" or config.storage_action:
                             protocol_text.append(trailing)
         finally:
             if session is not None:
@@ -1896,6 +2015,15 @@ class HilRunner:
                     "".join(protocol_text), config.smartpins_stages
                 )
             marker_status["smartpins_protocol"] = smartpins_result
+        if config.storage_action:
+            if storage_result is None:
+                storage_result = parse_storage_response(
+                    "".join(protocol_text),
+                    config.storage_action,
+                    config.storage_sequence or None,
+                    config.storage_alternate_count,
+                )
+            marker_status["storage_protocol"] = storage_result
         marker_status["observed_after_start_seconds"] = {
             label: round(value, 6) for label, value in marker_elapsed.items()
         }
@@ -2010,6 +2138,30 @@ def build_parser() -> argparse.ArgumentParser:
         choices=tuple(OSTEST_PROFILES),
         help="exact ostest defconfig identity to build and verify",
     )
+    parser.add_argument(
+        "--storage-action",
+        choices=(
+            "probe",
+            "flash-format",
+            "flash-write",
+            "flash-verify",
+            "flash-cycle",
+            "flash-full",
+            "flash-interrupt-arm",
+            "flash-interrupt-verify",
+            "sd-format",
+            "sd-write",
+            "sd-verify",
+            "sd-rename-delete",
+            "sd-stress",
+            "alternate",
+        ),
+        help="one exact p2storage command to send after the NSH prompt",
+    )
+    parser.add_argument(
+        "--storage-sequence",
+        help="exact 8-uppercase-hex nonce for a sequenced storage action",
+    )
     return parser
 
 
@@ -2025,6 +2177,8 @@ def config_from_args(
     smartpins_config_sha = ""
     smartpins_stages: Tuple[str, ...] = ()
     storage_config_sha = ""
+    storage_action = args.storage_action or ""
+    storage_sequence = ""
     if args.protocol == "ostest":
         if args.ostest_profile is None:
             raise SafetyError("ostest requires an explicit --ostest-profile")
@@ -2058,10 +2212,50 @@ def config_from_args(
             raise SafetyError(
                 "storage binding requires P2_ALLOW_FLASH_WRITE=1 because W25 initialization may clear protection bits"
             )
+        if storage_action:
+            if args.cycles != 1:
+                raise SafetyError("a storage action requires exactly one reset cycle")
+            needs_sequence = storage_sequence_required(storage_action)
+            if needs_sequence and not args.storage_sequence:
+                raise SafetyError(
+                    "{} requires --storage-sequence".format(storage_action)
+                )
+            if not needs_sequence and args.storage_sequence:
+                raise SafetyError(
+                    "{} does not accept --storage-sequence".format(storage_action)
+                )
+            if args.storage_sequence:
+                try:
+                    storage_sequence = normalize_storage_sequence(
+                        args.storage_sequence
+                    )
+                except ValueError as exc:
+                    raise SafetyError(str(exc)) from exc
+            if storage_action in FLASH_WRITABLE_ACTIONS:
+                if env.get("P2_ALLOW_FLASH_ERASE", "0") != "1":
+                    raise SafetyError(
+                        "{} requires P2_ALLOW_FLASH_WRITE=1 and "
+                        "P2_ALLOW_FLASH_ERASE=1".format(storage_action)
+                    )
+            if (
+                storage_action in SD_DESTRUCTIVE_ACTIONS
+                and env.get("P2_ALLOW_SD_DESTRUCTIVE", "0") != "1"
+            ):
+                raise SafetyError(
+                    "{} requires P2_ALLOW_SD_DESTRUCTIVE=1".format(
+                        storage_action
+                    )
+                )
         storage_config_path = REPO_ROOT / ".config"
         storage_config = read_kconfig(storage_config_path)
         validate_storage_config(storage_config)
+        if storage_action:
+            validate_storage_action_config(storage_config)
         storage_config_sha = sha256_file(storage_config_path)
+    elif args.storage_action is not None or args.storage_sequence is not None:
+        raise SafetyError(
+            "--storage-action and --storage-sequence are valid only for storage"
+        )
 
     env_port = env.get("P2_PORT", "")
     if not env_port:
@@ -2134,7 +2328,11 @@ def config_from_args(
         raise SafetyError("loader and console baud must be greater than zero")
     if args.cycles <= 0 or args.cycles > 100:
         raise SafetyError("--cycles must be in the range 1..100")
-    maximum_timeout = 1800 if args.protocol == "ostest" else 600
+    maximum_timeout = (
+        3600
+        if args.protocol == "storage"
+        else (3600 if args.protocol == "ostest" else 600)
+    )
     if args.timeout <= 0 or args.timeout > maximum_timeout:
         raise SafetyError(
             "--timeout must be in the range (0, {}]".format(maximum_timeout)
@@ -2189,6 +2387,8 @@ def config_from_args(
             args.expect,
             ostest_config=ostest_config,
             smartpins_stages=smartpins_stages,
+            storage_action=storage_action,
+            storage_sequence=storage_sequence,
         ),
         reset_pattern=(
             CONTEXT_MARKERS[0].pattern
@@ -2242,12 +2442,37 @@ def config_from_args(
             OSTEST_WARNING_PATTERNS if args.protocol == "ostest" else ()
         ),
         loadp2_script=LOADP2_SCRIPT if args.protocol == "hello" else "",
-        send_after_label="nsh> prompt" if args.protocol == "nsh" else "",
-        send_payload=NSH_COMMAND_BYTES if args.protocol == "nsh" else b"",
+        send_after_label=(
+            "nsh> prompt"
+            if args.protocol == "nsh" or storage_action
+            else ""
+        ),
+        send_payload=(
+            NSH_COMMAND_BYTES
+            if args.protocol == "nsh"
+            else (
+                storage_command_bytes(
+                    storage_action, storage_sequence or None
+                )
+                if storage_action
+                else b""
+            )
+        ),
         require_after_send=(
             tuple(marker.label for marker in NSH_COMMAND_MARKERS)
             if args.protocol == "nsh"
-            else ()
+            else (
+                tuple(
+                    label
+                    for label, pattern in storage_response_marker_patterns(
+                        storage_action,
+                        storage_sequence or None,
+                        STORAGE_ALTERNATE_TRANSACTIONS,
+                    )
+                )
+                if storage_action
+                else ()
+            )
         ),
         reject_duplicate_markers=args.protocol in (
             "ostest",
@@ -2260,6 +2485,9 @@ def config_from_args(
         smartpins_config_sha256=smartpins_config_sha,
         smartpins_stages=smartpins_stages,
         storage_config_sha256=storage_config_sha,
+        storage_action=storage_action,
+        storage_sequence=storage_sequence,
+        storage_alternate_count=STORAGE_ALTERNATE_TRANSACTIONS,
         image_sha256=image_sha,
         loadp2_sha256=loadp2_sha,
     )
