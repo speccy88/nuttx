@@ -81,6 +81,7 @@ class PsramSourceTests(unittest.TestCase):
         source = (APPS / "testing/p2psram/p2psram_main.c").read_text()
         for marker in (
             "P2PSRAM:PROFILE:MAX_REQUEST=",
+            "P2PSRAM:DIAG:WALKING:BIT=",
             "P2PSRAM:WALKING:PASS",
             "P2PSRAM:ADDRESS:PASS",
             "P2PSRAM:BOUNDARY:PASS",
