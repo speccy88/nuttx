@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -1345,6 +1346,25 @@ class HilTests(unittest.TestCase):
         self.assertIsNone(parser.failure_reason)
         self.assertEqual(parser.reset_count, 1)
         self.assertEqual(parser.missing, ())
+
+    def test_marker_parser_does_not_duplicate_a_crlf_split_marker(self):
+        marker = hil.MarkerSpec(
+            "dynamic marker",
+            re.compile(
+                r"^P2STORAGE:VALUE=(?P<value>[0-9]+)\r?$", re.MULTILINE
+            ),
+        )
+        parser = hil.MarkerParser((marker,), reject_duplicates=True)
+
+        parser.feed("P2STORAGE:VALUE=6")
+        parser.feed("4")
+        parser.feed("\r")
+        parser.feed("\n")
+
+        self.assertTrue(parser.complete)
+        self.assertIsNone(parser.failure_reason)
+        self.assertEqual(parser.captures["value"], "64")
+        self.assertEqual(parser.as_dict()["marker_counts"], {"dynamic marker": 1})
 
     def test_ostest_protocol_ram_loads_nuttx_without_terminal_input(self):
         values = full_ostest_config()

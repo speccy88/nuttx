@@ -1018,6 +1018,7 @@ class MarkerParser:
         self.order_valid = True
         self.reject_duplicates = reject_duplicates
         self._marker_counts: Dict[str, int] = {}
+        self._marker_starts: Dict[str, set] = {}
         self.warning_counts: Dict[str, int] = {}
         all_patterns = [spec.pattern for spec in self.expected]
         all_patterns.extend(pattern for _, pattern in PANIC_PATTERNS)
@@ -1038,13 +1039,29 @@ class MarkerParser:
 
         for spec in self.expected:
             for match in spec.pattern.finditer(combined):
+                absolute_start = base + match.start()
                 absolute_end = base + match.end()
                 if absolute_end > previous_total:
+                    starts = self._marker_starts.setdefault(spec.label, set())
+                    if absolute_start in starts:
+                        # A line-ending pattern can first match at the end of
+                        # one read, then match the same line again when CR/LF
+                        # arrives in the next read.  Refresh captures if that
+                        # match grew, but do not count one wire occurrence
+                        # twice merely because it crossed a read boundary.
+
+                        if self.found.get(spec.label) == absolute_start:
+                            for name, value in match.groupdict().items():
+                                if value is not None:
+                                    self.captures[name] = value
+                        continue
+
+                    starts.add(absolute_start)
                     self._marker_counts[spec.label] = (
                         self._marker_counts.get(spec.label, 0) + 1
                     )
                     if spec.label not in self.found:
-                        self.found[spec.label] = base + match.start()
+                        self.found[spec.label] = absolute_start
                         for name, value in match.groupdict().items():
                             if value is not None:
                                 self.captures[name] = value
