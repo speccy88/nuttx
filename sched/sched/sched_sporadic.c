@@ -889,6 +889,14 @@ int nxsched_stop_sporadic(FAR struct tcb_s *tcb)
 
   kmm_free(tcb->sporadic);
   tcb->sporadic = NULL;
+
+  /* The sporadic state no longer exists, so the TCB must not retain a
+   * policy value that makes context-switch or timer paths dereference it.
+   * Task teardown may still switch away from this TCB after recovery.
+   */
+
+  tcb->flags &= ~TCB_FLAG_POLICY_MASK;
+  tcb->timeslice = 0;
   return OK;
 }
 

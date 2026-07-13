@@ -1,7 +1,297 @@
+/****************************************************************************
+ * boards/p2/p2x8c4m64p/p2-ec32mb/src/p2_ec32mb_boot.c
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.  The
+ * ASF licenses this file to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the
+ * License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ *
+ ****************************************************************************/
+
+/****************************************************************************
+ * Included Files
+ ****************************************************************************/
+
 #include <nuttx/config.h>
+
+#include <stdbool.h>
+
 #include <nuttx/board.h>
-void board_autoled_initialize(void){}
-void board_autoled_on(int led){(void)led;}
-void board_autoled_off(int led){(void)led;}
-int board_late_initialize(void){return 0;}
-void board_initialize(void){}
+#if defined(CONFIG_FS_PROCFS) || defined(CONFIG_P2_SMARTPIN) || \
+    defined(CONFIG_P2_EC32MB_STORAGE_BINDINGS)
+#  include <syslog.h>
+#endif
+#ifdef CONFIG_FS_PROCFS
+#  include <nuttx/fs/fs.h>
+#endif
+
+#include <arch/board/board.h>
+
+#include "p2_ec32mb_pins.h"
+
+#ifdef CONFIG_FS_PROCFS
+#  ifdef CONFIG_NSH_PROC_MOUNTPOINT
+#    define P2_PROCFS_MOUNTPOINT CONFIG_NSH_PROC_MOUNTPOINT
+#  else
+#    define P2_PROCFS_MOUNTPOINT "/proc"
+#  endif
+#endif
+
+/****************************************************************************
+ * Private Functions
+ ****************************************************************************/
+
+static void p2_led_write(unsigned int pin, bool on)
+{
+  if (on)
+    {
+      __asm__ __volatile__("drvh %0" : : "ri" (pin));
+    }
+  else
+    {
+      __asm__ __volatile__("drvl %0" : : "ri" (pin));
+    }
+}
+
+static void p2_led_pair(bool led0, bool led1)
+{
+  p2_led_write(BOARD_LED0_PIN, led0);
+  p2_led_write(BOARD_LED1_PIN, led1);
+}
+
+/****************************************************************************
+ * Public Functions
+ ****************************************************************************/
+
+void board_autoled_initialize(void)
+{
+  p2_led_pair(false, false);
+}
+
+void board_autoled_on(int led)
+{
+  switch (led)
+    {
+      case LED_STARTED:
+        p2_led_pair(false, false);
+        break;
+
+      case LED_HEAPALLOCATE:
+        p2_led_pair(true, false);
+        break;
+
+      case LED_IRQSENABLED:
+        p2_led_pair(false, true);
+        break;
+
+      case LED_STACKCREATED:
+        p2_led_pair(true, true);
+        break;
+
+      case LED_INIRQ:
+        p2_led_write(BOARD_LED1_PIN, false);
+        break;
+
+      case LED_SIGNAL:
+        p2_led_write(BOARD_LED0_PIN, false);
+        break;
+
+      case LED_ASSERTION:
+      case LED_PANIC:
+        p2_led_pair(true, false);
+        break;
+
+      case LED_IDLE:
+        p2_led_write(BOARD_LED1_PIN, false);
+        break;
+
+      default:
+        break;
+    }
+}
+
+void board_autoled_off(int led)
+{
+  switch (led)
+    {
+      case LED_INIRQ:
+      case LED_IDLE:
+        p2_led_write(BOARD_LED1_PIN, true);
+        break;
+
+      case LED_SIGNAL:
+        p2_led_write(BOARD_LED0_PIN, true);
+        break;
+
+      case LED_ASSERTION:
+      case LED_PANIC:
+        p2_led_pair(false, true);
+        break;
+
+      default:
+        break;
+    }
+}
+
+void board_late_initialize(void)
+{
+#ifdef CONFIG_P2_SMARTPIN
+  int pin_ret;
+
+  pin_ret = p2_pin_initialize();
+  if (pin_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: Failed to initialize P2 pins: %d\n",
+             pin_ret);
+      return;
+    }
+#endif
+
+#ifdef CONFIG_P2_EC32MB_GPIO
+  int gpio_ret;
+
+  gpio_ret = p2_gpio_initialize();
+  if (gpio_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: Failed to initialize P2 GPIO: %d\n",
+             gpio_ret);
+    }
+#endif
+
+#ifdef CONFIG_P2_EC32MB_UART1
+  int uart_ret;
+
+  uart_ret = p2_uart1_initialize();
+  if (uart_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: Failed to initialize P2 UART1: %d\n",
+             uart_ret);
+    }
+#endif
+
+#ifdef CONFIG_P2_EC32MB_PWM
+  int pwm_ret;
+
+  pwm_ret = p2_pwm_initialize();
+  if (pwm_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: Failed to initialize P2 PWM: %d\n",
+             pwm_ret);
+    }
+#endif
+
+#ifdef CONFIG_P2_EC32MB_CAPTURE
+  int capture_ret;
+
+  capture_ret = p2_capture_initialize();
+  if (capture_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: Failed to initialize P2 capture: %d\n",
+             capture_ret);
+    }
+#endif
+
+#ifdef CONFIG_P2_EC32MB_ADC
+  int adc_ret;
+
+  adc_ret = p2_adc_initialize();
+  if (adc_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: Failed to initialize P2 ADC: %d\n",
+             adc_ret);
+    }
+#endif
+
+#ifdef CONFIG_P2_EC32MB_DAC
+  int dac_ret;
+
+  dac_ret = p2_dac_initialize();
+  if (dac_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: Failed to initialize P2 DAC: %d\n",
+             dac_ret);
+    }
+#endif
+
+#ifdef CONFIG_P2_EC32MB_STORAGE_BINDINGS
+#  ifdef CONFIG_MTD_W25
+  int w25_ret;
+
+  w25_ret = p2_w25_initialize();
+  if (w25_ret < 0)
+    {
+      syslog(LOG_ERR, "P2STORAGE:W25=FAIL:%d\n", w25_ret);
+    }
+  else
+    {
+      /* The MTD is deliberately retained inside the board storage driver.
+       * There is no raw /dev node and no writable filesystem binding.
+       */
+
+      syslog(LOG_NOTICE, "P2STORAGE:W25=PRIVATE\n");
+    }
+#  endif
+
+#  ifdef CONFIG_MMCSD_SPI
+  int mmcsd_ret;
+
+  mmcsd_ret = p2_mmcsd_initialize();
+  if (mmcsd_ret < 0)
+    {
+      syslog(LOG_ERR, "P2STORAGE:MMCSD=FAIL:%d\n", mmcsd_ret);
+    }
+  else
+    {
+      /* mmcsd_spislotinitialize() registers the generic block interface
+       * even if no card answers its bounded initialization commands.
+       */
+
+      syslog(LOG_NOTICE, "P2STORAGE:MMCSD=/dev/mmcsd0\n");
+    }
+#  endif
+#endif
+
+#ifdef CONFIG_FS_PROCFS
+  int ret;
+
+  ret = nx_mount(NULL, P2_PROCFS_MOUNTPOINT, "procfs", 0, NULL);
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: Failed to mount procfs at %s: %d\n",
+             P2_PROCFS_MOUNTPOINT, ret);
+    }
+#endif
+}
+
+void board_initialize(void)
+{
+#ifdef CONFIG_P2_STORAGE
+  /* Make both storage chip selects inactive before any upper half binds. */
+
+  p2_storage_board_initialize();
+#endif
+}
+
+#ifdef CONFIG_SYSTEMTICK_HOOK
+void board_timerhook(void)
+{
+#ifdef CONFIG_P2_EC32MB_GPIO
+  p2_gpio_poll();
+#endif
+#ifdef CONFIG_P2_EC32MB_UART1
+  p2_uart1_poll();
+#endif
+}
+#endif

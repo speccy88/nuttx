@@ -41,10 +41,17 @@
  * constants valid integer expressions for an assembly source preprocessed
  * with __ASSEMBLY__ defined.
  *
- * CALLA writes the packed C/Z/PC resume long to Hub RAM at PTRA and advances
- * PTRA by four.  RETA consumes that long from [PTRA - 4].  Therefore the
- * packed resume long is part of the upward-growing task stack, not a slot in
- * the register array.  P2_REG_PTRA always records the post-CALLA value.
+ * The hardware-proven fixed interrupt scratch frame is detached from the
+ * task stack and contains resume followed by the 37 architectural register
+ * longs below.  Public NuttX save buffers use regs[0..36] followed by resume
+ * at P2_REG_RESUME so their first element remains R0.  C translates between
+ * those layouts.  P2_REG_PTRA records the logical post-resume value; PASM2
+ * subtracts one long immediately before RETI1.
+ *
+ * Keeping the resume word in the TCB is essential.  An interrupt may arrive
+ * while p2llvm has written outgoing arguments below an as-yet-unadvanced
+ * PTRA, so neither interrupt entry nor context restore may treat
+ * [PTRA - 4] as architecture-owned storage.
  */
 
 #define P2_REG_R0                    0
@@ -86,7 +93,13 @@
 #define P2_REG_IRQSTATE             36
 
 #define P2_XCPT_REGS                37
-#define XCPTCONTEXT_REGS            P2_XCPT_REGS
+
+#define P2_CONTEXT_RESUME_WORDS       1
+#define P2_CONTEXT_WORDS             (P2_XCPT_REGS + \
+                                      P2_CONTEXT_RESUME_WORDS)
+#define XCPTCONTEXT_REGS             P2_CONTEXT_WORDS
+
+#define P2_REG_RESUME                P2_XCPT_REGS
 
 #define P2_REG_BYTES                 4
 #define P2_REG_OFFSET(r)            ((r) * P2_REG_BYTES)
@@ -130,7 +143,11 @@
 #define P2_REG_IRQSTATE_OFFSET      P2_REG_OFFSET(P2_REG_IRQSTATE)
 
 #define P2_XCPT_SIZE                (P2_XCPT_REGS * P2_REG_BYTES)
-#define XCPTCONTEXT_SIZE            P2_XCPT_SIZE
+
+#define P2_CONTEXT_RESUME_OFFSET      0
+#define P2_CONTEXT_REGS_OFFSET        P2_REG_BYTES
+#define P2_CONTEXT_SIZE              (P2_CONTEXT_WORDS * P2_REG_BYTES)
+#define XCPTCONTEXT_SIZE             P2_CONTEXT_SIZE
 
 /* The p2llvm ABI requires long alignment for the upward-growing stack. */
 
@@ -144,7 +161,7 @@
 
 #define P2_IRQSTATE_STALLED          (1 << 1)
 
-/* CALLA/RETA packed resume-long format. */
+/* CALLA/RETA/IRET1 packed resume-long format. */
 
 #define P2_RESUME_STACK_OFFSET       (-P2_REG_BYTES)
 #define P2_RESUME_PC_MASK            0x000fffff
@@ -156,11 +173,10 @@
   (((c) ? P2_RESUME_C : 0) | ((z) ? P2_RESUME_Z : 0) | \
    ((pc) & P2_RESUME_PC_MASK))
 
-/* A synthetic new-task context follows the same RETA contract: startup code
- * places P2_RESUME_PACK(0, 0, entry_pc) in the last allocated stack long
- * and records the next free address in P2_REG_PTRA.  Context restore can
- * then use the normal RETA path for both interrupted and never-before-run
- * tasks.
+/* A synthetic new-task context follows the same detached contract.  Startup
+ * code stores P2_RESUME_PACK(0, 0, entry_pc) at P2_REG_RESUME and sets
+ * P2_REG_PTRA one long beyond the initial physical stack value.  The common
+ * RETI1 restore path then handles interrupted and never-before-run tasks.
  */
 
 #ifndef __ASSEMBLY__
@@ -170,6 +186,9 @@ static_assert(P2_REG_PTRA_OFFSET == 136, "P2 PTRA offset changed");
 static_assert(P2_REG_IRQSTATE_OFFSET == 144,
               "P2 interrupt-state offset changed");
 static_assert(P2_XCPT_SIZE == 148, "P2 context size changed");
+static_assert(P2_REG_RESUME == 37, "P2 public resume index changed");
+static_assert(P2_CONTEXT_WORDS == 38, "P2 detached frame changed");
+static_assert(P2_CONTEXT_SIZE == 152, "P2 detached frame size changed");
 static_assert((P2_XCPT_SIZE % STACKFRAME_ALIGN) == 0,
               "P2 context is not stack aligned");
 #endif

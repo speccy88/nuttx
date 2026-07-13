@@ -8,11 +8,14 @@ choice
 
 config ARCH_CHIP_P2X8C4M64P
 	bool "P2X8C4M64P"
-	select ARCH_HAVE_IRQTRIGGER
+	select ARCH_HAVE_UDELAY
+	select ARCH_HAVE_DYNAMIC_UDELAY
+	select UART0_SERIALDRIVER
 
 config ARCH_CHIP_P2_CUSTOM
 	bool "Custom P2 chip"
 	select ARCH_CHIP_CUSTOM
+	select UART0_SERIALDRIVER
 endchoice
 
 config ARCH_CHIP
@@ -31,13 +34,49 @@ config P2_UPWARD_STACK
 	bool
 	default y
 
-config P2_STORAGE
-	bool "P2 Edge storage arbitration draft"
+config P2_BOOT_TRACE
+	bool "Emit early P2 kernel bring-up trace markers"
 	default n
+	help
+		Emit short, polled serial markers while the kernel establishes the
+		CPU0 heap, idle context, interrupt channel, timer, and first context
+		restore.  This is intended for bounded hardware bring-up and may be
+		disabled once a board configuration is stable.
+
+config P2_STORAGE
+	bool "P2 Edge shared flash/microSD pins"
+	default n
+	select SPI
+	help
+		Enable the P2 Edge board owner for P58-P61.  Flash and microSD
+		share data pins and exchange clock/chip-select roles, so they must
+		use the two logical SPI lower halves supplied by this owner.
+
+config P2_STORAGE_LOCK_TIMEOUT_TICKS
+	int "Storage-owner lock timeout in ticks"
+	depends on P2_STORAGE
+	range 1 10000
+	default 500
+	help
+		Maximum time a logical SPI lower half waits for the shared P58-P61
+		owner.  A timeout fails closed without changing line state.
+
+config P2_STORAGE_MAX_FREQUENCY
+	int "Maximum polled storage SPI frequency"
+	depends on P2_STORAGE
+	range 100000 5000000
+	default 1000000
+	help
+		Conservative ceiling for the initial C-polled lower halves.  The
+		actual clock is returned to the generic SPI client.
 
 config P2_SMARTPIN
-	bool "P2 Smart Pin ownership draft"
+	bool "P2 Smart Pin ownership and lower-half support"
 	default n
+	help
+		Enable the central board pin manager and P2 Smart Pin lower-half
+		drivers.  Individual standard NuttX device interfaces remain
+		board-selectable.
 
 source "arch/p2/src/p2x8c4m64p/Kconfig"
 endif

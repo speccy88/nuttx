@@ -70,7 +70,10 @@
 
 /* This structure is included in the TCB and holds the complete fixed P2
  * context.  Unlike ports whose exception frames live on a downward-growing
- * stack, this UP port keeps the 37-long register array inline.
+ * stack, this UP port keeps a detached packed resume word and the 37-long
+ * register array inline.  Keep resume immediately after regs so generic
+ * NuttX XCPTCONTEXT_REGS buffers have room for the complete 37+1 image while
+ * callers continue to treat element zero as R0.
  */
 
 struct xcptcontext
@@ -78,12 +81,11 @@ struct xcptcontext
 #ifdef CONFIG_ENABLE_ALL_SIGNALS
   /* Preserve a complete context while the signal-delivery trampoline owns
    * regs.  There is one save area per TCB, so only one signal handler may be
-   * active for a task at a time.  The packed C/Z/PC resume long is outside
-   * the register array at [saved PTRA - 4] and must be saved separately.
+   * active for a task at a time.  The final public saved-context long is the
+   * packed C/Z/PC resume value at P2_REG_RESUME.
    */
 
-  xcpt_reg_t saved_regs[P2_XCPT_REGS];
-  xcpt_reg_t saved_resume;
+  xcpt_reg_t saved_regs[XCPTCONTEXT_REGS];
 
 #ifndef CONFIG_BUILD_FLAT
   /* User-space signal return address for protected/kernel builds.  Those
@@ -94,7 +96,7 @@ struct xcptcontext
 #endif
 #endif /* CONFIG_ENABLE_ALL_SIGNALS */
 
-  xcpt_reg_t regs[P2_XCPT_REGS];
+  xcpt_reg_t regs[XCPTCONTEXT_REGS];
 };
 
 static_assert(sizeof(((struct xcptcontext *)0)->regs) == XCPTCONTEXT_SIZE,
@@ -176,20 +178,16 @@ static inline_function xcpt_reg_t *p2_get_context_regs(void *regs)
   return regs != NULL ? (xcpt_reg_t *)regs : up_current_regs();
 }
 
-/* Return the PC encoded in the CALLA/RETA resume long.  There is
- * deliberately no P2_REG_PC index: the resume long is stored at
- * [saved PTRA - 4].
+/* Return the PC encoded in the detached resume long.  There is deliberately
+ * no architectural PC register: the resume long is the in-bounds final long
+ * of every public saved-context buffer.
  */
 
 noinstrument_function
 static inline_function uintptr_t up_getusrpc(void *regs)
 {
   xcpt_reg_t *context = p2_get_context_regs(regs);
-  uintptr_t resume_addr;
-
-  resume_addr = (uintptr_t)context[P2_REG_PTRA] +
-                P2_RESUME_STACK_OFFSET;
-  return (uintptr_t)(*(xcpt_reg_t *)resume_addr & P2_RESUME_PC_MASK);
+  return (uintptr_t)(context[P2_REG_RESUME] & P2_RESUME_PC_MASK);
 }
 
 noinstrument_function
@@ -197,7 +195,7 @@ static inline_function uintptr_t up_getusrsp(void *regs)
 {
   xcpt_reg_t *context = p2_get_context_regs(regs);
 
-  return (uintptr_t)context[P2_REG_PTRA];
+  return (uintptr_t)context[P2_REG_PTRA] + P2_RESUME_STACK_OFFSET;
 }
 
 #undef EXTERN

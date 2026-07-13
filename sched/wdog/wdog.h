@@ -127,11 +127,27 @@ uint64_t wd_timer(const hrtimer_t *timer, uint64_t expired);
 #ifdef CONFIG_HRTIMER
 static inline_function void wd_timer_start(clock_t tick, bool in_expiration)
 {
-  DEBUGASSERT(tick <= INT64_MAX / NSEC_PER_TICK);
   if (!in_expiration)
     {
-      hrtimer_start(&g_wdtimer, wd_timer,
-                    TICK2NSEC(tick), HRTIMER_MODE_ABS);
+      clock_t delay = (clock_t)(tick - clock_systime_ticks());
+
+      /* WDOG_MAX_DELAY is expressed in ticks and can exceed the interval
+       * representable by the nanosecond hrtimer queue.  Arm the maximum
+       * relative hrtimer interval in that case.  If it ever expires, the
+       * watchdog callback will reassess the still-pending watchdog and arm
+       * the remaining interval.  A caller can still cancel it normally.
+       */
+
+      if (delay > HRTIMER_MAX_DELAY / NSEC_PER_TICK)
+        {
+          hrtimer_start(&g_wdtimer, wd_timer,
+                        HRTIMER_MAX_DELAY, HRTIMER_MODE_REL);
+        }
+      else
+        {
+          hrtimer_start(&g_wdtimer, wd_timer,
+                        TICK2NSEC(tick), HRTIMER_MODE_ABS);
+        }
     }
 }
 

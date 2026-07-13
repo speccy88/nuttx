@@ -1,5 +1,42 @@
+/****************************************************************************
+ * boards/p2/p2x8c4m64p/p2-ec32mb/include/board.h
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.  The
+ * ASF licenses this file to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the
+ * License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ *
+ ****************************************************************************/
+
 #ifndef __BOARDS_P2_P2X8C4M64P_P2_EC32MB_INCLUDE_BOARD_H
 #define __BOARDS_P2_P2X8C4M64P_P2_EC32MB_INCLUDE_BOARD_H
+
+/****************************************************************************
+ * Included Files
+ ****************************************************************************/
+
+#include <nuttx/config.h>
+
+#ifndef __ASSEMBLY__
+#  include <nuttx/compiler.h>
+#endif
+
+/****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
 #define BOARD_XTAL_FREQUENCY 20000000
 #define BOARD_SYSCLK_FREQUENCY 180000000
 #define BOARD_UART0_BAUD 230400
@@ -17,4 +54,41 @@
 #define BOARD_SD_CLK_PIN 61
 #define BOARD_PSRAM_FIRST_PIN 40
 #define BOARD_PSRAM_LAST_PIN 57
+
+#define LED_STARTED           0
+#define LED_HEAPALLOCATE      1
+#define LED_IRQSENABLED       2
+#define LED_STACKCREATED      3
+#define LED_INIRQ             4
+#define LED_SIGNAL            5
+#define LED_ASSERTION         6
+#define LED_PANIC             7
+#define LED_IDLE              8
+#define LED_NVALUES           9
+
+#ifndef __ASSEMBLY__
+
+/****************************************************************************
+ * Public Types
+ ****************************************************************************/
+
+struct spi_dev_s;
+
+/****************************************************************************
+ * Public Function Prototypes
+ ****************************************************************************/
+
+#ifdef CONFIG_P2_STORAGE
+void p2_storage_board_initialize(void);
+FAR struct spi_dev_s *p2_spiflash_spi_initialize(void);
+FAR struct spi_dev_s *p2_sdspi_initialize(void);
+#  ifdef CONFIG_MTD_W25
+int p2_w25_initialize(void);
+#  endif
+#  ifdef CONFIG_MMCSD_SPI
+int p2_mmcsd_initialize(void);
+#  endif
 #endif
+
+#endif /* __ASSEMBLY__ */
+#endif /* __BOARDS_P2_P2X8C4M64P_P2_EC32MB_INCLUDE_BOARD_H */

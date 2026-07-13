@@ -7,12 +7,15 @@ P2_LLD ?= $(P2LLVM_ROOT)/bin/ld.lld
 CC = $(P2_CLANG)
 CXX = $(P2_CLANG)++
 CPP = $(P2_CLANG) -E
-LD = $(P2_CLANG)
-AR = llvm-ar
-NM = llvm-nm
-OBJCOPY = llvm-objcopy
-OBJDUMP = llvm-objdump
-STRIP = llvm-strip
+LD = $(P2_LLD)
+AR = $(P2LLVM_ROOT)/bin/llvm-ar rcs
+NM = $(P2LLVM_ROOT)/bin/llvm-nm
+OBJCOPY = $(P2LLVM_ROOT)/bin/llvm-objcopy
+OBJDUMP = $(P2LLVM_ROOT)/bin/llvm-objdump
+STRIP = $(P2LLVM_ROOT)/bin/llvm-strip
+
+LDSCRIPT = ld.script
+ARCHSCRIPT += $(BOARD_DIR)$(DELIM)scripts$(DELIM)$(LDSCRIPT)
 
 ARCHCPUFLAGS = --target=p2 -fno-jump-tables -fno-builtin -fno-common -ffunction-sections -fdata-sections
 ARCHWARNINGS = -Wall -Wextra -Wshadow -Wundef -Wstrict-prototypes
@@ -22,5 +25,5 @@ CFLAGS = $(ARCHCPUFLAGS) $(ARCHWARNINGS) $(ARCHOPTIMIZATION) $(ARCHINCLUDES) $(E
 CXXFLAGS = $(ARCHCPUFLAGS) $(ARCHWARNINGS) $(ARCHOPTIMIZATION) $(ARCHINCLUDES) $(EXTRAFLAGS)
 CPPFLAGS = $(ARCHCPUFLAGS) $(ARCHINCLUDES)
 AFLAGS = $(ARCHCPUFLAGS) $(ARCHINCLUDES) -D__ASSEMBLY__
-LDFLAGS += --target=p2 -nostdlib -Wl,--gc-sections -Wl,-Map=nuttx.map
+LDFLAGS += --gc-sections -Map=$(TOPDIR)/nuttx.map
 MKDEP = $(TOPDIR)$(DELIM)tools$(DELIM)mknulldeps.sh

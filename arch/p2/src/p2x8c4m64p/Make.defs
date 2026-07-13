@@ -1,1 +1,2 @@
+HEAD_ASRC = p2_head.S
 CHIP_CSRCS += p2_start.c p2_chip.c

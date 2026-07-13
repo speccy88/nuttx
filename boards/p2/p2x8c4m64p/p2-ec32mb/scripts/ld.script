@@ -1,10 +1,227 @@
-ENTRY(__start)
-MEMORY { hub (rwx) : ORIGIN = 0x00000000, LENGTH = 512K }
+/****************************************************************************
+ * boards/p2/p2x8c4m64p/p2-ec32mb/scripts/ld.script
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.  The
+ * ASF licenses this file to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the
+ * License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ *
+ ****************************************************************************/
+
+/* Native P2 images begin with a COGEXEC bootstrap.  A P2 cog cannot execute
+ * ordinary Hub code below byte address 0x400.  p2llvm also represents the
+ * 512-long LUT address range 0x200-0x3ff as an 0x800-byte image in Hub, so
+ * ordinary Hub text begins at 0x0a00 after that reserved image window.
+ */
+
+ENTRY(__entry)
+
+P2_HUB_ORIGIN         = 0x00000000;
+/* The pinned loadp2 RAM loader initializes only the first 0x7c000 bytes.
+ * Keep its top 16 KiB window out of every NuttX load/runtime allocation.
+ */
+
+P2_HUB_SIZE           = 0x0007c000;
+P2_HUB_END            = P2_HUB_ORIGIN + P2_HUB_SIZE;
+P2_HUB_TEXT_ORIGIN    = 0x00000a00;
+P2_INITIAL_STACK_SIZE = 0x00001000;
+P2_IDLE_STACK_SIZE    = 0x00001000;
+
+MEMORY
+{
+  hub (rwx) : ORIGIN = P2_HUB_ORIGIN, LENGTH = P2_HUB_SIZE
+}
+
 SECTIONS
 {
-  .text : { KEEP(*(.start)) *(.text .text.*) *(.rodata .rodata.*) } > hub
-  .data : { *(.data .data.*) } > hub
-  .bss (NOLOAD) : { _sbss = .; *(.bss .bss.* COMMON) _ebss = .; } > hub
-  . = ALIGN(16); _sheap = .; . += 4096; _einitialstack = .; _eheap = ORIGIN(hub) + LENGTH(hub);
-  ASSERT(. <= ORIGIN(hub) + LENGTH(hub), "P2 Hub RAM overflow")
+  .p2.entry P2_HUB_ORIGIN :
+  {
+    KEEP(*(.p2.entry))
+  } > hub
+
+  /* loadp2 patches these three words before a RAM download.  Startup leaves
+   * the rest of 0x04-0x3f reserved for compatible image metadata.
+   */
+
+  .p2.params 0x00000014 :
+  {
+    KEEP(*(.p2.params))
+  } > hub
+
+  .p2.cog 0x00000040 :
+  {
+    KEEP(*(.p2.cog))
+  } > hub
+
+  /* The downstream compiler selects ordinary Hub calls for compiler-rt
+   * helpers, so this range is empty unless a real LUT input is requested.
+   * Keep the fixed symbols and capacity; do not add padding instructions.
+   */
+
+  __p2_lut_start = 0x00000200;
+  .p2.lut __p2_lut_start :
+  {
+    KEEP(*(.p2.lut))
+    KEEP(*(lut))
+  } > hub
+  __p2_lut_end = __p2_lut_start + SIZEOF(.p2.lut);
+
+  .text P2_HUB_TEXT_ORIGIN :
+  {
+    _stext = ABSOLUTE(.);
+    KEEP(*(.text.__start))
+    KEEP(*(.text.main))
+    *(.text .text.*)
+    *(.gnu.linkonce.t.*)
+    _etext = ABSOLUTE(.);
+  } > hub
+
+  .rodata :
+  {
+    . = ALIGN(4);
+    *(.rodata .rodata.*)
+    *(.srodata .srodata.*)
+    *(.gnu.linkonce.r.*)
+    . = ALIGN(4);
+  } > hub
+
+  .data :
+  {
+    . = ALIGN(4);
+    _sdata = ABSOLUTE(.);
+    *(.data .data.*)
+    *(.sdata .sdata.*)
+    *(.gnu.linkonce.d.*)
+
+    . = ALIGN(4);
+    __preinit_array_start = ABSOLUTE(.);
+    KEEP(*(SORT(.preinit_array.*)))
+    KEEP(*(.preinit_array))
+    __preinit_array_end = ABSOLUTE(.);
+
+    . = ALIGN(4);
+    _sinit = ABSOLUTE(.);
+    __init_array_start = ABSOLUTE(.);
+    KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)))
+    KEEP(*(.init_array))
+    __init_array_end = ABSOLUTE(.);
+    KEEP(*(SORT_BY_INIT_PRIORITY(.ctors.*)))
+    KEEP(*(.ctors))
+    _einit = ABSOLUTE(.);
+
+    . = ALIGN(4);
+    __fini_array_start = ABSOLUTE(.);
+    KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
+    KEEP(*(.fini_array))
+    __fini_array_end = ABSOLUTE(.);
+    KEEP(*(SORT_BY_INIT_PRIORITY(.dtors.*)))
+    KEEP(*(.dtors))
+
+    . = ALIGN(4);
+    _edata = ABSOLUTE(.);
+  } > hub
+
+  _sidata = LOADADDR(.data);
+
+  .bss (NOLOAD) :
+  {
+    . = ALIGN(16);
+    _sbss = ABSOLUTE(.);
+    *(.bss .bss.*)
+    *(.sbss .sbss.*)
+    *(.gnu.linkonce.b.*)
+    *(COMMON)
+    . = ALIGN(16);
+    _ebss = ABSOLUTE(.);
+  } > hub
+
+  /* Reserve a prefix for CPU0's idle TCB metadata and TLS before selecting
+   * the live startup stack.  Both sections form one permanent CPU0
+   * allocation.  This keeps the live PTRA inside the idle TCB bounds without
+   * allowing upward TLS allocation to overwrite the nx_start() CALLA chain.
+   */
+
+  .idle_stack (NOLOAD) :
+  {
+    . = ALIGN(16);
+    _sidle_stack = ABSOLUTE(.);
+    . += P2_IDLE_STACK_SIZE;
+    _eidle_tls = ABSOLUTE(.);
+  } > hub
+
+  /* PTRA grows upward from the first free long in .initial_stack. */
+
+  .initial_stack (NOLOAD) :
+  {
+    . = ALIGN(16);
+    _sinitialstack = ABSOLUTE(.);
+    __initial_ptra = ABSOLUTE(.);
+    . += P2_INITIAL_STACK_SIZE;
+    _einitialstack = ABSOLUTE(.);
+    _eidle_stack = ABSOLUTE(.);
+  } > hub
+
+  .heap (NOLOAD) :
+  {
+    . = ALIGN(16);
+    _sheap = ABSOLUTE(.);
+    . = ORIGIN(hub) + LENGTH(hub);
+    _eheap = ABSOLUTE(.);
+  } > hub
+
+  _end = _sheap;
+  end = _end;
+
+  /DISCARD/ :
+  {
+    *(.comment)
+    *(.note*)
+  }
 }
+
+ASSERT(__entry == P2_HUB_ORIGIN,
+       "P2 ROM entry must be at Hub address zero")
+ASSERT(SIZEOF(.p2.entry) <= 0x00000004,
+       "P2 entry overlaps the loader parameter area")
+ASSERT(__p2_loader_clkfreq == 0x00000014,
+       "loadp2 clock frequency word moved")
+ASSERT(__p2_loader_clkmode == 0x00000018,
+       "loadp2 clock mode word moved")
+ASSERT(__p2_loader_baud == 0x0000001c,
+       "loadp2 baud word moved")
+ASSERT(__p2_lut_start == 0x00000200,
+       "P2 LUT image must start at Hub address 0x200")
+ASSERT(__p2_lut_end <= P2_HUB_TEXT_ORIGIN,
+       "P2 LUT image overlaps ordinary Hub text")
+ASSERT(_stext == P2_HUB_TEXT_ORIGIN,
+       "ordinary P2 Hub text must start at 0x0a00")
+ASSERT(_etext <= _sdata,
+       "P2 text/rodata overlaps initialized data")
+ASSERT(_edata <= _sbss,
+       "P2 initialized data overlaps BSS")
+ASSERT(_ebss <= _sidle_stack,
+       "P2 BSS overlaps the CPU0 idle allocation")
+ASSERT(_eidle_tls == _sinitialstack,
+       "P2 idle TLS reserve is not contiguous with the live stack")
+ASSERT(__initial_ptra == _sinitialstack,
+       "P2 initial PTRA must select the upward stack base")
+ASSERT(_einitialstack <= _sheap,
+       "P2 initial stack overlaps the heap")
+ASSERT(_eidle_stack == _einitialstack,
+       "P2 idle TCB allocation does not contain the live stack")
+ASSERT(_eidle_stack <= _sheap,
+       "P2 idle allocation overlaps the heap")
+ASSERT(_eheap <= P2_HUB_END,
+       "P2 image exceeds physical Hub RAM")

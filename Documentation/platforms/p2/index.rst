@@ -14,6 +14,7 @@ Parallax Propeller 2 (P2) cloud first draft
    interrupts
    memory-map
    pin-map
+   hil-wiring
    storage-arbitration
    flash-layout
    smartpins
