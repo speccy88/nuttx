@@ -1,4 +1,4 @@
-nuttx_commit=db3fd3347ed0d32edab894e8c27b683a99c16a3e
+nuttx_commit=dcf09d4c49ffa934db2b036ec4e1b90ec1615b73
 nuttx_apps_commit=62b7e955300b6dafa4f36d391474d3c8925b8106
 p2llvm_commit=bdcefcce7860b2232c06f35726fea679a3a7309c
 p2llvm_llvm_project_commit=72a9bb1ef2656d9953d1f41a8196d425ff2ab0b1
@@ -17,13 +17,15 @@ host_os=Darwin MacBook-Air-de-Frederick.local 25.5.0 Darwin Kernel Version 25.5.
 p2llvm_libc=skipped_not_installed
 p2llvm_libp2_shims=unused stdio.h and math.h includes only
 p2llvm_preempt_safe_integer=verified q-free Hub libcalls and limb-expanded mulh
+p2llvm_linker_aug20_guard=verified offset-zero rejection and explicit-AUGS link
+p2llvm_bool_memory=verified global/static i1 loads and stores at O0 Os O2
 p2llvm_preempt_patch=p2llvm-preempt-safe-integer.patch
 p2llvm_darwin_cmake=-DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_LIBXML2=OFF -DCMAKE_DISABLE_FIND_PACKAGE_Backtrace:BOOL=TRUE
 p2_flags=--target=p2 -fno-jump-tables -ffunction-sections -fdata-sections -fno-common -fno-builtin -Os
-sha256=9c94823b3be64c8a3bf0f4f0288b0d7a804a51d562604b572f7fc9ac5ac0ef0f  /Volumes/SSD2TB/Code/nuttx/tools/p2/patches/p2llvm-preempt-safe-integer.patch
+sha256=bf0ff3a4fc6e236b22d72a8f8933b0a85d42ecc2b49e580a32b7f9fa3d2c35d7  /Volumes/SSD2TB/Code/nuttx/tools/p2/patches/p2llvm-preempt-safe-integer.patch
 sha256=8ee692c50735715d1259b0775b75bf231b9703f6c4f233254facaec9c5d2bcf8  /Users/fred/.local/nuttx-tools/kconfig-frontends/bin/kconfig-conf
-sha256=71086f5eb8e1bf779201e04008ece0fd41513bca8b5b1792c123c6a7671e8457  /Volumes/SSD2TB/Code/.p2-nuttx-cache/p2llvm/install/bin/clang
-sha256=26f33e2dd219782dc97974607fa74866993966ab1fa665e5d8c4bc65332e5bd9  /Volumes/SSD2TB/Code/.p2-nuttx-cache/p2llvm/install/bin/ld.lld
+sha256=ee0ea1f6133d080a8f9c0efbcde3ff69a356a99722ad04f0640b5ed328138a63  /Volumes/SSD2TB/Code/.p2-nuttx-cache/p2llvm/install/bin/clang
+sha256=f75cfc131bb96a34dfc6ebf9476725cffaf7e1f159e1717268b4bdf1a5323868  /Volumes/SSD2TB/Code/.p2-nuttx-cache/p2llvm/install/bin/ld.lld
 sha256=bedb67b07e2fe6fcdab5e99d4bbad465ef945f466a72827fb0dd1f6133ce52f0  /Volumes/SSD2TB/Code/.p2-nuttx-cache/p2llvm/install/libp2/lib/libp2.a
 sha256=398fc0a5eeae16314c4a429c17b760f982d896e20b0d20e9727e0fb1c97c9791  /Volumes/SSD2TB/Code/.p2-nuttx-cache/flexprop-src/bin/flexspin
 sha256=543c7d522d27f429120e6a35e32ea19394fa85412fb07f41784748094a03c2aa  /Volumes/SSD2TB/Code/.p2-nuttx-cache/flexprop-src/bin/loadp2

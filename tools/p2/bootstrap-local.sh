@@ -270,10 +270,164 @@ p2llvm_preemption_valid()
   rm -rf "$probe_dir"
 }
 
+p2llvm_linker_aug20_valid()
+{
+  local probe_dir
+  local bad_source
+  local good_source
+  local bad_object
+  local good_object
+  local bad_relocations
+  local good_relocations
+  local bad_error
+
+  p2llvm_tools_valid || return 1
+  probe_dir=$(mktemp -d "$CACHE/p2-linker-aug20-probe.XXXXXX") || return 1
+  bad_source=$probe_dir/bad.S
+  good_source=$probe_dir/good.S
+  bad_object=$probe_dir/bad.o
+  good_object=$probe_dir/good.o
+  bad_relocations=$probe_dir/bad.relocs
+  good_relocations=$probe_dir/good.relocs
+  bad_error=$probe_dir/bad-link.err
+
+  printf '%s\n' \
+    '.section .text.bad,"ax",@progbits' \
+    '.globl p2_aug20_bad' \
+    'p2_aug20_bad:' \
+    '  wrlong r0, ##p2_aug20_bad_target' \
+    '.section .bss.bad,"aw",@nobits' \
+    '.globl p2_aug20_bad_target' \
+    '.balign 512' \
+    'p2_aug20_bad_target:' \
+    '  .space 4' > "$bad_source"
+
+  printf '%s\n' \
+    '.section .text.good,"ax",@progbits' \
+    '.globl p2_aug20_good' \
+    'p2_aug20_good:' \
+    '  augs #0' \
+    '  wrlong r0, ##p2_aug20_good_target' \
+    '.section .bss.good,"aw",@nobits' \
+    '.globl p2_aug20_good_target' \
+    '.balign 512' \
+    'p2_aug20_good_target:' \
+    '  .space 4' > "$good_source"
+
+  if ! "$P2LLVM_ROOT/bin/clang" --target=p2 -x assembler -c \
+       "$bad_source" -o "$bad_object" ||
+     ! "$P2LLVM_ROOT/bin/clang" --target=p2 -x assembler -c \
+       "$good_source" -o "$good_object" ||
+     ! "$P2LLVM_ROOT/bin/llvm-readobj" --relocations "$bad_object" \
+       > "$bad_relocations" ||
+     ! "$P2LLVM_ROOT/bin/llvm-readobj" --relocations "$good_object" \
+       > "$good_relocations";
+  then
+    rm -rf "$probe_dir"
+    return 1
+  fi
+
+  if ! grep -Eq '0x0 R_P2_AUG20 p2_aug20_bad_target' \
+       "$bad_relocations" ||
+     ! grep -Eq '0x4 R_P2_AUG20 p2_aug20_good_target' \
+       "$good_relocations";
+  then
+    rm -rf "$probe_dir"
+    return 1
+  fi
+
+  if "$P2LLVM_ROOT/bin/ld.lld" -e p2_aug20_bad -Ttext=0x1000 \
+       -o "$probe_dir/bad.elf" "$bad_object" 2> "$bad_error" ||
+     ! grep -q \
+       'R_P2_AUG20 relocation has no preceding AUGS/AUGD instruction in its input section' \
+       "$bad_error" ||
+     ! "$P2LLVM_ROOT/bin/ld.lld" -e p2_aug20_good -Ttext=0x1000 \
+       -o "$probe_dir/good.elf" "$good_object";
+  then
+    rm -rf "$probe_dir"
+    return 1
+  fi
+
+  rm -rf "$probe_dir"
+}
+
+p2llvm_bool_memory_valid()
+{
+  local probe_dir
+  local source
+  local object
+  local disassembly
+  local optimization
+
+  p2llvm_tools_valid || return 1
+  probe_dir=$(mktemp -d "$CACHE/p2-bool-memory-probe.XXXXXX") || return 1
+  source=$probe_dir/probe.ll
+
+  printf '%s\n' \
+    'target triple = "p2"' \
+    '@p2_static_bool = internal global i1 false, align 1' \
+    '@p2_global_bool = global i1 false, align 1' \
+    'define i32 @p2_static_bool_branch() {' \
+    'entry:' \
+    '  %v = load i1, i1* @p2_static_bool, align 1' \
+    '  br i1 %v, label %yes, label %no' \
+    'yes:' \
+    '  ret i32 37' \
+    'no:' \
+    '  ret i32 11' \
+    '}' \
+    'define i32 @p2_global_bool_branch() {' \
+    'entry:' \
+    '  %v = load i1, i1* @p2_global_bool, align 1' \
+    '  br i1 %v, label %yes, label %no' \
+    'yes:' \
+    '  ret i32 41' \
+    'no:' \
+    '  ret i32 13' \
+    '}' \
+    'define void @p2_static_bool_store(i1 %v) {' \
+    '  store i1 %v, i1* @p2_static_bool, align 1' \
+    '  ret void' \
+    '}' \
+    'define void @p2_global_bool_store(i1 %v) {' \
+    '  store i1 %v, i1* @p2_global_bool, align 1' \
+    '  ret void' \
+    '}' > "$source"
+
+  for optimization in O0 Os O2
+  do
+    object=$probe_dir/probe-$optimization.o
+    disassembly=$probe_dir/probe-$optimization.dis
+
+    if ! "$P2LLVM_ROOT/bin/clang" --target=p2 -"$optimization" \
+         -fno-jump-tables -ffunction-sections -fdata-sections \
+         -x ir -c "$source" -o "$object" ||
+       ! "$P2LLVM_ROOT/bin/llvm-objdump" -dr "$object" \
+         > "$disassembly" ||
+       ! grep -Eq 'rdbyte[[:space:]]+r[0-9]+,[[:space:]]+r[0-9]+' \
+         "$disassembly" ||
+       ! grep -Eq 'wrbyte[[:space:]]+' "$disassembly" ||
+       ! grep -Eq 'zerox[[:space:]]+r[0-9]+,[[:space:]]+#0' \
+         "$disassembly" ||
+       ! grep -Eq 'R_P2_AUG20[[:space:]]+p2_global_bool' \
+         "$disassembly" ||
+       grep -Eq 'rdbyte[[:space:]]+[^,]+,[[:space:]]*#' \
+         "$disassembly";
+    then
+      rm -rf "$probe_dir"
+      return 1
+    fi
+  done
+
+  rm -rf "$probe_dir"
+}
+
 p2llvm_valid()
 {
   p2llvm_tools_valid || return 1
   p2llvm_preemption_valid || return 1
+  p2llvm_linker_aug20_valid || return 1
+  p2llvm_bool_memory_valid || return 1
   [[ -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]] || return 1
   [[ -f "$P2LLVM_ROOT/libp2/include/propeller2.h" ]] || return 1
 }
@@ -378,7 +532,9 @@ build_p2llvm()
   p2llvm_tools_valid ||
     die "p2llvm compiler and LLVM tools did not satisfy their postconditions"
 
-  if ! p2llvm_preemption_valid; then
+  if ! p2llvm_preemption_valid || ! p2llvm_linker_aug20_valid ||
+     ! p2llvm_bool_memory_valid;
+  then
     (
       cd "$P2LLVM_SRC"
       "$PYTHON" build.py --skip_libp2 --skip_libc \
@@ -389,6 +545,10 @@ build_p2llvm()
 
   p2llvm_preemption_valid ||
     die "p2llvm still emits preemption-unsafe P2 CORDIC sequences"
+  p2llvm_linker_aug20_valid ||
+    die "p2llvm linker does not safely reject offset-zero R_P2_AUG20"
+  p2llvm_bool_memory_valid ||
+    die "p2llvm does not correctly select global/static i1 memory operations"
 
   if [[ ! -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]]; then
     build_libp2
@@ -462,6 +622,8 @@ write_lock()
     echo "p2llvm_libc=skipped_not_installed"
     echo "p2llvm_libp2_shims=unused stdio.h and math.h includes only"
     echo "p2llvm_preempt_safe_integer=verified q-free Hub libcalls and limb-expanded mulh"
+    echo "p2llvm_linker_aug20_guard=verified offset-zero rejection and explicit-AUGS link"
+    echo "p2llvm_bool_memory=verified global/static i1 loads and stores at O0 Os O2"
     echo "p2llvm_preempt_patch=$(basename "$P2LLVM_PATCH")"
     echo "p2llvm_darwin_cmake=-DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_LIBXML2=OFF -DCMAKE_DISABLE_FIND_PACKAGE_Backtrace:BOOL=TRUE"
     echo "p2_flags=--target=p2 -fno-jump-tables -ffunction-sections -fdata-sections -fno-common -fno-builtin -Os"

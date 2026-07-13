@@ -1,3 +1,21 @@
+diff --git a/lld/ELF/Arch/P2.cpp b/lld/ELF/Arch/P2.cpp
+index f98ce05a4ce1..90a5633b781e 100644
+--- a/lld/ELF/Arch/P2.cpp
++++ b/lld/ELF/Arch/P2.cpp
+@@ -83,0 +84,13 @@ namespace lld {
++                    // This relocation rewrites the instruction immediately
++                    // before the relocation site.  rel.offset is relative to
++                    // the input section, so an offset below four has no
++                    // preceding word in that section.  Reject it before
++                    // touching loc - 4; otherwise lld corrupts adjacent
++                    // linker-owned memory or a preceding input section.
++                    if (rel.offset < 4) {
++                        error(getErrorLocation(loc) +
++                              "R_P2_AUG20 relocation has no preceding "
++                              "AUGS/AUGD instruction in its input section");
++                        return;
++                    }
++
 diff --git a/llvm/lib/Target/P2/MCTargetDesc/P2MCCodeEmitter.cpp b/llvm/lib/Target/P2/MCTargetDesc/P2MCCodeEmitter.cpp
 index 20cc45d8f578..9fa498c8238a 100644
 --- a/llvm/lib/Target/P2/MCTargetDesc/P2MCCodeEmitter.cpp
@@ -278,3 +296,13 @@ index 9914d0d45b24..f6fa0095742d 100644
 -#endif // P2ISELLOWERING_H
 \ No newline at end of file
 +#endif // P2ISELLOWERING_H
+diff --git a/llvm/lib/Target/P2/P2InstrInfo.td b/llvm/lib/Target/P2/P2InstrInfo.td
+index 02a18c61238b..0d6559551571 100644
+--- a/llvm/lib/Target/P2/P2InstrInfo.td
++++ b/llvm/lib/Target/P2/P2InstrInfo.td
+@@ -496 +496 @@ def : Pat<(zextloadi1 imm:$s), (ZEROXri (RDBYTEri imm:$s, always, noeff), 0, alw
+-def : Pat<(zextloadi1 addr:$s), (ZEROXri (RDBYTEri imm:$s, always, noeff), 0, always, noeff)>;
++def : Pat<(zextloadi1 addr:$s), (ZEROXri (RDBYTErr P2GPR:$s, always, noeff), 0, always, noeff)>;
+@@ -514,0 +515,2 @@ def : Pat<(store i64:$d, addr:$s), (WRDLONG P2GPRPair:$d, P2GPR:$s)>;
++def : Pat<(extloadi1 imm:$s), (ZEROXri (RDBYTEri imm:$s, always, noeff), 0, always, noeff)>;
++def : Pat<(extloadi1 addr:$s), (ZEROXri (RDBYTErr P2GPR:$s, always, noeff), 0, always, noeff)>;
