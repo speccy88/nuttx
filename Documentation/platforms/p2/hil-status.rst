@@ -1,150 +1,178 @@
 P2 hardware-in-the-loop status
 ==============================
 
-Status: ACTIVE BRING-UP.  Hardware claims in this file require a linked log or
-artifact.  Build success is not hardware success.
+Snapshot: 2026-07-13.  Build or host-test success is not hardware success.
+Every physical claim below names its preserved artifact.  The detailed final
+record is :doc:`final-hil-report`; the compact working table requested during
+bring-up is ``goal-status-table.md`` in this directory.
 
-Repository starting point
+Endpoint and safety
+-------------------
+
+* Target: P2-EC32MB Rev B.
+* Console/loader: ``/dev/cu.usbserial-P97cvdxp`` through a Parallax PropPlug.
+* Console baud: 230400.  Loader baud: 2000000.
+* Shared host lock: ``/private/tmp/nuttx-p2-hil.lock``.
+* Flash, microSD, and loopback destructive gates were explicitly authorized.
+* DTR reset is available; externally controlled removal of board power is not.
+* Direct digital loopbacks are P0--P1, P2--P3, and P6--P7.  Digital tests
+  configure the receiver before enabling one source.
+* A BMP180 fixture is connected with P24 SDA and P25 SCL.  The open-drain
+  lower half and sensor path passed 20/20 physical cycles.
+* The user replaced the P4--P5 direct jumper with the requested series
+  resistor and added the capacitor from P5 to ground.  DAC/ADC subsequently
+  passed 20/20 physical cycles.
+
+Accepted physical results
 -------------------------
 
-The checkout was initially inspected on 2026-07-12 on branch ``master`` at
-``f5e3bb24595b78c5e329d13b1ad559a294ed3ef9``.  It was clean and did not
-contain the P2 port.  PR #2 was fetched without rewriting history.  Its head
-matched the expected commit exactly:
+.. list-table:: Accepted P2 hardware evidence
+   :header-rows: 1
+   :widths: 24 14 62
 
-``765d073a89599a5d1d96fbc84ad4891e3f5b4aa4``
+   * - Area
+     - Result
+     - Evidence and exact qualification
+   * - Standalone native loop
+     - PASS
+     - ``artifacts/hil/20260712T211034.259011Z-hello``; 10/10 loads with
+       serial, data, BSS, PTRA, counter, LED, command, and echo markers.
+   * - Detached context
+     - PASS
+     - ``artifacts/hil/20260713T034110.407118Z-context``; exactly 1,000,000
+       CT1 switches with register, stack, spill, variadic, scratch, and ISR
+       stack guards.
+   * - Native NuttX boot
+     - PASS
+     - ``artifacts/hil/20260712T230747.950915Z-boot``; entry zero, Hub text,
+       upward PTRA, data/BSS, early P62/P63 console, and CT1 tick.
+   * - Deterministic bring-up
+     - PASS
+     - ``artifacts/hil/20260713T034525.287219Z-bringup``; 100/100 reset/load
+       cycles covering tasks, preemption, semaphore wake, heap, and stacks.
+   * - NuttShell
+     - PASS
+     - ``artifacts/hil/20260713T035042.747009Z-nsh``; 50/50 cycles with the
+       required command, RX, TX, device, mount, heap, process, and time output.
+   * - Digital Smart Pins
+     - PASS
+     - ``artifacts/hil/20260713T063221.439668Z-smartpins``; 50/50 cycles for
+       GPIO, edge observation, UART, PWM/capture, and mode-0 SPI.
+   * - DAC and ADC
+     - PASS
+     - ``artifacts/hil/20260713T110743.191438Z-smartpins``; 20/20 cycles and
+       60 strictly monotonic samples.  DAC codes 16383, 32767, and 49151
+       produced ADC ranges 678--679, 1019--1020, and 1362--1363; both pins
+       floated safely after every cycle.
+   * - I2C and BMP180
+     - PASS
+     - ``artifacts/hil/20260713T111043.745628Z-i2c``; 20/20 cycles at address
+       ``0x77`` and ID ``0x55`` with true repeated-start transfers, 640
+       pressure reads from 100000 through 100019 Pa, and zero recovery pulses.
+   * - W25, MTD, and SmartFS
+     - PASS
+     - ``artifacts/hil/20260713T063712.505220Z-flashfs``; JEDEC ``EF7018``,
+       protected boot reservation, 1 MiB hash ``693C9DC5``, persistence,
+       rewrites, ENOSPC, and reset-interrupted recovery.
+   * - microSD and FAT
+     - PASS
+     - ``artifacts/hil/20260713T083209.592794Z-sd``; block device, FAT,
+       1 MiB hash ``BE5C9DC5``, rename/delete, 64 stress passes, and 1,000
+       flash/SD ownership alternations.
+   * - External 32 MiB PSRAM
+     - PASS
+     - ``artifacts/hil/20260713T100106.997809Z-psram`` and
+       ``artifacts/hil/20260713T100735.645104Z-psram``; two consecutive full
+       32 MiB passes with hash ``634C9DC5``, boundaries, address lines,
+       random transfers, concurrency, timeout/recovery, and CE bounds.
+   * - Independent ROM flash boot
+     - PASS
+     - ``artifacts/hil/20260713T103452Z-flashboot``; 20/20 DTR resets on one
+       serial connection with zero pre-prompt bytes, boot CRC ``23FCF91E``,
+       and preserved 1 MiB SmartFS hash ``693C9DC5``.
+   * - Dedicated scheduler stress
+     - PASS
+     - Build ``artifacts/hil/20260713T112709Z-build-schedstress`` and HIL
+       ``artifacts/hil/20260713T112942.518754Z-schedstress``; one physical run
+       completed exactly 1,004,078 counted events in 165.434771 seconds across
+       priorities, round robin, semaphore, PI mutex, condition variable,
+       message queue, signal, timer, pthread, and task-recreation paths.
+       Stack, heap restoration, and 512/512 separate concurrent allocations
+       also passed.
+   * - Raw GETCT clock qualification
+     - PASS
+     - Build ``artifacts/hil/20260713T113742Z-build-clock`` and HIL
+       ``artifacts/hil/20260713T114543.089052Z-clock``; 600 ordered samples
+       and ``DONE=600`` covered a 600.555632-second conservative span across
+       approximately 25 counter wraps.  The midpoint estimate was
+       180,002,153.6455524 Hz (+11.9647 ppm), with conservative bounds of
+       179,998,600.271539--180,005,707.159862 Hz (-7.776--+31.706 ppm).  The
+       ten-second prefix, one-outstanding-command rule, and five-second
+       maximum-gap rule also passed.
+   * - Applicable OSTest matrix
+     - PASS
+     - All 45 applicable matrix rows and all 57/57 strict parser groups passed
+       in each applicable cycle.  PI assertions: build
+       ``artifacts/hil/20260713T115624Z-build-ostest-pi-assert`` and HIL
+       ``artifacts/hil/20260713T115705.736374Z-ostest``; 1/1 in
+       1112.947113 seconds with assertions enabled and seven accepted timing
+       warnings.  Condition assertions: build
+       ``artifacts/hil/20260713T121555Z-build-ostest-cond-assert`` and HIL
+       ``artifacts/hil/20260713T121658.724366Z-ostest``; 1/1 in
+       1083.622049 seconds with assertions enabled and nine accepted timing
+       warnings.
+   * - Repeated production OSTest
+     - PASS
+     - All 57/57 strict parser groups passed in every production cycle.  PI
+       production: build
+       ``artifacts/hil/20260713T123519Z-build-ostest-pi-production`` and HIL
+       ``artifacts/hil/20260713T123627.152482Z-ostest``; 5/5 cycles in
+       1109.718123, 1109.821585, 1109.823341, 1109.809943, and 1109.871800
+       seconds with 15 accepted timing warnings total.  Condition production:
+       build ``artifacts/hil/20260713T140927Z-build-ostest-cond-production``
+       and HIL ``artifacts/hil/20260713T141008.365027Z-ostest``; 5/5 cycles in
+       1157.549036, 1157.470767, 1157.390669, 1157.597868, and 1157.556411
+       seconds with 25 accepted timing warnings total.
 
-The active HIL branch is ``codex/p2-hil-finish``, created directly from that
-PR #2 head.  PR #2 is stacked on PR #1 commit
-``39cc55135fd24f02006e56f9fc1f0476edea1888``.
+The retained diagnostic ``artifacts/hil/20260713T114018.397164Z-clock``
+captured 169 clean ordered samples before an isolated reset.  The identical
+ELF then passed the complete campaign, so no deterministic defect was
+reproduced; the diagnostic remains preserved as a failed run.
 
-Hardware endpoint
------------------
+Remaining evidence work
+-----------------------
 
-* Target: Parallax P2 Edge Module with 32 MB RAM, P2-EC32MB Rev B.
-* Host serial path: ``/dev/cu.usbserial-P97cvdxp``.
-* USB adapter identity: Parallax ``PropPlug``, USB VID ``0x0403``, PID
-  ``0x6015``, device serial ``P97cvdxp``.
-* Console target: P2 P62/P63 at 230400 baud.
-* Loader target: 2000000 baud.
-* No process owned the serial device at initial inspection.
-* The serial-number-bearing macOS callout path is used because macOS does not
-  provide a Linux-style ``/dev/serial/by-id`` path.
-* Reset method: loadp2 DTR through the PropPlug: PASS on physical hardware.
-* The board's current physical switch position accepts DTR reset and the ROM
-  serial loader.  The printed switch label has not been visually confirmed;
-  independent flash-boot behavior remains untested.
+* The four-profile OSTest campaign is complete.  The earlier diagnostic
+  ``artifacts/hil/20260713T040951.397206Z-ostest`` remains preserved as the
+  pre-fix timeout which motivated the non-yielding completion-state poll; it
+  is superseded by the accepted PI assertion and production artifacts above.
+* The post-freeze ABI matrix is complete at
+  ``artifacts/hil/abi/20260713T155112Z``.  It records NuttX source/tool commit
+  ``cfaf600a55f41d8ea538b83b1c8c1ce459c9996a`` and the active clang SHA-256;
+  all nine capability status files are ``SUPPORTED``.  The independent
+  64-bit comparison verifier passed all 41,472 functional boundary pairs.
 
-Safety gates
-------------
+Explicit blockers and non-claims
+--------------------------------
 
-The untracked ``.p2-hil.env`` file contains the local endpoint and tool paths.
-Flash write, flash erase, destructive microSD, and external loopback gates are
-all zero.  No such operation is authorized by the current task.
+* True power-cycle and power-loss recovery cannot run until an external power
+  control command is available.  Reset interruption is reported separately.
+* Card-absent behavior requires physically removing the microSD.  There is no
+  invented card-detect GPIO.
+* The board-switch behavior is known, but its printed label has not been
+  visually confirmed.
+* **DEFERRED / OUT OF SCOPE:** NuttX SMP is not implemented.
+  ``CONFIG_SMP`` is deliberately rejected; the accepted architecture is flat
+  UP plus measured deterministic service cogs.  A future two-CPU project
+  would need secondary startup, per-CPU scheduler state, atomics/spinlocks,
+  IPI/reschedule, affinity/migration, barriers, and physical multicog stress.
+  SMP does not gate completion of the current flat-UP goal.
 
-Current verified state
-----------------------
+Finish gate
+-----------
 
-* PR #2 lineage and expected SHA: PASS.
-* Required P2 source and documentation directories: PASS on PR #2.
-* Clean initial worktree: PASS.
-* Serial node present and unowned: PASS.
-* PropPlug USB identity: PASS.
-* Local ``kconfig-conf`` executable: FOUND at
-  ``/Users/fred/.local/nuttx-tools/kconfig-frontends/bin/kconfig-conf``.
-* Sibling ``nuttx-apps`` checkout: PASS at
-  ``62b7e955300b6dafa4f36d391474d3c8925b8106``.
-* Pinned p2llvm compiler and LLD: PASS at p2llvm
-  ``bdcefcce7860b2232c06f35726fea679a3a7309c`` with llvm-project
-  ``72a9bb1ef2656d9953d1f41a8196d425ff2ab0b1``.  P2LLVM libc was not
-  built or installed.
-* Pinned libp2: PASS.  The pinned source has unused ``stdio.h`` and
-  ``math.h`` includes in two builtins, so two build-only empty shims are used
-  while compiling libp2.  They are not visible to LLVM or NuttX.
-* Pinned FlexProp ``flexspin`` and ``loadp2``: PASS at FlexProp
-  ``858f51c4a24e7ae0f6cbc78f625c731083ad304f`` and loadp2
-  ``c20afedd4253d09da449fa740f8d4304481fc560``.
-* Hash-locked Python HIL environment: PASS with pyserial 3.5 and pyelftools
-  0.32.
-* ``tools/p2/bootstrap-local.sh`` clean rerun and target-object probe: PASS.
-* Preemption-safe integer lowering: PASS with the downstream
-  ``p2llvm-preempt-safe-integer.patch``.  The patched compiler SHA-256 is
-  ``71086f5eb8e1bf779201e04008ece0fd41513bca8b5b1792c123c6a7671e8457``.
-  Compiler-generated multiply, divide, and remainder operations use ordinary
-  Hub-call relocations to software helpers instead of the asynchronous Q
-  pipeline.  This is required because the P2 CORDIC result state is per-cog
-  and cannot be saved in a task context if a timer interrupt separates a Q
-  operation from GETQX or GETQY.
-* High-half multiply and constant-division lowering: PASS OFFLINE.  LLVM has
-  no libcall legalization for ``MULHS`` or ``MULHU``; the downstream backend
-  now expands them with exact Q-free limb arithmetic and keeps non-power-of-
-  two constant division on the direct software-helper path.  The former
-  ``gmtime_r`` ``i64 mulhs`` selector crash is fixed.  Signed and unsigned
-  32/64-bit high products and overflow probes pass at ``-O0``, ``-Os``, and
-  ``-O2``.
-* Offline P2 ABI matrix: PASS at ``-O0``, ``-Os``, and ``-O2``.  Sources,
-  exact commands, diagnostics, objects, relocations, disassembly, maps, and
-  linked ELFs are under
-  ``artifacts/hil/abi/20260712T212937Z``.  Direct and indirect calls use
-  CALLA, returns use RETA, helper calls use ``R_P2_20``, data references use
-  ``R_P2_AUG20``, and no ``R_P2_COG9`` relocation was emitted.
-* Context contract: OFFLINE VERIFIED.  The fixed register array contains 37
-  longs: r0-r31, PA, PB, PTRA, PTRB, and the saved interrupt-enable state.
-  The packed C/Z/20-bit-PC resume long is separate at ``[saved PTRA - 4]``;
-  it is consumed by RETA and is not a synthetic register-array slot.
-* Q-free compiler arithmetic runtime: OFFLINE VERIFIED.  All 17 required
-  32-bit and 64-bit multiply, divide, remainder, combined-divmod, and shift
-  helpers passed boundary tests and 5,000 randomized cases per group.  Its
-  P2 object has no undefined symbols, Q instructions, recursive helper
-  relocations, or ``R_P2_COG9`` relocations.
-* Atomic ABI probe: NOT LOCK-FREE.  The compiler reports a maximum lock-free
-  width of zero and lowers 32-bit atomics to external ``__atomic_*_4``
-  helpers.  The P2 configurations now select NuttX's interrupt-serialized
-  architecture atomic runtime; link and hardware execution remain to be
-  verified before atomics are claimed.
-* Standalone native-p2 hello ELF: COMPILED and ELF-VERIFIED.  The first
-  ``PT_LOAD`` physical address is zero, ``main`` is at ``0x0a00``, initial
-  PTRA is ``0x78000``, and there are no undefined symbols.
-* First standalone physical cycle: PASS.  ``.data`` and ``.bss`` markers,
-  PTRA ``0x0007801c``, counter, ready, and the ``?`` serial-command response
-  were captured under
-  ``artifacts/hil/20260712T211011.686652Z-hello``.
-* Required repeated standalone HIL gate: PASS, 10/10 consecutive DTR
-  reset/RAM-load/console cycles.  Every cycle contained all seven ordered
-  ``P2HELLO`` markers, one entry/reset marker, no panic or failure marker, and
-  PTRA ``0x0007801c``.  Evidence is under
-  ``artifacts/hil/20260712T211034.259011Z-hello``.
-* Standalone ``tools/p2/load-ram.sh`` entry point: PASS with a separate
-  RAM-only ELF load under ``artifacts/hil/20260712T211115Z-load-ram``.
-* Initial one-million-switch diagnostic: FAIL as designed evidence under
-  ``artifacts/hil/20260712T220309.810700Z-context``.  It reached exactly
-  1,000,000 switches but reported ``P2CTX:FAIL MASK=8``.  Linked disassembly
-  proved that p2llvm leaves outgoing variadic arguments live at and above the
-  unadvanced task PTRA before CALLA, while the original ISR wrote IRET1 and
-  registers at that same PTRA.  The rare preemption window corrupted only
-  the variadic arguments.
-* Detached interrupt-frame correction: PASS ON HARDWARE.  INT1 now saves
-  IRET1, r0-r31, PA, PB, PTRA, PTRB, and interrupt state into fixed guarded
-  Hub scratch before clobbering task state, runs C on a dedicated 2 KiB
-  guarded ISR stack, and copies the selected 37+1-long context through
-  detached task frames.  The linked verifier reconstructs all 16 AUGS-formed
-  scratch addresses and rejects task-PTRA ISR writes.
-* Required timer preemption stress gate: PASS at exactly 1,000,000 CT1
-  switches.  Both tasks retained register windows, independent stack
-  canaries, nested spills, outgoing variadic arguments, and 64-bit arithmetic;
-  the scratch and ISR-stack guards also passed.  The RAM-only physical run,
-  exact ELF SHA-256
-  ``5b36d51df4e64d5810964de236e72422b5473b077aef81cee74d047b264ea525``,
-  console log, marker set, map, sources, and toolchain lock are preserved at
-  ``artifacts/hil/20260712T222926.532895Z-context``.
-* Serial device ownership after HIL: PASS; the loader released the port.
-* NuttX runtime status: NOT YET TESTED.  Startup, console, stack, and build
-  integration are active work, but the detached resume word and real
-  interrupt veneer have not yet been integrated into the kernel.
-
-Next acceptance gate
---------------------
-
-Integrate the detached 37+1-long frame and dedicated ISR stack into the NuttX
-TCB/interrupt path, finish the native startup/console link, and require a
-RAM-loaded NuttX early-boot banner before enabling the scheduler tick and NSH.
+The applicable OSTest matrix, post-freeze ABI evidence, host/static checks,
+artifact index, and committed implementation baselines are complete.  The
+flat-UP project is complete.  Fixture-dependent gaps remain named rather than
+being converted into support claims; the explicitly deferred SMP work is not
+part of this finish gate.

@@ -1,66 +1,96 @@
 Phase 11 HIL wiring
 ===================
 
-Status: the four pin pairs were reported installed as direct jumper shorts on
-2026-07-12.  No series resistor was reported.  Only a one-source/one-input
-digital test may drive these links.  The DAC/ADC stage must remain disabled
-until the P4/P5 link is replaced by, or verified to contain, suitable analog
-series resistance.
+Status: direct digital jumpers P0/P1, P2/P3, and P6/P7 were reported installed
+and have completed the 50-cycle Smart Pin campaign.  The user subsequently
+replaced P4/P5 with the requested resistive/capacitive analog fixture.  A
+BMP180 is installed with P24 as SDA and P25 as SCL.  Both new fixtures are now
+HIL-verified.
+
+The installed analog path is P4--series resistor--P5 with a capacitor from P5
+to ground, replacing the former direct jumper.  P5 remains input-only; no
+divider or external voltage is needed.  Exact values requested for this
+fixture were 1 kohm in series and 100 nF to ground.
 
 Safety rules
 ------------
 
-* Never connect two push-pull outputs.  The driver must claim and configure
-  the receiving pin as an input before enabling the source output.
-* Use one common ground between the P2 board and any instrument.
-* Keep every signal in the P2 0-V to 3.3-V domain.
-* Power off before changing a link.  A series resistor is still recommended
-  for every future fixture revision.
-* On every error path, disable the Smart Pin engine and leave both pins
-  floating.  The central pin manager records this as ``P2_PIN_SAFE_FLOAT``.
+* Never connect two push-pull outputs.  Claim and configure the receiving pin
+  as an input before enabling the source output.
+* Use one common ground and keep every signal in the P2 0-V to 3.3-V domain.
+* Power off before changing a link.  Series resistors are recommended for a
+  future fixture revision.
+* On every error path, disable the Smart Pin engine and leave all participating
+  pins floating as ``P2_PIN_SAFE_FLOAT``.
+* I2C pins must be open-drain.  Check the live idle levels and effective 3.3-V
+  pull-ups before enabling the controller; do not assume the BMP180 module
+  supplies suitable pull-ups.
 
-Installed fixture allocation
-----------------------------
+Installed loopback fixtures
+---------------------------
 
-.. list-table:: Fixed Phase 11 loopback fixture
+.. list-table:: Current loopback fixture
    :header-rows: 1
 
    * - Physical connection
      - Reported wiring
-     - Enabled HIL roles
-     - Disabled or incomplete roles
+     - Enabled HIL role
+     - Constraint
    * - P0 to P1
      - Direct jumper
-     - P0 GPIO output to P1 GPIO input/edge input
-     - None, provided P1 is configured first
+     - P0 GPIO output to P1 input and sampled edges
+     - Configure P1 first
    * - P2 to P3
      - Direct jumper
-     - P2 configurable UART TX to P3 UART RX
-     - None, provided P3 is configured first
+     - P2 configurable UART TX to P3 RX
+     - Configure P3 first
    * - P4 to P5
-     - Direct jumper
-     - P4 digital PWM output to P5 capture input
-     - DAC/ADC HIL is disabled without analog series resistance
+     - 1 kohm series; 100 nF from P5 to ground
+     - P4 DAC to P5 ADC
+     - Configure P5 first; 20/20 analog cycles passed
    * - P6 to P7
      - Direct jumper
-     - None
-     - SPI needs separately allocated clock and chip-select pins
+     - P6 SPI MOSI to P7 MISO
+     - Configure P7 first
+   * - P8 and P9
+     - No external connection reported
+     - SPI SCK and chip select outputs
+     - Both float after deselect
 
-The ``smartpins`` configuration exercises P0/P1, P2/P3, and digital P4/P5.
-It compiles the ADC and DAC lower halves, but
-``CONFIG_TESTING_P2SMARTPINS_DAC_ADC`` remains off.  A later analog fixture
-may reuse P4/P5 only after the direct jumper is replaced and the prior digital
-owner is closed.  P6/P7 are only a potential unidirectional SPI data link;
-clock and chip select remain separate controller signals and must not be
-shorted to each other.
+The accepted digital ``smartpins`` artifact predates the P4/P5 fixture
+replacement and exercised GPIO, sampled GPIO edges, configurable UART,
+direct-jumper digital PWM/capture, and mode-0 SPI at a requested 100 kHz.  Its
+evidence is ``artifacts/hil/20260713T063221.439668Z-smartpins``.  The
+subsequent analog artifact
+``artifacts/hil/20260713T110743.191438Z-smartpins`` passed 20/20 cycles and all
+60 monotonic DAC-to-ADC samples with safe float after each cycle.
 
-I2C is not a loopback test.  A future I2C fixture needs a real responding
-peripheral and open-drain SDA/SCL lines with 3.3-V pull-ups.  No I2C pins are
-allocated until that device is identified.
+Installed BMP180 fixture
+------------------------
 
-Console isolation
------------------
+.. list-table:: Reported I2C fixture
+   :header-rows: 1
 
-P62/P63 remain dedicated to the programming/console adapter.  None of the
-Phase 11 links may be moved onto those pins.  Storage pins P58-P61 and PSRAM
-pins P40-P57 are also outside the loopback fixture.
+   * - Signal
+     - P2 pin
+     - Status
+   * - BMP180 SDA
+     - P24
+     - ``/dev/i2c0`` SDA; 20/20 live cycles passed
+   * - BMP180 SCL
+     - P25
+     - ``/dev/i2c0`` SCL; 20/20 live cycles passed
+
+The lower half uses open-drain P24/P25 and registers ``/dev/i2c0``.  Its BMP180
+binding verified address ``0x77`` and chip ID ``0x55``, then registered
+``/dev/press0``.  The physical campaign at
+``artifacts/hil/20260713T111043.745628Z-i2c`` passed 20/20 cycles with true
+repeated-start reads, 640 pressure readings from 100000 through 100019 Pa, and
+zero bus-recovery pulses.
+
+Console and onboard-bus isolation
+---------------------------------
+
+P62/P63 remain dedicated to the programming/console adapter.  Storage pins
+P58-P61 and PSRAM pins P40-P57 are also outside the loopback fixture.  None of
+the temporary links or BMP180 signals may be moved onto those reserved pins.

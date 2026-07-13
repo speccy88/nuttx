@@ -4,10 +4,11 @@ Smart Pin support
 Status
 ------
 
-The target C pin manager and its host behavior tests are **HOST-TESTED**.
-GPIO, configurable UART, PWM, capture/counter, ADC, and DAC lower halves are
-**COMPILED** as isolated target objects.  The integrated ``smartpins`` image
-and all electrical behavior remain **HIL-REQUIRED**.
+The production C pin manager is **HOST-TESTED**.  GPIO, GPIO edge sampling,
+configurable UART, PWM/capture, and general-purpose SPI are **HIL-VERIFIED**
+for the digital fixture used in that campaign.  ADC and DAC are also
+**HIL-VERIFIED** on the resistive/capacitive P4/P5 fixture.  General-purpose
+I2C is **HIL-VERIFIED** for P24/P25 and the installed BMP180.
 
 Single source of truth
 ----------------------
@@ -17,16 +18,16 @@ that target C file directly; there is no second Python ownership model.
 
 Each of the 64 records contains the physical pin, board-reserved role, current
 owner, reference count, direction, Smart Pin mode, drive/pull state, event
-selector, owning cog, and final-release safe state.  The manager allocates a P2
-hardware lock so the Hub-RAM records remain coherent when service cogs are
-added.
+selector, owning cog, and final-release safe state.  The manager uses a P2
+hardware lock so the Hub-RAM records remain coherent between the scheduler
+and service cogs.
 
 Claims have these fail-closed rules:
 
 * A reserved pin accepts only the owner corresponding to its reserved role.
 * The first claim records both owner and cog.
-* A repeated claim increments the reference count only for that same owner and
-  cog.  Overflow returns ``-EOVERFLOW``.
+* A repeated claim increments the reference count only for that same owner
+  and cog.  Overflow returns ``-EOVERFLOW``.
 * Another owner or cog receives ``-EBUSY``.
 * Configure and release by a non-owner return ``-EPERM``.
 * The last release stops the Smart Pin and applies the recorded safe state
@@ -39,57 +40,81 @@ Board reservations
 
 P40-P57 are reserved for PSRAM, P58-P61 for storage, and P62-P63 for the
 console.  P38-P39 are reserved for the buffered board LEDs only when
-``CONFIG_ARCH_LEDS`` is enabled.
+``CONFIG_ARCH_LEDS`` is enabled.  P0-P37 remain dynamically claimable; see
+:doc:`pin-map` for the installed HIL allocations.
 
 Standard device interfaces
 --------------------------
 
-``CONFIG_P2_EC32MB_GPIO`` registers the configured physical pins through the
-standard NuttX GPIO upper half.  With the default HIL fixture, P0 is
-``/dev/gpio0`` and P1 is ``/dev/gpio1``.  Supported pin types are floating
-input, 15-kohm pull-up input, 15-kohm pull-down input, push-pull output, and
-open-drain output.  Switching pin type goes through the central owner record
-before touching WRPIN, OUT, or DIR.
+``CONFIG_P2_EC32MB_GPIO`` registers configured physical pins through the
+standard NuttX GPIO upper half.  In the HIL profile P0 is ``/dev/gpio0`` and
+P1 is ``/dev/gpio1``.  Supported types are floating input, 15-kohm pull-up or
+pull-down input, push-pull output, and open-drain output.  Switching pin type
+goes through the owner record before touching WRPIN, OUT, or DIR.
 
 GPIO interrupt pin types use the normal attach, enable, signal-registration,
-and mask operations.  CT1 currently owns the only architecture interrupt
-channel with a complete NuttX context save, so GPIO edges are sampled by
-``CONFIG_SYSTEMTICK_HOOK`` at 100 Hz.  The callback is generated only after a
-real input-level transition is observed.  This is a useful low-rate fallback,
-not a claim of hardware-rate edge capture.  Debounce remains ``-ENOSYS``.
+and mask operations.  CT1 currently owns the only complete architecture
+interrupt channel, so GPIO transitions are sampled by
+``CONFIG_SYSTEMTICK_HOOK`` at 100 Hz.  A callback is generated only after a
+real input-level change.  This is a low-rate fallback, not hardware-rate edge
+capture.  Debounce remains ``-ENOSYS``.
 
 ``CONFIG_P2_EC32MB_UART1`` registers ``/dev/ttyS1`` on P2/P3.  It supports
-8-N-1 termios baud changes from 1,200 through 1,000,000 baud.  The Smart Pin
-receiver is configured before the transmitter is enabled.  TX completion is
-bounded by the hardware busy indication; looped-back RX is drained after each
-word and independent RX is sampled by the system-tick hook.
+8-N-1 termios baud changes from 1,200 through 1,000,000 baud.  The receiver is
+configured before the transmitter is enabled.  TX completion is bounded by
+the hardware busy indication; looped-back RX is drained after each word and
+independent RX is sampled by the system-tick hook.
 
-``CONFIG_P2_EC32MB_PWM`` registers ``/dev/pwm0`` on P4.  The standard PWM
+``CONFIG_P2_EC32MB_PWM`` registers ``/dev/pwm0`` on P4.  Standard PWM
 frequency and unsigned b16 duty are translated to the P2 sawtooth frame and
 base-period fields.  Frequencies outside the two 16-bit hardware fields fail
 with ``-ERANGE``.
 
 ``CONFIG_P2_EC32MB_CAPTURE`` registers ``/dev/cap0`` on P5.  The standard
 ``CAPIOC_DUTYCYCLE``, ``CAPIOC_FREQUENCY``, ``CAPIOC_EDGES``, and
-``CAPIOC_ALL`` calls use the P2 period-time, period-state, and continuous
+``CAPIOC_ALL`` operations use P2 period-time, period-state, and continuous
 rising-edge counter modes.  ``CAPIOC_PULSES`` and ``CAPIOC_CLR_CNT`` are also
-supported.  Synchronous measurements have a one-second timeout and are
-intended for stable periodic signals.
+supported.  Synchronous measurements have a one-second timeout.
 
-``CONFIG_P2_EC32MB_ADC`` registers the internally clocked SINC2 sampler as
-``/dev/adc0`` on P5.  ``ANIOC_TRIGGER`` returns raw, uncalibrated accumulator
-values and ``ANIOC_GET_NCHANNELS`` returns one.  ``CONFIG_P2_EC32MB_DAC``
-registers ``/dev/dac0`` on P4 using the 990-ohm, 3.3-V, 16-bit PWM-dithered
-DAC mode.  These lower halves may be present in the image, but their direct
-P4/P5 HIL stage is disabled for the installed jumper fixture; see
-:doc:`hil-wiring`.
+``CONFIG_P2_EC32MB_SPI`` registers a bit-banged ``/dev/spi0``.  The verified
+profile uses mode 0 at a requested 100 kHz: P6 MOSI is directly connected to
+P7 MISO, while P8 SCK and P9 chip select are deliberately unconnected.  The
+input is claimed before any output is enabled, and MOSI, MISO, SCK, and CS all
+float after deselect.  This proves the controller loopback path, not operation
+with an external SPI peripheral.
 
-P4/P5 are shared dynamically.  Opening PWM conflicts with an open DAC, and
-opening capture conflicts with an open ADC.  The central pin manager returns
-``-EBUSY`` rather than allowing two lower halves to configure the same pin.
-Closing the owner disables its Smart Pin and leaves the physical pin floating.
+Analog and I2C boundaries
+-------------------------
 
-General-purpose SPI and I2C host lower halves are not implemented.  SPI remains
-**BLOCKED** on allocating separate clock and chip-select pins in addition to
-the installed P6/P7 data jumper.  I2C remains **BLOCKED** on identifying a real
-responding 3.3-V device and its pulled-up SDA/SCL pair.
+``CONFIG_P2_EC32MB_ADC`` registers raw, uncalibrated SINC2 accumulator samples
+as ``/dev/adc0`` on P5.  ``CONFIG_P2_EC32MB_DAC`` registers ``/dev/dac0`` on
+P4 using the 990-ohm, 3.3-V, 16-bit PWM-dithered DAC mode.  P4/P5 are shared
+dynamically: PWM conflicts with DAC and capture conflicts with ADC.  The
+original P4/P5 direct jumper was used only for the verified one-source digital
+PWM/capture test.  It has now been replaced with the requested series resistor
+and P5-to-ground capacitor.  The separate analog profile passed 20/20 cycles.
+
+The board I2C implementation claims P24 as SDA and P25 as SCL through the
+central pin manager and exposes the NuttX bit-bang bus as ``/dev/i2c0``.  Both
+lines use open-drain drive; high is an external pull-up responsibility.  The
+optional BMP180 binding uses its fixed 7-bit address ``0x77``, requires chip ID
+``0x55``, and exposes the legacy pressure interface as ``/dev/press0``.
+
+The physical I2C campaign verified the installed BMP180 at address ``0x77``
+and ID ``0x55`` using a true write/NOSTOP repeated-start read.  It completed
+640 pressure reads and did not need a bus-recovery pulse.
+
+HIL evidence
+------------
+
+``artifacts/hil/20260713T063221.439668Z-smartpins`` completed 50/50 reset/load
+cycles.  Every cycle verified the GPIO pattern, six sampled edges, a 16-byte
+UART record, 1-kHz PWM at 25/50/75 percent duty, and a 16-byte SPI loopback;
+each stage emitted its safe-float marker.  DAC/ADC and I2C were not part of
+that campaign.  A subsequent 20-cycle analog campaign at
+``artifacts/hil/20260713T110743.191438Z-smartpins`` produced strictly
+increasing ADC values at all three DAC codes and floated both pins after every
+cycle.  The separate I2C campaign
+``artifacts/hil/20260713T111043.745628Z-i2c`` passed 20/20 cycles, including
+true repeated starts, 640 pressure readings from 100000 through 100019 Pa, and
+zero recovery pulses.

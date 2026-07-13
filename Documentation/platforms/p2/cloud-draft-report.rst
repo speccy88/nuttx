@@ -1,57 +1,55 @@
-Cloud draft report
-==================
+Cloud draft report (historical)
+===============================
 
-Starting point
---------------
+Status: **HISTORICAL**.  This page records the original cloud-only starting
+point and must not be used as the current HIL acceptance report.
 
-* Starting branch: ``work``.
-* Starting SHA: ``39cc55135fd24f02006e56f9fc1f0476edea1888``.
-* The checkout contains ``arch/p2/``, ``boards/p2/p2x8c4m64p/p2-ec32mb/``,
-  ``Documentation/platforms/p2/``, and ``tools/p2/``; this is PR #1 work, not
-  a restart from master.
+Original starting point
+-----------------------
 
-Changes in this continuation
-----------------------------
+The continuation began on branch ``work`` at
+``39cc55135fd24f02006e56f9fc1f0476edea1888``.  At that time the checkout had
+the P2 architecture, board, documentation, and tool skeletons, but the cloud
+image lacked executable p2llvm, loadp2, and kconfig-frontends tools.  Build and
+ABI steps were honestly recorded as ``BLOCKED`` rather than replaced by fake
+success hooks.
 
-* Added ``p2-ec32mb:bringup`` so the requested core build wrapper has a real
-  configuration directory.
-* Corrected the P2 board Make.defs to use ``--target=p2``, add
-  ``-fno-jump-tables``, and use the clang driver for final links instead of
-  raw ``ld.lld``.
-* Replaced the ABI-probe placeholder with a script that generates and compiles
-  broad C probes at ``-O0``, ``-Os``, and ``-O2`` when p2llvm is present.
-* Reworked ``tools/p2/bootstrap-cloud.sh`` so it records pinned/cached
-  dependency state, writes ``~/.p2-nuttx-env``, and can fetch/build toolchains
-  when explicitly enabled.
-* Reworked ``tools/p2/build.sh`` to preserve logs, configs, ELFs, maps,
-  symbols, sections, sizes, disassembly, and verifier output under
-  ``artifacts/cloud-p2/<config>/``.
+That phase added the ``p2-ec32mb:bringup`` profile, expanded the offline ABI
+probe sources, and made cloud build/bootstrap wrappers preserve diagnostic
+artifacts.  ``tools/p2/dependencies.lock`` is the resulting environment
+snapshot; its old ``BLOCKED_missing`` values describe that container only.
 
-Validation log
---------------
+Current disposition of the old blockers
+---------------------------------------
 
-HOST-TESTED:
+The maintained macOS workflow now uses ``tools/p2/bootstrap-local.sh`` and the
+hash-pinned ``tools/p2/toolchain.lock``.  The port links native P2 ELFs and has
+real startup, upward-stack context switching, INT1/CT1 timer delivery, serial,
+board lower halves, storage arbitration, and a PSRAM service cog.  The old
+claims that p2llvm was absent, Kconfig could not run, or all target images were
+unlinked are therefore obsolete.
 
-* ``./tools/p2/run-host-tests.sh``: 7 unittest cases passed.
-* ``P2_BOOTSTRAP_FETCH=0 ./tools/p2/bootstrap-cloud.sh``: dependency lock was
-  regenerated without downloading or committing generated binaries.
+Representative completed evidence is:
 
-BLOCKED:
+* 1,000,000 native context switches;
+* 100/100 NuttX bring-up and 50/50 NSH cycles;
+* 50/50 GPIO/edge/UART/PWM-capture/SPI cycles;
+* complete destructive flash and microSD campaigns;
+* 20/20 DAC/ADC and 20/20 BMP180 I2C cycles;
+* 20/20 independent ROM flash boots;
+* two consecutive full 32-MiB PSRAM write/read runs; and
+* a 600-sample host-referenced raw GETCT campaign spanning a conservative
+  600.555632 seconds.
 
-* ``./tools/p2/run-abi-probes.sh``: p2llvm clang is absent at
-  ``/root/.cache/p2-nuttx/p2llvm/install/bin/clang``.
-* ``./tools/p2/build.sh bringup``: configuration reaches olddefconfig, then
-  fails with ``/usr/bin/bash: line 1: kconfig-conf: command not found``.
-* bringup, NSH, ostest, storage, and smartpins ELFs are therefore not linked in
-  this cloud image.
+The exact artifact paths and limitations are maintained in
+:doc:`context-frame`, :doc:`interrupts`, :doc:`smartpins`,
+:doc:`storage-arbitration`, :doc:`psram-service`, and :doc:`hil-handoff`.
 
-Remaining mandatory blockers
-----------------------------
+Still-open boundaries
+---------------------
 
-* Real PASM2 interrupt entry/return and context switching remain DRAFTED and
-  HIL-REQUIRED.
-* ``up_irqinitialize()`` and ``up_timer_initialize()`` intentionally do not
-  claim success until the real P2 interrupt/timer path exists.
-* ``p2_lowputc()``, clock setup, the context frame, and upward PTRA stack
-  diagnostics require p2llvm compilation plus hardware validation before any
-  runtime PASS claim.
+The working UP port does not imply SMP, protected builds, or general interrupt
+routing.  P24/P25 I2C with the fixed-address BMP180 and the
+resistive/capacitive P4/P5 DAC/ADC fixture now have physical HIL evidence.
+True power-loss recovery remains open.  That is a current evidence gap, not
+an original cloud-tool availability failure.

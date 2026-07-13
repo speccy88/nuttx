@@ -2,7 +2,9 @@ Parallax Propeller 2 (P2) cloud first draft
 ===========================================
 
 .. warning::
-   This port is a first implementation draft. Runtime behavior is HIL-REQUIRED.
+   This port is in evidence-driven physical bring-up.  Read
+   :doc:`hil-status` and :doc:`final-hil-report` before treating an interface
+   as qualified; implemented but untested features remain HIL-REQUIRED.
 
 .. toctree::
    :maxdepth: 1
@@ -21,6 +23,8 @@ Parallax Propeller 2 (P2) cloud first draft
    psram-service
    smp-evaluation
    ostest-matrix
+   goal-status-table
+   final-hil-report
    hil-status
    hil-handoff
    cloud-draft-report
