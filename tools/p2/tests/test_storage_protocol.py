@@ -243,14 +243,14 @@ class StorageProtocolTests(unittest.TestCase):
     def test_board_markers_pin_jedec_geometry_layout_and_no_autoformat(self):
         output = "".join(
             {
-                "P2STORAGE:W25=PRIVATE JEDEC=EF4018":
-                    "\nP2STORAGE:W25=PRIVATE JEDEC=EF4018\r\n",
+                "P2STORAGE:W25=PRIVATE JEDEC=EF7018":
+                    "\nP2STORAGE:W25=PRIVATE JEDEC=EF7018\r\n",
                 "P2STORAGE:W25_GEOMETRY":
                     "\nP2STORAGE:W25_GEOMETRY BLOCK=256 ERASE=4096 "
                     "ERASEBLOCKS=4096 BYTES=16777216\r\n",
                 "P2STORAGE:W25_LAYOUT":
                     "\nP2STORAGE:W25_LAYOUT BOOT=0x00000000+0x00080000 "
-                    "DATA=0x00080000+0x00f80000 FIRSTBLOCK=2048 "
+                    "DATA=0x00080000+0x00F80000 FIRSTBLOCK=2048 "
                     "NBLOCKS=63488\r\n",
                 "P2STORAGE:W25_BOOT_CRC32":
                     "\nP2STORAGE:W25_BOOT_CRC32=89ABCDEF\r\n",

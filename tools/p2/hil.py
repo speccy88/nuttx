@@ -138,6 +138,8 @@ STORAGE_REQUIRED_CONFIG = (
 )
 
 STORAGE_ACTION_REQUIRED_CONFIG = (
+    ("CONFIG_BUILTIN", "y"),
+    ("CONFIG_NSH_BUILTIN_APPS", "y"),
     ("CONFIG_TESTING_P2STORAGE", "y"),
     ("CONFIG_TESTING_P2STORAGE_DESTRUCTIVE", "y"),
     ("CONFIG_TESTING_P2STORAGE_FLASH_DEVPATH", '"/dev/smart0"'),
@@ -271,7 +273,11 @@ STORAGE_MARKERS = BOOT_MARKERS + (
 STORAGE_ACTION_BOOT_MARKERS = BOOT_MARKERS + tuple(
     MarkerSpec(label, pattern) for label, pattern in STORAGE_BOARD_MARKER_PATTERNS
 ) + (
-    MarkerSpec("nsh> prompt", re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE)),
+    MarkerSpec(
+        "nsh> prompt",
+        re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE),
+        repeatable=True,
+    ),
 )
 
 STORAGE_FAILURE_PATTERNS = (

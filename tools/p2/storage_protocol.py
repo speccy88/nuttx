@@ -18,7 +18,7 @@ FLASH_DEVICE = "/dev/smart0"
 FLASH_MOUNT = "/mnt/flash"
 SD_DEVICE = "/dev/mmcsd0"
 SD_MOUNT = "/mnt/sd"
-FLASH_JEDEC = "EF4018"
+FLASH_JEDEC = "EF7018"
 ALTERNATE_TRANSACTIONS = 1000
 FLASH_CYCLE_COUNT = 16
 SD_STRESS_COUNT = 64
@@ -89,8 +89,8 @@ SD_DESTRUCTIVE_ACTIONS = frozenset(
 
 BOARD_MARKER_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
     (
-        "P2STORAGE:W25=PRIVATE JEDEC=EF4018",
-        re.compile(r"^P2STORAGE:W25=PRIVATE JEDEC=EF4018\r?$", re.MULTILINE),
+        "P2STORAGE:W25=PRIVATE JEDEC=EF7018",
+        re.compile(r"^P2STORAGE:W25=PRIVATE JEDEC=EF7018\r?$", re.MULTILINE),
     ),
     (
         "P2STORAGE:W25_GEOMETRY",
@@ -105,7 +105,7 @@ BOARD_MARKER_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
         re.compile(
             r"^P2STORAGE:W25_LAYOUT "
             r"BOOT=0x00000000\+0x00080000 "
-            r"DATA=0x00080000\+0x00f80000 "
+            r"DATA=0x00080000\+0x00F80000 "
             r"FIRSTBLOCK=2048 NBLOCKS=63488\r?$",
             re.MULTILINE,
         ),

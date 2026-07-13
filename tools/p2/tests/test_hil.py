@@ -343,11 +343,11 @@ class HilTests(unittest.TestCase):
 
     def storage_boot_output(self):
         return GOOD_BOOT_OUTPUT + (
-            b"P2STORAGE:W25=PRIVATE JEDEC=EF4018\r\n"
+            b"P2STORAGE:W25=PRIVATE JEDEC=EF7018\r\n"
             b"P2STORAGE:W25_GEOMETRY BLOCK=256 ERASE=4096 "
             b"ERASEBLOCKS=4096 BYTES=16777216\r\n"
             b"P2STORAGE:W25_LAYOUT BOOT=0x00000000+0x00080000 "
-            b"DATA=0x00080000+0x00f80000 FIRSTBLOCK=2048 "
+            b"DATA=0x00080000+0x00F80000 FIRSTBLOCK=2048 "
             b"NBLOCKS=63488\r\n"
             b"P2STORAGE:W25_BOOT_CRC32=89ABCDEF\r\n"
             b"P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO\r\n"
