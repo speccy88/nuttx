@@ -262,6 +262,71 @@ def executable_code(
     fail(f"{name} is outside executable sections or is truncated")
 
 
+def function_code(
+    elf: ELFFile,
+    sections: dict[str, object],
+    symbols: dict[str, int],
+    name: str,
+) -> bytes:
+    """Return the complete linked body of one function symbol."""
+
+    symtab = elf.get_section_by_name(".symtab")
+    if symtab is None:
+        fail("missing .symtab")
+
+    for symbol in symtab.iter_symbols():
+        if symbol.name == name and symbol["st_info"]["type"] == "STT_FUNC":
+            size = int(symbol["st_size"])
+            if size <= 0:
+                fail(f"{name} has no linked function size")
+            return executable_code(sections, symbols[name], size, name)
+
+    fail(f"missing function symbol {name}")
+
+
+def direct_calla_targets(code: bytes) -> list[int]:
+    """Return absolute immediate targets of linked CALLA instructions."""
+
+    targets = []
+    for offset in range(0, len(code) - 3, 4):
+        word = int.from_bytes(code[offset : offset + 4], "little")
+        if word & 0xFFF00000 == 0xFDC00000:
+            targets.append(word & 0xFFFFF)
+    return targets
+
+
+def verify_psram_test_hotpath(
+    elf: ELFFile, sections: dict[str, object], symbols: dict[str, int]
+) -> None:
+    """Keep the optional 32-MiB PSRAM test out of slow multiply helpers."""
+
+    entry = "p2psram_full_coverage"
+    if entry not in symbols:
+        return
+
+    required = (entry, "p2psram_hash", "p2psram_fill", "__mulsi3")
+    missing = [name for name in required if name not in symbols]
+    if missing:
+        fail(f"incomplete PSRAM test symbols: {', '.join(missing)}")
+
+    if "p2psram_pattern_next" in symbols:
+        fail("p2psram_pattern_next was not inlined out of the byte hot path")
+
+    multiply = symbols["__mulsi3"]
+    code = {
+        name: function_code(elf, sections, symbols, name)
+        for name in (entry, "p2psram_hash", "p2psram_fill")
+    }
+    for name, body in code.items():
+        if multiply in direct_calla_targets(body):
+            fail(f"{name} calls slow __mulsi3 in the PSRAM full-pass path")
+
+    full_targets = direct_calla_targets(code[entry])
+    for name in ("p2psram_hash", "p2psram_fill"):
+        if symbols[name] not in full_targets:
+            fail(f"{entry} does not call the locked {name} helper")
+
+
 def verify_psram_service(
     sections: dict[str, object], symbols: dict[str, int]
 ) -> None:
@@ -576,6 +641,7 @@ def verify(path: pathlib.Path) -> None:
         verify_startup(sections, symbols)
         verify_context_trigger(sections, symbols)
         verify_psram_service(sections, symbols)
+        verify_psram_test_hotpath(elf, sections, symbols)
         load_count = verify_segments(elf, sections)
 
         print(

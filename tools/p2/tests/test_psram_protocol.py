@@ -183,9 +183,15 @@ class PsramProtocolTests(unittest.TestCase):
             0xFF,
             0xFFFC,
             0xFFFF,
+            0x7FFFFC,
+            0x7FFFFF,
+            0x800000,
             0xFFFFFC,
             0xFFFFFF,
             0x1000000,
+            0x17FFFFC,
+            0x17FFFFF,
+            0x1800000,
             0x1FFF800,
         )
         for start in starts:

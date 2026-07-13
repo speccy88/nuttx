@@ -87,6 +87,13 @@ class PsramSourceTests(unittest.TestCase):
         self.assertIn("g_p2_psram_service_stack", source)
         self.assertIn("def verify_psram_service(", verifier)
         self.assertIn("verify_psram_service(sections, symbols)", verifier)
+        self.assertIn("def verify_psram_test_hotpath(", verifier)
+        self.assertIn(
+            "verify_psram_test_hotpath(elf, sections, symbols)", verifier
+        )
+        self.assertIn(
+            "calls slow __mulsi3 in the PSRAM full-pass path", verifier
+        )
 
     def test_target_app_covers_required_fault_and_integrity_stages(self):
         source = (APPS / "testing/p2psram/p2psram_main.c").read_text()
@@ -111,8 +118,15 @@ class PsramSourceTests(unittest.TestCase):
         self.assertIn("struct p2psram_pattern_state_s", source)
         self.assertIn("p2psram_pattern_next(&state)", source)
         self.assertIn("state->address & UINT32_C(0xffffff)", source)
-        self.assertIn("(value << 24) + (value << 8) + (value << 7)", source)
+        self.assertIn("static inline_function uint8_t p2psram_pattern_next", source)
+        self.assertIn("static noinline_function uint32_t", source)
+        self.assertIn("times3 = (value << 1) + value;", source)
+        self.assertIn("times25 = (times3 << 3) + value;", source)
+        self.assertIn("times403 = (times25 << 4) + times3;", source)
+        self.assertIn("hash = (value << 24) + times403;", source)
+        self.assertEqual(source.count('__asm__ __volatile__("" : "+r"'), 3)
         self.assertNotIn("hash *= P2PSRAM_FNV_PRIME", source)
+        self.assertNotIn("static uint8_t p2psram_pattern_byte", source)
         self.assertIn(
             "write_ticks += clock_systime_ticks() - start;", source
         )
