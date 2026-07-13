@@ -52,7 +52,7 @@ def complete_log():
             "P2PSRAM:CONCURRENT:PASS:WORK=32768:ELAPSED_TICKS=4:"
             "CPU_AVAILABLE_PERMILLE=930:CPU_OCCUPANCY_PERMILLE=70",
             "P2PSRAM:TIMEOUT:PASS:RESULT=110:BYTES=32768:"
-            "DEADLINE_TICKS=1:MIN_WIRE_USEC=26214:TICK_USEC=10000",
+            "DEADLINE_TICKS=1:MIN_WIRE_USEC=24576:TICK_USEC=10000",
             "P2PSRAM:RECOVERY:PASS",
             "P2PSRAM:CE_TIMING:PASS:MAX_CYCLES=711:LIMIT_CYCLES=1440",
             f"P2PSRAM:PASS:SEQUENCE={SEQUENCE}",
@@ -126,7 +126,7 @@ class PsramProtocolTests(unittest.TestCase):
                 "CPU_AVAILABLE_PERMILLE=930:CPU_OCCUPANCY_PERMILLE=70",
                 "CPU_AVAILABLE_PERMILLE=0:CPU_OCCUPANCY_PERMILLE=1000",
             ),
-            ("MIN_WIRE_USEC=26214", "MIN_WIRE_USEC=9999"),
+            ("MIN_WIRE_USEC=24576", "MIN_WIRE_USEC=9999"),
         )
         for original, replacement in replacements:
             with self.subTest(replacement=replacement):

@@ -72,6 +72,17 @@ class PsramSourceTests(unittest.TestCase):
             self.assertIn(command, source)
         self.assertIn("getct   r5", source)
         self.assertIn("P2_PSRAM_WIRE_CE_CYCLES_OFFSET", source)
+        self.assertIn("8 + 5 + 2 = 15 clocks total", source)
+        self.assertIn(
+            "mov     r12, #5\n.Lread_dummy:\n"
+            "        p2_psram_clock_dummy",
+            source,
+        )
+        self.assertIn(
+            "first clock-and-sample is the sixth wait clock", source
+        )
+        self.assertNotIn("read keeps CE low for 16", source)
+        self.assertNotIn("six dummy clocks", source)
         self.assertIn("mov     r0, #0x30", source)
         self.assertIn("g_p2_psram_service_stack", source)
         self.assertIn("def verify_psram_service(", verifier)
@@ -132,7 +143,7 @@ class PsramSourceTests(unittest.TestCase):
         ]
         self.assertIn("P2PSRAM_TIMEOUT_DEADLINE", timeout)
         self.assertIn("sizeof(g_p2psram_buffer)", timeout)
-        self.assertIn("P2PSRAM_TIMEOUT_MIN_USEC     26214", source)
+        self.assertIn("P2PSRAM_TIMEOUT_MIN_USEC     24576", source)
         self.assertIn("P2PSRAM:TIMEOUT:PASS:RESULT=", source)
         self.assertIn(":MIN_WIRE_USEC=%d:TICK_USEC=%d", source)
 

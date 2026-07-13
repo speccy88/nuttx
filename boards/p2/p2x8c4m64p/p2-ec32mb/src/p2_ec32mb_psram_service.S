@@ -107,8 +107,9 @@ p2_psram_cog_entry:
         mov     dirb, r7
         .endm
 
-        /* Fixed single-word QPI timing leaf.  A read keeps CE low for 16
-         * clocks (command/address, six dummy clocks, two data clocks).  A
+        /* Fixed single-word QPI timing leaf.  A read keeps CE low for 15
+         * clocks (command/address, five standalone wait clocks, two sampled
+         * clocks).  The first sampled clock is also the sixth wait clock.  A
          * write uses ten clocks.  Splitting all transfers into four-byte
          * words deliberately trades throughput for a hard refresh bound.
          *
@@ -172,7 +173,13 @@ p2_psram_timing_leaf:
         djnz    r12, #.Lread_command
 
         mov     dirb, r7                  /* bus turnaround */
-        mov     r12, #6
+        /* Five standalone wait clocks are followed by two clock-and-sample
+         * operations.  The first clock-and-sample is the sixth wait clock,
+         * whose falling edge returns the first data high nibble.  A one-word
+         * read therefore uses 8 + 5 + 2 = 15 clocks total.
+         */
+
+        mov     r12, #5
 .Lread_dummy:
         p2_psram_clock_dummy
         djnz    r12, #.Lread_dummy
