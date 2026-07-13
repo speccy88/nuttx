@@ -191,9 +191,9 @@ def _verify_loadp2(path: pathlib.Path, require_executable: bool = True) -> None:
         raise ReleaseBundleError("loadp2 does not identify version 0.078")
     if b"program application to SPI flash" not in data:
         raise ReleaseBundleError("loadp2 does not contain -FLASH support")
-    if b"In -CHIP mode" not in data or b"@ADDR+file" not in data:
+    if b"In -CHIP mode" not in data or b"@ADDR=file" not in data:
         raise ReleaseBundleError(
-            "loadp2 does not contain -CHIP size-prefix loading support"
+            "loadp2 does not contain -CHIP explicit-address loading support"
         )
     if require_executable and not os.access(path, os.X_OK):
         raise ReleaseBundleError("loadp2 is not executable")

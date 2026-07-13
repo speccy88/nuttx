@@ -16,9 +16,11 @@ if [[ -f "$hil_env" ]]; then
   source "$hil_env"
 fi
 
-# The pinned FlexProp writer occupies Hub RAM below 0x8000.  loadp2's
-# @8000+FILE form stores a four-byte size followed by FILE, so the largest
-# image this particular in-target writer can stage is 0x80000 - 0x8004.
+# The pinned FlexProp writer occupies Hub RAM below 0x8000.  Its payload is a
+# little-endian 32-bit byte count followed by the image and zero padding to a
+# four-byte boundary, so the largest image it can stage is 0x80000 - 0x8004.
+# Construct that envelope here instead of using loadp2's @ADDR+FILE form: the
+# pinned loadp2 incorrectly prefixes a later file with the previous file's size.
 
 readonly HUB_LIMIT=$((0x80000))
 readonly PAYLOAD_ADDRESS=$((0x8000))
@@ -152,7 +154,7 @@ writer_actual_sha256=$(sha256_file "$writer")
 loadp2_actual_sha256=$(sha256_file "$loadp2")
 
 [[ $image_size -le $PAYLOAD_LIMIT ]] ||
-  { echo "ERROR: image is $image_size bytes; the @8000+ writer limit is $PAYLOAD_LIMIT bytes" >&2; exit 2; }
+  { echo "ERROR: image is $image_size bytes; the staged writer limit is $PAYLOAD_LIMIT bytes" >&2; exit 2; }
 [[ $writer_size -le $WRITER_LIMIT ]] ||
   { echo "ERROR: SD writer is $writer_size bytes; it must fit below Hub 0x8000" >&2; exit 2; }
 
@@ -179,8 +181,76 @@ valid_sha256 "$loadp2_sha256" ||
 help=$({ "$loadp2" '-?' 2>&1 || true; })
 grep -q -- 'In -CHIP mode' <<<"$help" ||
   { echo "ERROR: loadp2 does not advertise -CHIP multi-file loading" >&2; exit 2; }
-grep -q '@ADDR+file' <<<"$help" ||
-  { echo "ERROR: loadp2 does not advertise @ADDR+file size-prefix loading" >&2; exit 2; }
+grep -q '@ADDR=file' <<<"$help" ||
+  { echo "ERROR: loadp2 does not advertise @ADDR=file loading" >&2; exit 2; }
+
+python=${P2_PYTHON:-python3}
+staged_payload=
+cleanup_staged_payload()
+{
+  if [[ -n "$staged_payload" ]]; then
+    rm -f -- "$staged_payload"
+  fi
+}
+trap cleanup_staged_payload EXIT
+
+staged_payload=$(mktemp "${TMPDIR:-/tmp}/p2-sd-boot-payload.XXXXXX")
+[[ "$staged_payload" != *,* ]] ||
+  { echo "ERROR: temporary payload path cannot contain a comma: $staged_payload" >&2; exit 2; }
+
+staged_metadata=$("$python" - "$image" "$staged_payload" <<'PY'
+import hashlib
+import pathlib
+import struct
+import sys
+
+source = pathlib.Path(sys.argv[1])
+destination = pathlib.Path(sys.argv[2])
+image_size = source.stat().st_size
+padding = b"\0" * (-image_size % 4)
+image_digest = hashlib.sha256()
+staged_digest = hashlib.sha256()
+copied = 0
+
+with source.open("rb") as input_file, destination.open("wb") as output_file:
+    prefix = struct.pack("<I", image_size)
+    output_file.write(prefix)
+    staged_digest.update(prefix)
+    while True:
+        chunk = input_file.read(65536)
+        if not chunk:
+            break
+        output_file.write(chunk)
+        image_digest.update(chunk)
+        staged_digest.update(chunk)
+        copied += len(chunk)
+    output_file.write(padding)
+    staged_digest.update(padding)
+
+if copied != image_size:
+    raise SystemExit("image size changed while staging")
+
+print(4 + image_size + len(padding), staged_digest.hexdigest(),
+      image_digest.hexdigest())
+PY
+)
+read -r staged_expected_size staged_expected_sha256 staged_image_sha256 \
+  <<<"$staged_metadata"
+staged_size=$(wc -c < "$staged_payload" | tr -d ' ')
+staged_sha256=$(sha256_file "$staged_payload")
+
+[[ "$staged_expected_size" =~ ^[0-9]+$ &&
+   "$staged_expected_sha256" =~ ^[0-9a-f]{64}$ &&
+   "$staged_image_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+  { echo "ERROR: staged payload metadata is malformed" >&2; exit 2; }
+[[ "$staged_size" == "$staged_expected_size" ]] ||
+  { echo "ERROR: staged payload size verification failed" >&2; exit 2; }
+[[ "$staged_sha256" == "$staged_expected_sha256" ]] ||
+  { echo "ERROR: staged payload SHA-256 verification failed" >&2; exit 2; }
+[[ "$staged_image_sha256" == "$image_sha256" ]] ||
+  { echo "ERROR: image changed while the staged payload was created" >&2; exit 2; }
+[[ $staged_size -le $((HUB_LIMIT - PAYLOAD_ADDRESS)) ]] ||
+  { echo "ERROR: staged payload does not fit below the Hub RAM limit" >&2; exit 2; }
 
 loader_baud=${P2_LOADER_BAUD:-2000000}
 console_baud=${P2_CONSOLE_BAUD:-230400}
@@ -196,7 +266,7 @@ done
 [[ "$writer_clock_mode" =~ ^[0-9A-Fa-f]{1,8}$ ]] ||
   { echo "ERROR: P2_SD_WRITER_CLOCK_MODE must be one to eight hexadecimal digits" >&2; exit 2; }
 
-filespec="@0=$writer,@8000+$image"
+filespec="@0=$writer,@8000=$staged_payload"
 recv_script="recvtimeout($recv_timeout_ms) recv(SD Updater) recv(Card mounted) recv($LOADP2_SUCCESS)"
 command=("$loadp2" -p "$port" -l "$loader_baud" -b "$console_baud"
          -f "$writer_clock_hz" -m "$writer_clock_mode" -PATCH
@@ -207,6 +277,9 @@ printf '%q ' "${command[@]}"
 printf '\n'
 printf 'sd_output_name=_BOOT_P2.BIX\n'
 printf 'image_size=%s\nimage_sha256=%s\n' "$image_size" "$image_sha256"
+printf 'staged_payload_size=%s\nstaged_payload_sha256=%s\n' \
+  "$staged_size" "$staged_sha256"
+printf 'staged_payload_format=le32-image-size+image+zero-pad-to-4\n'
 printf 'writer_sha256=%s\nloadp2_sha256=%s\n' "$writer_actual_sha256" "$loadp2_actual_sha256"
 printf 'sd_pins=P58:MISO,P59:MOSI,P60:nCS,P61:CLK\n'
 
@@ -258,11 +331,11 @@ started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 printf '%q ' "${command[@]}" > "$artifact_dir/command.txt"
 printf '\n' >> "$artifact_dir/command.txt"
 
-python=${P2_PYTHON:-python3}
 SD_ARTIFACT=$artifact_dir SD_IMAGE=$image SD_IMAGE_SIZE=$image_size \
 SD_IMAGE_SHA256=$image_sha256 SD_WRITER=$writer \
 SD_WRITER_SHA256=$writer_actual_sha256 SD_LOADP2=$loadp2 \
 SD_LOADP2_SHA256=$loadp2_actual_sha256 SD_PORT=$port \
+SD_STAGED_SIZE=$staged_size SD_STAGED_SHA256=$staged_sha256 \
 SD_LOADER_BAUD=$loader_baud SD_CONSOLE_BAUD=$console_baud \
 SD_STARTED_UTC=$started_utc \
 "$python" - <<'PY'
@@ -280,6 +353,9 @@ value = {
     "image": os.environ["SD_IMAGE"],
     "image_size": int(os.environ["SD_IMAGE_SIZE"]),
     "image_sha256": os.environ["SD_IMAGE_SHA256"],
+    "staged_payload_format": "le32-image-size+image+zero-pad-to-4",
+    "staged_payload_size": int(os.environ["SD_STAGED_SIZE"]),
+    "staged_payload_sha256": os.environ["SD_STAGED_SHA256"],
     "writer": os.environ["SD_WRITER"],
     "writer_sha256": os.environ["SD_WRITER_SHA256"],
     "loadp2": os.environ["SD_LOADP2"],

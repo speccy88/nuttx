@@ -14,6 +14,16 @@ action=${1:-}
 execute=0
 board=
 port=
+staged_payload=
+
+# shellcheck disable=SC2329  # Invoked by the EXIT/INT/TERM traps below.
+cleanup_staged_payload()
+{
+  if [[ -n "$staged_payload" ]]; then
+    rm -f -- "$staged_payload"
+  fi
+}
+trap cleanup_staged_payload EXIT INT TERM
 
 usage()
 {
@@ -107,6 +117,9 @@ loadp2_sha=$(shasum -a 256 "$loadp2" | awk '{print $1}')
 sd_writer=$ROOT/$(value sd_writer)
 loader_baud=${P2_LOADER_BAUD:-2000000}
 console_baud=${P2_CONSOLE_BAUD:-230400}
+readonly HUB_LIMIT=$((0x80000))
+readonly SD_PAYLOAD_ADDRESS=$((0x8000))
+readonly SD_IMAGE_LIMIT=$((HUB_LIMIT - SD_PAYLOAD_ADDRESS - 4))
 
 [[ "$loader_baud" =~ ^[0-9]+$ && $loader_baud -gt 0 ]] ||
   { echo "ERROR: P2_LOADER_BAUD must be a positive integer" >&2; exit 2; }
@@ -169,12 +182,87 @@ case "$action" in
     [[ "$writer_clock_mode" =~ ^[0-9A-Fa-f]{1,8}$ ]] ||
       { echo "ERROR: P2_SD_WRITER_CLOCK_MODE must be hexadecimal" >&2;
         exit 2; }
-    filespec="@0=$sd_writer,@8000+$sd_boot_image"
+
+    image_size=$(wc -c < "$sd_boot_image" | tr -d ' ')
+    writer_size=$(wc -c < "$sd_writer" | tr -d ' ')
+    [[ $image_size -le $SD_IMAGE_LIMIT ]] ||
+      { echo "ERROR: SD boot image is $image_size bytes; staged limit is $SD_IMAGE_LIMIT bytes" >&2;
+        exit 2; }
+    [[ $writer_size -le $SD_PAYLOAD_ADDRESS ]] ||
+      { echo "ERROR: SD writer is $writer_size bytes; it must fit below Hub 0x8000" >&2;
+        exit 2; }
+
+    staged_payload=$(mktemp "${TMPDIR:-/tmp}/p2-release-sd-payload.XXXXXX")
+    [[ "$staged_payload" != *,* ]] ||
+      { echo "ERROR: temporary SD payload path cannot contain a comma" >&2;
+        exit 2; }
+    staged_metadata=$("$PYTHON" - "$sd_boot_image" "$staged_payload" <<'PY'
+import hashlib
+import pathlib
+import struct
+import sys
+
+source = pathlib.Path(sys.argv[1])
+destination = pathlib.Path(sys.argv[2])
+image_size = source.stat().st_size
+padding = b"\0" * (-image_size % 4)
+image_digest = hashlib.sha256()
+staged_digest = hashlib.sha256()
+copied = 0
+
+with source.open("rb") as input_file, destination.open("wb") as output_file:
+    prefix = struct.pack("<I", image_size)
+    output_file.write(prefix)
+    staged_digest.update(prefix)
+    while True:
+        chunk = input_file.read(65536)
+        if not chunk:
+            break
+        output_file.write(chunk)
+        image_digest.update(chunk)
+        staged_digest.update(chunk)
+        copied += len(chunk)
+    output_file.write(padding)
+    staged_digest.update(padding)
+
+if copied != image_size:
+    raise SystemExit("image size changed while staging")
+
+print(4 + image_size + len(padding), staged_digest.hexdigest(),
+      image_digest.hexdigest())
+PY
+)
+    read -r staged_expected_size staged_expected_sha256 \
+      staged_image_sha256 <<<"$staged_metadata"
+    staged_size=$(wc -c < "$staged_payload" | tr -d ' ')
+    staged_sha256=$(shasum -a 256 "$staged_payload" | awk '{print $1}')
+    image_sha256=$(shasum -a 256 "$sd_boot_image" | awk '{print $1}')
+    [[ "$staged_expected_size" =~ ^[0-9]+$ &&
+       "$staged_expected_sha256" =~ ^[0-9a-f]{64}$ &&
+       "$staged_image_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+      { echo "ERROR: staged SD payload metadata is malformed" >&2; exit 2; }
+    [[ "$staged_size" == "$staged_expected_size" ]] ||
+      { echo "ERROR: staged SD payload size verification failed" >&2; exit 2; }
+    [[ "$staged_sha256" == "$staged_expected_sha256" ]] ||
+      { echo "ERROR: staged SD payload SHA-256 verification failed" >&2;
+        exit 2; }
+    [[ "$staged_image_sha256" == "$image_sha256" ]] ||
+      { echo "ERROR: SD image changed while the payload was staged" >&2;
+        exit 2; }
+    [[ $staged_size -le $((HUB_LIMIT - SD_PAYLOAD_ADDRESS)) ]] ||
+      { echo "ERROR: staged SD payload exceeds Hub RAM" >&2; exit 2; }
+
+    filespec="@0=$sd_writer,@8000=$staged_payload"
     recv_script="recvtimeout($recv_timeout_ms) recv(SD Updater) recv(Card mounted) recv(writing _BOOT_P2.BIX...OK)"
     command=("$loadp2" -p "$port" -l "$loader_baud" -b "$console_baud"
              -f "$writer_clock_hz" -m "$writer_clock_mode" -PATCH
              -DTR -ZERO -CHIP -v -e "$recv_script" "$filespec")
     echo "sd_output_name=_BOOT_P2.BIX"
+    echo "sd_image_size=$image_size"
+    echo "sd_image_sha256=$image_sha256"
+    echo "staged_payload_size=$staged_size"
+    echo "staged_payload_sha256=$staged_sha256"
+    echo "staged_payload_format=le32-image-size+image+zero-pad-to-4"
     echo "BOOT-UNVERIFIED: physical SD-only reset is still required"
     ;;
 esac
@@ -227,6 +315,7 @@ release_lock()
   if [[ -n "${run_log:-}" ]]; then
     rm -f "$run_log"
   fi
+  cleanup_staged_payload
   rm -f "$lock_dir/pid"
   rmdir "$lock_dir" 2>/dev/null || true
 }

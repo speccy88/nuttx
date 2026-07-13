@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Strict console protocol for destructive P2 flash and microSD HIL.
+"""Strict console protocol for P2 flash and microSD HIL.
 
-The target command is intentionally authenticated only by an exact, long
-data-loss acknowledgement token.  The host safety gates are independent and
-must also pass before :mod:`hil` opens the serial port.  A per-run 32-bit
+Destructive target commands are intentionally authenticated only by an exact,
+long data-loss acknowledgement token.  The host safety gates are independent
+and must also pass before :mod:`hil` opens the serial port.  A per-run 32-bit
 sequence is used as a nonce and is embedded in the deterministic on-media
 record, its checksum markers, and the reset-persistence verification.
 """
@@ -18,7 +18,7 @@ FLASH_DEVICE = "/dev/smart0"
 FLASH_MOUNT = "/mnt/flash"
 SD_DEVICE = "/dev/mmcsd0"
 SD_MOUNT = "/mnt/sd"
-FLASH_JEDEC = "EF7018"
+SUPPORTED_FLASH_JEDECS = ("EF4018", "EF5018", "EF6018", "EF7018")
 ALTERNATE_TRANSACTIONS = 1000
 FLASH_CYCLE_COUNT = 16
 SD_STRESS_COUNT = 64
@@ -30,6 +30,7 @@ BOOT_CRC_PATTERN = re.compile(
 
 ACTIONS = (
     "probe",
+    "sd-rom-verify",
     "flash-format",
     "flash-write",
     "flash-verify",
@@ -89,8 +90,12 @@ SD_DESTRUCTIVE_ACTIONS = frozenset(
 
 BOARD_MARKER_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
     (
-        "P2STORAGE:W25=PRIVATE JEDEC=EF7018",
-        re.compile(r"^P2STORAGE:W25=PRIVATE JEDEC=EF7018\r?$", re.MULTILINE),
+        "P2STORAGE:W25=PRIVATE JEDEC=SUPPORTED",
+        re.compile(
+            r"^P2STORAGE:W25=PRIVATE JEDEC="
+            r"(?P<w25_jedec>EF(?:40|50|60|70)18)\r?$",
+            re.MULTILINE,
+        ),
     ),
     (
         "P2STORAGE:W25_FREQUENCY PROBE=400000 ACTIVE=2000000",
@@ -142,6 +147,14 @@ BOARD_MARKER_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
 )
 
 FAILURE_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
+    (
+        "P2 SD ROM layout failure",
+        re.compile(
+            r"^P2STORAGE:SD:ROM-FAIL:STAGE=[A-Z0-9_-]+:"
+            r"REASON=[A-Z0-9_-]+\r?$",
+            re.MULTILINE,
+        ),
+    ),
     (
         "P2 storage action failure",
         re.compile(
@@ -312,6 +325,85 @@ def response_marker_patterns(
                         r"DEV=/dev/mmcsd0:AVAILABLE=1:WRITE=1:"
                         r"SECTORS=(?P<sd_sectors>[1-9][0-9]*):"
                         r"SECTORSIZE=(?P<sd_sectorsize>[1-9][0-9]*):PASS\r?$",
+                        re.MULTILINE,
+                    ),
+                ),
+            )
+        )
+    elif action == "sd-rom-verify":
+        markers.extend(
+            (
+                (
+                    "P2STORAGE:SD:ROM-MBR",
+                    re.compile(
+                        r"^P2STORAGE:SD:ROM-MBR:"
+                        r"TYPE=(?P<sd_rom_partition_type>0[BC]):"
+                        r"START=(?P<sd_rom_partition_start>[1-9][0-9]*):"
+                        r"SECTORS=(?P<sd_rom_partition_sectors>[1-9][0-9]*):"
+                        r"PASS\r?$",
+                        re.MULTILINE,
+                    ),
+                ),
+                (
+                    "P2STORAGE:SD:ROM-VBR",
+                    re.compile(
+                        r"^P2STORAGE:SD:ROM-VBR:"
+                        r"BPS=(?P<sd_rom_bytes_per_sector>512):"
+                        r"SPC=(?P<sd_rom_sectors_per_cluster>"
+                        r"1|2|4|8|16|32|64|128):"
+                        r"RESERVED=(?P<sd_rom_reserved_sectors>"
+                        r"[1-9][0-9]*):FATS=2:"
+                        r"FATSZ=(?P<sd_rom_fat_sectors>[1-9][0-9]*):"
+                        r"ROOT=(?P<sd_rom_root_cluster>2):"
+                        r"FSINFO=(?P<sd_rom_fsinfo_sector>[1-9][0-9]*):"
+                        r"PASS\r?$",
+                        re.MULTILINE,
+                    ),
+                ),
+                (
+                    "P2STORAGE:SD:ROM-FSINFO",
+                    re.compile(
+                        r"^P2STORAGE:SD:ROM-FSINFO:"
+                        r"LBA=(?P<sd_rom_fsinfo_lba>[1-9][0-9]*):PASS\r?$",
+                        re.MULTILINE,
+                    ),
+                ),
+                (
+                    "P2STORAGE:SD:ROM-ROOT",
+                    re.compile(
+                        r"^P2STORAGE:SD:ROM-ROOT:"
+                        r"LBA=(?P<sd_rom_root_lba>[1-9][0-9]*):"
+                        r"ENTRY=(?P<sd_rom_directory_entry>[0-9]+):"
+                        r"NAME=_BOOT_P2\.BIX:"
+                        r"CLUSTER=(?P<sd_rom_file_cluster>"
+                        r"[2-9]|[1-9][0-9]+):"
+                        r"BYTES=(?P<sd_rom_file_bytes>[1-9][0-9]*):"
+                        r"PASS\r?$",
+                        re.MULTILINE,
+                    ),
+                ),
+                (
+                    "P2STORAGE:SD:ROM-CHAIN",
+                    re.compile(
+                        r"^P2STORAGE:SD:ROM-CHAIN:"
+                        r"FIRST=(?P<sd_rom_chain_first>"
+                        r"[2-9]|[1-9][0-9]+):"
+                        r"CLUSTERS=(?P<sd_rom_chain_clusters>"
+                        r"[1-9][0-9]*):CONTIGUOUS=1:"
+                        r"EOC=(?P<sd_rom_chain_eoc>0FFFFFF[89A-F]):"
+                        r"PASS\r?$",
+                        re.MULTILINE,
+                    ),
+                ),
+                (
+                    "P2STORAGE:SD:ROM-IMAGE",
+                    re.compile(
+                        r"^P2STORAGE:SD:ROM-IMAGE:"
+                        r"LBA=(?P<sd_rom_image_lba>[1-9][0-9]*):"
+                        r"SECTORS=(?P<sd_rom_image_sectors>[1-9][0-9]*):"
+                        r"BYTES=(?P<sd_rom_image_bytes>[1-9][0-9]*):"
+                        r"FNV1A=(?P<sd_rom_image_fnv1a>[0-9A-F]{8}):"
+                        r"PASS\r?$",
                         re.MULTILINE,
                     ),
                 ),
@@ -498,6 +590,37 @@ def parse_storage_response(
             errors.append("ABSENT interrupted file must report BYTES=0")
         if pending == "PREFIX" and not 0 <= pending_bytes <= 128:
             errors.append("interrupted prefix length must be in 0..128")
+    if action == "sd-rom-verify":
+        if (
+            "sd_rom_file_cluster" in captures
+            and "sd_rom_chain_first" in captures
+            and captures["sd_rom_file_cluster"] != captures["sd_rom_chain_first"]
+        ):
+            errors.append("SD ROM chain must begin at the directory cluster")
+        if "sd_rom_file_bytes" in captures and "sd_rom_image_bytes" in captures:
+            file_bytes = int(captures["sd_rom_file_bytes"])
+            if file_bytes != int(captures["sd_rom_image_bytes"]):
+                errors.append("SD ROM raw image byte count must match directory")
+            if file_bytes > 507904:
+                errors.append("SD ROM image exceeds the P2 ROM size limit")
+            if "sd_rom_image_sectors" in captures:
+                expected_sectors = (file_bytes + 511) // 512
+                if int(captures["sd_rom_image_sectors"]) != expected_sectors:
+                    errors.append("SD ROM image sector count does not match bytes")
+        if all(
+            name in captures
+            for name in (
+                "sd_rom_file_bytes",
+                "sd_rom_chain_clusters",
+                "sd_rom_sectors_per_cluster",
+            )
+        ):
+            cluster_bytes = int(captures["sd_rom_sectors_per_cluster"]) * 512
+            expected_clusters = (
+                int(captures["sd_rom_file_bytes"]) + cluster_bytes - 1
+            ) // cluster_bytes
+            if int(captures["sd_rom_chain_clusters"]) != expected_clusters:
+                errors.append("SD ROM FAT chain length does not match bytes")
 
     sequence_text = (
         normalize_sequence(sequence) if action in SEQUENCE_ACTIONS else None

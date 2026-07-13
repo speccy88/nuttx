@@ -88,7 +88,7 @@ def make_loader(path: pathlib.Path) -> pathlib.Path:
         + b"loadp2 version 0.078\x00"
         + b"program application to SPI flash\x00"
         + b"In -CHIP mode\x00"
-        + b"@ADDR+file\x00"
+        + b"@ADDR=file\x00"
     )
     path.chmod(0o755)
     return path
@@ -235,6 +235,13 @@ class ReleaseFixture:
 
 
 class ReleaseBundleTests(ReleaseFixture, unittest.TestCase):
+    def test_package_rejects_loader_without_explicit_address_filespec(self):
+        data = self.loader.read_bytes().replace(b"@ADDR=file", b"@ADDR+file")
+        self.loader.write_bytes(data)
+        result = self.package(self.temp / "release-plus-only-loader")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("explicit-address loading support", result.stderr)
+
     def test_package_contains_exact_dual_board_install_assets(self):
         output = self.temp / "release"
         result = self.package(output)
@@ -491,7 +498,78 @@ class ReleaseInstallerTests(ReleaseFixture, unittest.TestCase):
                 self.assertIn("P2ES_sdcard.bin", sd.stdout)
                 self.assertIn(slug + "-_BOOT_P2.BIX", sd.stdout)
                 self.assertIn("-CHIP", sd.stdout)
+                self.assertIn("@8000=", sd.stdout)
+                self.assertNotIn("@8000+", sd.stdout)
+                self.assertIn(
+                    "staged_payload_format=le32-image-size+image+zero-pad-to-4",
+                    sd.stdout,
+                )
                 self.assertIn("BOOT-UNVERIFIED", sd.stdout)
+
+    def test_sd_installer_stages_exact_length_prefixed_image_and_cleans_it(self):
+        output = self.temp / "release"
+        self.assertEqual(self.package(output).returncode, 0)
+        python_wrapper = self.temp / "staging-python-wrapper"
+        python_wrapper.write_text(
+            "#!/bin/sh\n"
+            'if [ "$2" = run ]; then\n'
+            "  for last do :; done\n"
+            '  staged=${{last#*,@8000=}}\n'
+            '  if [ "$staged" = "$last" ]; then\n'
+            "    echo 'ERROR: missing @8000= staged payload'\n"
+            "    exit 3\n"
+            "  fi\n"
+            '  "{}" - "$staged" <<\'PY\'\n'
+            "import pathlib\n"
+            "import sys\n"
+            'print("STAGED_HEX=" + pathlib.Path(sys.argv[1]).read_bytes().hex())\n'
+            "PY\n"
+            "  exit 0\n"
+            "fi\n"
+            'exec "{}" "$@"\n'.format(sys.executable, sys.executable),
+            encoding="utf-8",
+        )
+        python_wrapper.chmod(0o755)
+        fake_bin = self.temp / "staging-fake-bin"
+        fake_bin.mkdir()
+        fake_lsof = fake_bin / "lsof"
+        fake_lsof.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        fake_lsof.chmod(0o755)
+        stage_tmp = self.temp / "stage-tmp"
+        stage_tmp.mkdir()
+        env = os.environ.copy()
+        env.update(
+            {
+                "PATH": str(fake_bin) + os.pathsep + env["PATH"],
+                "TMPDIR": str(stage_tmp),
+                "P2_PYTHON": str(python_wrapper),
+                "P2_HIL": "1",
+                "P2_ALLOW_RESET": "1",
+                "P2_ALLOW_SD_WRITE": "1",
+                "P2_ALLOW_SD_DESTRUCTIVE": "1",
+                "P2_ALLOW_TEST_HOST": "1",
+                "P2_LOCK_DIR": str(self.temp / "sd-stage.lock"),
+            }
+        )
+        result = subprocess.run(
+            [
+                str(output / "install-p2.sh"),
+                "sd",
+                "--board",
+                "p2-ec32mb",
+                "--port",
+                "/dev/null",
+                "--execute",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("STAGED_HEX=0400000045454545", result.stdout)
+        self.assertIn("PASS: writer recreated", result.stdout)
+        self.assertEqual(list(stage_tmp.iterdir()), [])
 
     def test_flash_execute_requires_shared_sd_gate_before_device_open(self):
         output = self.temp / "release"

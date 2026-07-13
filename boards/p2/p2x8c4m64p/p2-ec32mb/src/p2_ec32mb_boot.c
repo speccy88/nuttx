@@ -26,6 +26,7 @@
 
 #include <nuttx/config.h>
 
+#include <errno.h>
 #include <stdbool.h>
 
 #include <nuttx/board.h>
@@ -305,7 +306,12 @@ void board_late_initialize(void)
   int w25_ret;
 
   w25_ret = p2_w25_initialize();
-  if (w25_ret < 0)
+  if (w25_ret == -ENODEV)
+    {
+      syslog(LOG_NOTICE,
+             "P2STORAGE:W25=UNAVAILABLE:CHECK_FLASH_SWITCH\n");
+    }
+  else if (w25_ret < 0)
     {
       syslog(LOG_ERR, "P2STORAGE:W25=FAIL:%d\n", w25_ret);
     }

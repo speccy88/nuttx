@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pathlib
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -25,6 +26,15 @@ class SdBootWriterTests(unittest.TestCase):
             "fi\n"
             "touch \"$FAKE_LOADP2_INVOKED\"\n"
             "printf '%s\\n' \"$@\" > \"$FAKE_LOADP2_ARGS\"\n"
+            "for argument do\n"
+            "  case \"$argument\" in\n"
+            "    @0=*,@8000=*)\n"
+            "      staged=${argument#*,@8000=}\n"
+            "      printf '%s\\n' \"$staged\" > \"$FAKE_STAGED_PATH\"\n"
+            "      cp \"$staged\" \"$FAKE_STAGED_COPY\"\n"
+            "      ;;\n"
+            "  esac\n"
+            "done\n"
             "exit \"${FAKE_LOADP2_RESULT:-0}\"\n",
             encoding="utf-8",
         )
@@ -44,6 +54,8 @@ class SdBootWriterTests(unittest.TestCase):
                 "P2_HIL_ENV_FILE": "/dev/null",
                 "FAKE_LOADP2_INVOKED": str(root / "invoked"),
                 "FAKE_LOADP2_ARGS": str(root / "args"),
+                "FAKE_STAGED_PATH": str(root / "staged-path"),
+                "FAKE_STAGED_COPY": str(root / "staged-copy"),
             }
         )
         if environment:
@@ -74,7 +86,7 @@ class SdBootWriterTests(unittest.TestCase):
             check=False,
         )
 
-    def test_dry_run_builds_exact_size_prefixed_chip_command_without_opening_serial(self):
+    def test_dry_run_builds_explicit_staged_chip_command_without_opening_serial(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             result = self.run_script(root)
@@ -84,7 +96,13 @@ class SdBootWriterTests(unittest.TestCase):
             self.assertIn("-CHIP", result.stdout)
             self.assertIn("-PATCH", result.stdout)
             self.assertIn("-ZERO", result.stdout)
-            self.assertIn("@8000+", result.stdout)
+            self.assertIn("@8000=", result.stdout)
+            self.assertNotIn("@8000+", result.stdout)
+            self.assertIn("staged_payload_size=16", result.stdout)
+            self.assertIn(
+                "staged_payload_format=le32-image-size+image+zero-pad-to-4",
+                result.stdout,
+            )
             self.assertIn("_BOOT_P2.BIX...OK", result.stdout)
             self.assertFalse((root / "invoked").exists())
 
@@ -211,7 +229,27 @@ class SdBootWriterTests(unittest.TestCase):
             arguments = (root / "args").read_text().splitlines()
             self.assertIn("-CHIP", arguments)
             self.assertIn("-PATCH", arguments)
-            self.assertTrue(any(value.startswith("@0=") for value in arguments))
+            filespec = next(value for value in arguments if value.startswith("@0="))
+            self.assertIn(",@8000=", filespec)
+            self.assertNotIn("@8000+", filespec)
+            staged_path = pathlib.Path((root / "staged-path").read_text().strip())
+            self.assertFalse(staged_path.exists())
+            image_bytes = (root / "_BOOT_P2.BIX").read_bytes()
+            expected = (
+                struct.pack("<I", len(image_bytes))
+                + image_bytes
+                + b"\0" * (-len(image_bytes) % 4)
+            )
+            self.assertEqual((root / "staged-copy").read_bytes(), expected)
+            self.assertEqual(status["staged_payload_size"], len(expected))
+            self.assertEqual(
+                status["staged_payload_sha256"],
+                hashlib.sha256(expected).hexdigest(),
+            )
+            self.assertEqual(
+                status["staged_payload_format"],
+                "le32-image-size+image+zero-pad-to-4",
+            )
 
     def test_receive_script_error_is_a_write_failure_even_if_loadp2_exits_zero(self):
         with tempfile.TemporaryDirectory() as directory:

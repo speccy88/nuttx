@@ -83,6 +83,10 @@ class ShowcaseProfileTests(unittest.TestCase):
         for board in ("p2-ec32mb", "p2-ec"):
             rc_s = self.read(BOARD_ROOT / board / "src" / "etc" / "init.d" / "rcS")
             self.assertIn(f"P2SHOWCASE:READY:BOARD={board}:RUN=p2help", rc_s)
+            self.assertIn("if [ -e /dev/smart0 ]", rc_s)
+            self.assertIn(
+                "P2FLASHBOOT:SMARTFS=UNAVAILABLE:CHECK_FLASH_SWITCH", rc_s
+            )
 
         build = self.read(ROOT / "tools" / "p2" / "build.sh")
         self.assertIn("p2-ec32mb|p2-ec", build)

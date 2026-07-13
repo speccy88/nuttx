@@ -8,12 +8,17 @@
 
 #ifdef CONFIG_P2_EC32MB_FLASHBOOT
 
-mkdir -p /mnt/flash
-if mount -t smartfs /dev/smart0 /mnt/flash
+if [ -e /dev/smart0 ]
 then
-  echo P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash:MOUNTED:AUTOFORMAT=NO:DESTRUCTIVE_HANDLERS=ABSENT
+  mkdir -p /mnt/flash
+  if mount -t smartfs /dev/smart0 /mnt/flash
+  then
+    echo P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash:MOUNTED:AUTOFORMAT=NO:DESTRUCTIVE_HANDLERS=ABSENT
+  else
+    echo P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash:FAIL:AUTOFORMAT=NO
+  fi
 else
-  echo P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash:FAIL:AUTOFORMAT=NO
+  echo P2FLASHBOOT:SMARTFS=UNAVAILABLE:CHECK_FLASH_SWITCH
 fi
 
 #endif

@@ -3,8 +3,10 @@
 """Prove a previously written P2 image boots in user-confirmed SD-only mode.
 
 This verifier never invokes a loader and never transmits a serial byte.  It
-opens the console, applies the same DTR-only reset pulse used by the P2 HIL
-tools, and requires the exact universal P2 early-boot markers followed by the
+quiesces and discards any serial-open reset output, then uses one controlled
+PropPlug DTR edge as the sole captured reset.  It requires the exact universal
+P2 early-boot markers, the storage markers that prove the FLASH switch is off
+and the SD block device is present, the selected-board showcase marker, and the
 first exact NSH prompt.  The SD-only switch confirmation is deliberately a
 required execution-time assertion because the switch positions cannot be
 observed through the serial port.
@@ -28,7 +30,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import flashboot_protocol
 import monitor
-import reset
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -37,10 +38,33 @@ EXIT_OK = 0
 EXIT_SAFETY = 2
 EXIT_HIL_FAILED = 3
 EXIT_INTERRUPTED = 130
+DTR_EDGE_SETTLE_SECONDS = 0.002
+PRE_RESET_QUIESCE_SECONDS = 10.0
 
-UNIVERSAL_BOOT_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
-    flashboot_protocol.PREREQUISITE_BOOT_MARKER_PATTERNS[:4]
-    + ((flashboot_protocol.PROMPT_LABEL, flashboot_protocol.PROMPT_PATTERN),)
+SHOWCASE_BOARD_MARKERS: Mapping[str, Tuple[str, re.Pattern]] = {
+    board: (
+        "P2SHOWCASE:READY:BOARD={}:RUN=p2help".format(board),
+        re.compile(
+            r"^P2SHOWCASE:READY:BOARD={}:RUN=p2help\r?$".format(
+                re.escape(board)
+            ),
+            re.MULTILINE,
+        ),
+    )
+    for board in ("p2-ec32mb", "p2-ec")
+}
+
+SD_ONLY_MARKERS: Tuple[Tuple[str, re.Pattern], ...] = tuple(
+    (
+        marker,
+        re.compile(r"^" + re.escape(marker) + r"\r?$", re.MULTILINE),
+    )
+    for marker in (
+        "P2STORAGE:W25=UNAVAILABLE:CHECK_FLASH_SWITCH",
+        "P2STORAGE:MMCSD_FREQUENCY ID=400000 TRANSFER=2000000",
+        "P2STORAGE:MMCSD=/dev/mmcsd0",
+        "P2FLASHBOOT:SMARTFS=UNAVAILABLE:CHECK_FLASH_SWITCH",
+    )
 )
 
 
@@ -139,12 +163,21 @@ def load_write_evidence(path: pathlib.Path) -> WriteEvidence:
     )
 
 
-def marker_status(text: str) -> Dict[str, object]:
+def boot_patterns(board: str) -> Tuple[Tuple[str, re.Pattern], ...]:
+    return (
+        flashboot_protocol.PREREQUISITE_BOOT_MARKER_PATTERNS[:4]
+        + SD_ONLY_MARKERS
+        + (SHOWCASE_BOARD_MARKERS[board],)
+        + ((flashboot_protocol.PROMPT_LABEL, flashboot_protocol.PROMPT_PATTERN),)
+    )
+
+
+def marker_status(text: str, board: str) -> Dict[str, object]:
     found = []
     missing = []
     duplicates = []
     positions = []
-    for label, pattern in UNIVERSAL_BOOT_PATTERNS:
+    for label, pattern in boot_patterns(board):
         matches = list(pattern.finditer(text))
         if not matches:
             missing.append(label)
@@ -226,6 +259,23 @@ def open_serial(port: str, baud: int, read_timeout: float):
         return serial.Serial(**arguments)
 
 
+def dtr_edge_reset(
+    connection: object,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Reset through exactly one DTR edge without transmitting data."""
+
+    if hasattr(connection, "is_open") and not connection.is_open:
+        raise RuntimeError("serial connection is not open")
+    if not hasattr(connection, "dtr"):
+        raise RuntimeError("serial connection does not expose DTR control")
+    try:
+        connection.dtr = not bool(connection.dtr)
+        sleep(DTR_EDGE_SETTLE_SECONDS)
+    except (AttributeError, OSError, RuntimeError, ValueError) as exc:
+        raise RuntimeError("single-edge DTR reset failed: {}".format(exc)) from exc
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -235,6 +285,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--confirm-sd-only", action="store_true")
+    parser.add_argument(
+        "--manual-reset",
+        action="store_true",
+        help=(
+            "after opening and quiescing serial, wait for one physical Reset "
+            "button press instead of toggling DTR"
+        ),
+    )
+    parser.add_argument(
+        "--board", required=True, choices=tuple(SHOWCASE_BOARD_MARKERS)
+    )
     parser.add_argument("--port", required=True)
     parser.add_argument("--image", required=True, type=pathlib.Path)
     parser.add_argument("--write-artifact", required=True, type=pathlib.Path)
@@ -333,6 +394,8 @@ def main(
             "status": "RUNNING",
             "boot_status": "UNVERIFIED",
             "boot_source": "SD_ONLY_USER_CONFIRMED",
+            "board": args.board,
+            "expected_showcase_marker": SHOWCASE_BOARD_MARKERS[args.board][0],
             "switch_confirmation": {
                 "FLASH": "OFF",
                 "up": "OFF",
@@ -342,8 +405,14 @@ def main(
             "ended_utc": None,
             "port": args.port,
             "console_baud": args.console_baud,
-            "reset_method": "DTR",
-            "reset_dwell_seconds": reset.DTR_DWELL_SECONDS,
+            "reset_method": (
+                "USER_PHYSICAL_RESET_AFTER_SERIAL_QUIESCE"
+                if args.manual_reset
+                else "DTR_SINGLE_EDGE_AFTER_QUIESCE"
+            ),
+            "pre_reset_quiesce_seconds": PRE_RESET_QUIESCE_SECONDS,
+            "pre_reset_input_flushed": True,
+            "reset_dwell_seconds": DTR_EDGE_SETTLE_SECONDS,
             "loader_downloaded": False,
             "serial_tx_bytes": 0,
             "image": str(image),
@@ -357,10 +426,10 @@ def main(
             "reason": None,
         }
         write_json(artifact_dir / "status.json", status)
-        write_json(artifact_dir / "markers.json", marker_status(""))
+        write_json(artifact_dir / "markers.json", marker_status("", args.board))
 
         connection = None
-        boot_result: Dict[str, object] = marker_status("")
+        boot_result: Dict[str, object] = marker_status("", args.board)
         raw = bytearray()
         reason = "reset-only SD boot did not complete"
         passed = False
@@ -384,7 +453,19 @@ def main(
                     )
                 if hasattr(connection, "is_open") and not connection.is_open:
                     raise RuntimeError("serial factory returned a closed connection")
-                reset.dtr_reset(connection, sleep=sleep)
+                if not hasattr(connection, "reset_input_buffer"):
+                    raise RuntimeError(
+                        "serial connection cannot discard pre-reset input"
+                    )
+                sleep(PRE_RESET_QUIESCE_SECONDS)
+                connection.reset_input_buffer()
+                if args.manual_reset:
+                    print(
+                        "READY_FOR_MANUAL_RESET: press the physical Reset button once",
+                        flush=True,
+                    )
+                else:
+                    dtr_edge_reset(connection, sleep=sleep)
                 deadline = monotonic() + args.boot_timeout
                 while monotonic() < deadline:
                     chunk = connection.read(4096)
@@ -398,7 +479,8 @@ def main(
                         continue
                     raw.extend(chunk)
                     boot_result = marker_status(
-                        bytes(raw).decode("utf-8", errors="replace")
+                        bytes(raw).decode("utf-8", errors="replace"),
+                        args.board,
                     )
                     write_json(artifact_dir / "markers.json", boot_result)
                     if boot_result["errors"] or boot_result["duplicates"]:
@@ -408,7 +490,9 @@ def main(
                         passed = True
                         reason = (
                             "user-confirmed SD-only reset reached the exact ordered "
-                            "P2 boot markers and first NSH prompt with zero serial TX"
+                            "P2 boot, flash-off, SD-device, startup, selected-board "
+                            "showcase, and first NSH prompt markers with zero serial "
+                            "TX"
                         )
                         break
                 if not passed and reason == "reset-only SD boot did not complete":

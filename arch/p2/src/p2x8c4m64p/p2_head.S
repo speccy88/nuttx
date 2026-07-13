@@ -20,8 +20,9 @@
  *
  ****************************************************************************/
 
-/* The P2 ROM starts cog 0 with the first 2 KiB of the Hub image loaded into
- * cog memory.  Address zero therefore begins in COGEXEC mode.  Jump to cog
+/* The P2 ROM starts cog 0 with the first 496 longs (1,984 bytes) of the Hub
+ * image loaded into cog memory; the top 16 cog registers are special-purpose
+ * registers.  Address zero therefore begins in COGEXEC mode.  Jump to cog
  * address 0x10, which corresponds to Hub byte address 0x40 in the image.
  */
 

@@ -41,6 +41,18 @@ class StorageProtocolTests(unittest.TestCase):
     def test_commands_include_acknowledgement_only_for_destructive_actions(self):
         self.assertEqual(storage.command_line("probe"), "p2storage probe")
         self.assertEqual(
+            storage.command_line("sd-rom-verify"),
+            "p2storage sd-rom-verify",
+        )
+        self.assertEqual(
+            storage.command_bytes("sd-rom-verify"),
+            b"p2storage sd-rom-verify\r",
+        )
+        self.assertFalse(storage.sequence_required("sd-rom-verify"))
+        self.assertNotIn("sd-rom-verify", storage.SEQUENCE_ACTIONS)
+        self.assertNotIn("sd-rom-verify", storage.TARGET_DESTRUCTIVE_ACTIONS)
+        self.assertNotIn("sd-rom-verify", storage.SD_DESTRUCTIVE_ACTIONS)
+        self.assertEqual(
             storage.command_line("flash-write", self.sequence),
             "p2storage flash-write {} {}".format(
                 storage.ACKNOWLEDGEMENT, self.sequence
@@ -54,6 +66,110 @@ class StorageProtocolTests(unittest.TestCase):
             storage.command_line("sd-write")
         with self.assertRaisesRegex(ValueError, "does not accept"):
             storage.command_line("probe", self.sequence)
+        with self.assertRaisesRegex(ValueError, "does not accept"):
+            storage.command_line("sd-rom-verify", self.sequence)
+
+    def test_sd_rom_verify_requires_all_ordered_read_only_layout_markers(self):
+        body = [
+            "P2STORAGE:SD:ROM-MBR:TYPE=0C:START=2048:"
+            "SECTORS=61130752:PASS",
+            "P2STORAGE:SD:ROM-VBR:BPS=512:SPC=32:RESERVED=32:"
+            "FATS=2:FATSZ=14918:ROOT=2:FSINFO=1:PASS",
+            "P2STORAGE:SD:ROM-FSINFO:LBA=2049:PASS",
+            "P2STORAGE:SD:ROM-ROOT:LBA=31916:ENTRY=0:"
+            "NAME=_BOOT_P2.BIX:CLUSTER=3:BYTES=395484:PASS",
+            "P2STORAGE:SD:ROM-CHAIN:FIRST=3:CLUSTERS=25:"
+            "CONTIGUOUS=1:EOC=0FFFFFFF:PASS",
+            "P2STORAGE:SD:ROM-IMAGE:LBA=31948:SECTORS=773:"
+            "BYTES=395484:FNV1A=89ABCDEF:PASS",
+        ]
+        text = self.response("sd-rom-verify", body)
+
+        result = storage.parse_storage_response(text, "sd-rom-verify")
+
+        self.assertTrue(result["complete"], result)
+        self.assertEqual(result["command"], "p2storage sd-rom-verify")
+        self.assertIsNone(result["sequence"])
+        self.assertIsNone(result["expected_checksum"])
+        self.assertEqual(result["captures"]["sd_rom_file_bytes"], "395484")
+        self.assertEqual(result["captures"]["sd_rom_image_fnv1a"], "89ABCDEF")
+        self.assertEqual(
+            storage.response_labels("sd-rom-verify"),
+            (
+                "P2STORAGE:BEGIN:COMMAND=sd-rom-verify",
+                "P2STORAGE:SD:ROM-MBR",
+                "P2STORAGE:SD:ROM-VBR",
+                "P2STORAGE:SD:ROM-FSINFO",
+                "P2STORAGE:SD:ROM-ROOT",
+                "P2STORAGE:SD:ROM-CHAIN",
+                "P2STORAGE:SD:ROM-IMAGE",
+                "P2STORAGE:PASS:SD-ROM-VERIFY",
+            ),
+        )
+
+        for index, marker in enumerate(body):
+            with self.subTest(missing=marker.split(":")[3]):
+                missing = self.response(
+                    "sd-rom-verify", body[:index] + body[index + 1 :]
+                )
+                self.assertFalse(
+                    storage.parse_storage_response(
+                        missing, "sd-rom-verify"
+                    )["complete"]
+                )
+
+        out_of_order = self.response(
+            "sd-rom-verify", body[:3] + [body[4], body[3]] + body[5:]
+        )
+        result = storage.parse_storage_response(out_of_order, "sd-rom-verify")
+        self.assertFalse(result["complete"])
+        self.assertFalse(result["order_valid"])
+
+        no_terminal = text.replace("P2STORAGE:PASS:SD-ROM-VERIFY\r\n", "")
+        self.assertFalse(
+            storage.parse_storage_response(
+                no_terminal, "sd-rom-verify"
+            )["complete"]
+        )
+
+    def test_sd_rom_verify_rejects_inconsistent_or_failed_inspection(self):
+        text = self.response(
+            "sd-rom-verify",
+            [
+                "P2STORAGE:SD:ROM-MBR:TYPE=0B:START=2048:"
+                "SECTORS=61130752:PASS",
+                "P2STORAGE:SD:ROM-VBR:BPS=512:SPC=32:RESERVED=32:"
+                "FATS=2:FATSZ=14918:ROOT=2:FSINFO=1:PASS",
+                "P2STORAGE:SD:ROM-FSINFO:LBA=2049:PASS",
+                "P2STORAGE:SD:ROM-ROOT:LBA=31916:ENTRY=0:"
+                "NAME=_BOOT_P2.BIX:CLUSTER=3:BYTES=395484:PASS",
+                "P2STORAGE:SD:ROM-CHAIN:FIRST=4:CLUSTERS=25:"
+                "CONTIGUOUS=1:EOC=0FFFFFF8:PASS",
+                "P2STORAGE:SD:ROM-IMAGE:LBA=31948:SECTORS=774:"
+                "BYTES=395485:FNV1A=01234567:PASS",
+            ],
+        )
+        result = storage.parse_storage_response(text, "sd-rom-verify")
+        self.assertFalse(result["complete"])
+        self.assertIn(
+            "SD ROM chain must begin at the directory cluster",
+            result["errors"],
+        )
+        self.assertIn(
+            "SD ROM raw image byte count must match directory",
+            result["errors"],
+        )
+
+        failed = text.replace(
+            "P2STORAGE:SD:ROM-MBR:TYPE=0B:START=2048:"
+            "SECTORS=61130752:PASS",
+            "P2STORAGE:SD:ROM-FAIL:STAGE=MBR:REASON=FIELDS",
+        )
+        result = storage.parse_storage_response(failed, "sd-rom-verify")
+        self.assertFalse(result["complete"])
+        self.assertEqual(
+            result["failures"][0]["kind"], "P2 SD ROM layout failure"
+        )
 
     def test_flash_write_requires_predicted_checksum_nonce_and_reset_marker(self):
         checksum = storage.stream_checksum("flash", self.sequence)
@@ -248,7 +364,7 @@ class StorageProtocolTests(unittest.TestCase):
     def test_board_markers_pin_jedec_geometry_layout_and_no_autoformat(self):
         output = "".join(
             {
-                "P2STORAGE:W25=PRIVATE JEDEC=EF7018":
+                "P2STORAGE:W25=PRIVATE JEDEC=SUPPORTED":
                     "\nP2STORAGE:W25=PRIVATE JEDEC=EF7018\r\n",
                 "P2STORAGE:W25_FREQUENCY PROBE=400000 ACTIVE=2000000":
                     "\nP2STORAGE:W25_FREQUENCY PROBE=400000 "
@@ -275,6 +391,24 @@ class StorageProtocolTests(unittest.TestCase):
         for label, pattern in storage.BOARD_MARKER_PATTERNS:
             with self.subTest(label=label):
                 self.assertIsNotNone(pattern.search(output))
+
+    def test_board_marker_accepts_every_supported_w25q128_jedec(self):
+        label, pattern = storage.BOARD_MARKER_PATTERNS[0]
+        self.assertEqual(label, "P2STORAGE:W25=PRIVATE JEDEC=SUPPORTED")
+        for jedec in storage.SUPPORTED_FLASH_JEDECS:
+            with self.subTest(jedec=jedec):
+                match = pattern.search(
+                    "P2STORAGE:W25=PRIVATE JEDEC={}\r\n".format(jedec)
+                )
+                self.assertIsNotNone(match)
+                self.assertEqual(match.group("w25_jedec"), jedec)
+        for jedec in ("EF3018", "EF8018", "C84018", "FFFFFF"):
+            with self.subTest(invalid=jedec):
+                self.assertIsNone(
+                    pattern.search(
+                        "P2STORAGE:W25=PRIVATE JEDEC={}\r\n".format(jedec)
+                    )
+                )
 
 
 if __name__ == "__main__":

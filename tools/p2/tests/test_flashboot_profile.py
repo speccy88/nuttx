@@ -37,6 +37,10 @@ class FlashBootProfileTests(unittest.TestCase):
         self.assertIn("RCSRCS = etc/init.d/rc.sysinit etc/init.d/rcS", makefile)
         self.assertIn("mount -t smartfs /dev/smart0 /mnt/flash", script)
         self.assertIn("P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash", script)
+        self.assertIn("if [ -e /dev/smart0 ]", script)
+        self.assertIn(
+            "P2FLASHBOOT:SMARTFS=UNAVAILABLE:CHECK_FLASH_SWITCH", script
+        )
         self.assertIn("DESTRUCTIVE_HANDLERS=ABSENT", script)
         self.assertNotIn("mksmartfs", script)
         self.assertNotIn("mkfatfs", script)

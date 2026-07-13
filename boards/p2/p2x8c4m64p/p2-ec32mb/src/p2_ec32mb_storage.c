@@ -95,6 +95,12 @@
 #define P2_W25_JEDEC_ID_COMMAND    0x9fu
 #define P2_W25_RELEASE_POWERDOWN   0xabu
 #define P2_W25_DUMMY               0xffu
+#define P2_W25_JEDEC_WINBOND       0xefu
+#define P2_W25_JEDEC_MEMORY_A      0x40u
+#define P2_W25_JEDEC_MEMORY_B      0x60u
+#define P2_W25_JEDEC_MEMORY_C      0x50u
+#define P2_W25_JEDEC_MEMORY_D      0x70u
+#define P2_W25_JEDEC_CAPACITY      0x18u
 #define P2_W25_DATA_FIRSTBLOCK     2048u
 #define P2_W25_DATA_NBLOCKS        63488u
 #define P2_W25_RAW_ERASEBLOCKS     4096u
@@ -808,6 +814,16 @@ static int p2_w25_geometry(FAR struct mtd_dev_s *mtd,
                    (unsigned long)(uintptr_t)geometry);
 }
 
+static bool p2_w25_jedec_valid(FAR const uint8_t jedec[3])
+{
+  return jedec[0] == P2_W25_JEDEC_WINBOND &&
+         (jedec[1] == P2_W25_JEDEC_MEMORY_A ||
+          jedec[1] == P2_W25_JEDEC_MEMORY_B ||
+          jedec[1] == P2_W25_JEDEC_MEMORY_C ||
+          jedec[1] == P2_W25_JEDEC_MEMORY_D) &&
+         jedec[2] == P2_W25_JEDEC_CAPACITY;
+}
+
 static int p2_w25_boot_crc32(FAR struct mtd_dev_s *mtd,
                              FAR uint32_t *result)
 {
@@ -881,6 +897,17 @@ int p2_w25_initialize(void)
   if (ret < 0)
     {
       return ret;
+    }
+
+  /* The Rev-B FLASH switch physically disconnects P61 from the W25 chip
+   * select.  In SD boot mode the direct probe therefore reads 0xff.  Reject
+   * an absent or unexpected part before entering the generic W25 driver,
+   * whose initial busy-status loop has no timeout when MISO stays high.
+   */
+
+  if (!p2_w25_jedec_valid(info.jedec))
+    {
+      return -ENODEV;
     }
 
   /* Keep the raw MTD private.  Phase 13 must partition it before registering
