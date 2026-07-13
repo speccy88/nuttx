@@ -226,6 +226,17 @@ void board_late_initialize(void)
     }
 #endif
 
+#ifdef CONFIG_P2_EC32MB_SPI
+  int spi_ret;
+
+  spi_ret = p2_spi_initialize();
+  if (spi_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: Failed to initialize P2 SPI: %d\n",
+             spi_ret);
+    }
+#endif
+
 #ifdef CONFIG_P2_EC32MB_STORAGE_BINDINGS
 #  ifdef CONFIG_MTD_W25
   struct p2_w25_info_s w25_info;
@@ -249,6 +260,10 @@ void board_late_initialize(void)
                  "P2STORAGE:W25=PRIVATE JEDEC=%02X%02X%02X\n",
                  w25_info.jedec[0], w25_info.jedec[1],
                  w25_info.jedec[2]);
+          syslog(LOG_NOTICE,
+                 "P2STORAGE:W25_FREQUENCY PROBE=%lu ACTIVE=%lu\n",
+                 (unsigned long)w25_info.probe_frequency,
+                 (unsigned long)w25_info.active_frequency);
           syslog(LOG_NOTICE,
                  "P2STORAGE:W25_GEOMETRY BLOCK=%lu ERASE=%lu "
                  "ERASEBLOCKS=%lu BYTES=%lu\n",
@@ -292,6 +307,10 @@ void board_late_initialize(void)
        * even if no card answers its bounded initialization commands.
        */
 
+      syslog(LOG_NOTICE,
+             "P2STORAGE:MMCSD_FREQUENCY ID=%lu TRANSFER=%lu\n",
+             (unsigned long)CONFIG_MMCSD_IDMODE_CLOCK,
+             (unsigned long)CONFIG_MMCSD_SPICLOCK);
       syslog(LOG_NOTICE, "P2STORAGE:MMCSD=/dev/mmcsd0\n");
     }
 #  endif

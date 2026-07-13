@@ -121,22 +121,33 @@ SMARTPINS_DIRECT_CONFIG = (
     ("CONFIG_P2_EC32MB_PWM_PIN", "4"),
     ("CONFIG_P2_EC32MB_CAPTURE", "y"),
     ("CONFIG_P2_EC32MB_CAPTURE_PIN", "5"),
+    ("CONFIG_SPI_BITBANG", "y"),
+    ("CONFIG_SPI_DRIVER", "y"),
+    ("CONFIG_SPI_EXCHANGE", "y"),
+    ("CONFIG_P2_EC32MB_SPI", "y"),
+    ("CONFIG_P2_EC32MB_SPI_MOSI_PIN", "6"),
+    ("CONFIG_P2_EC32MB_SPI_MISO_PIN", "7"),
+    ("CONFIG_P2_EC32MB_SPI_SCK_PIN", "8"),
+    ("CONFIG_P2_EC32MB_SPI_CS_PIN", "9"),
+    ("CONFIG_P2_EC32MB_SPI_MAX_FREQUENCY", "100000"),
 )
 
 STORAGE_REQUIRED_CONFIG = (
     ("CONFIG_BOARD_LATE_INITIALIZE", "y"),
     ("CONFIG_P2_STORAGE", "y"),
     ("CONFIG_P2_EC32MB_STORAGE_BINDINGS", "y"),
+    ("CONFIG_P2_EC32MB_W25_PROBE_FREQUENCY", "400000"),
+    ("CONFIG_P2_STORAGE_MAX_FREQUENCY", "2000000"),
     ("CONFIG_MTD_W25", "y"),
     ("CONFIG_W25_SPIMODE", "3"),
-    ("CONFIG_W25_SPIFREQUENCY", "1000000"),
+    ("CONFIG_W25_SPIFREQUENCY", "2000000"),
     ("CONFIG_MMCSD", "y"),
     ("CONFIG_MMCSD_SPI", "y"),
     ("CONFIG_MMCSD_HAVE_CARDDETECT", "n"),
     ("CONFIG_MMCSD_HAVE_WRITEPROTECT", "n"),
     ("CONFIG_MMCSD_READONLY", "n"),
     ("CONFIG_MMCSD_IDMODE_CLOCK", "400000"),
-    ("CONFIG_MMCSD_SPICLOCK", "1000000"),
+    ("CONFIG_MMCSD_SPICLOCK", "2000000"),
     ("CONFIG_MMCSD_SPIMODE", "0"),
 )
 
@@ -525,7 +536,7 @@ def validate_smartpins_config(values: Mapping[str, str]) -> Tuple[str, ...]:
     """Validate the exact direct-jumper image and return its protocol stages."""
 
     stages = smartpins_stages_from_kconfig(dict(values))
-    required = ("GPIO", "UART", "PWM_CAPTURE")
+    required = ("GPIO", "UART", "PWM_CAPTURE", "SPI")
     missing = tuple(stage for stage in required if stage not in stages)
     if missing:
         raise SafetyError(
@@ -547,10 +558,6 @@ def validate_smartpins_config(values: Mapping[str, str]) -> Tuple[str, ...]:
         )
     if "DAC_ADC" in stages:
         raise SafetyError("DAC_ADC must be disabled for the direct P4-P5 jumper")
-    if "SPI" in stages:
-        raise SafetyError(
-            "SPI stage is blocked until a target lower half and separate clock/chip-select pins exist"
-        )
     return stages
 
 
@@ -1685,12 +1692,13 @@ class HilRunner:
                         "GPIO:P0-P1",
                         "UART:P2-P3",
                         "PWM_CAPTURE:P4-P5",
+                        "SPI:P6-MOSI to P7-MISO; P8-SCK and P9-CS unconnected",
                     ],
                     "dac_adc_status": (
                         "DISABLED: direct P4-P5 jumper has no verified series resistance"
                     ),
                     "spi_status": (
-                        "BLOCKED: target SPI lower half and separate clock/chip-select pins are unavailable"
+                        "ENABLED: standard /dev/spi0 100-kHz mode-0 loopback"
                     ),
                 }
             )

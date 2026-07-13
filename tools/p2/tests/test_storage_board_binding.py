@@ -20,10 +20,15 @@ class StorageBoardBindingTests(unittest.TestCase):
             "CONFIG_BOARD_LATE_INITIALIZE=y",
             "CONFIG_P2_STORAGE=y",
             "CONFIG_P2_EC32MB_STORAGE_BINDINGS=y",
+            "CONFIG_P2_EC32MB_W25_PROBE_FREQUENCY=400000",
+            "CONFIG_P2_STORAGE_MAX_FREQUENCY=2000000",
             "CONFIG_MTD_PARTITION=y",
             "CONFIG_MTD_SMART=y",
             "CONFIG_MTD_W25=y",
+            "CONFIG_W25_SPIFREQUENCY=2000000",
             "CONFIG_MMCSD_SPI=y",
+            "CONFIG_MMCSD_IDMODE_CLOCK=400000",
+            "CONFIG_MMCSD_SPICLOCK=2000000",
         ):
             self.assertIn(setting, profile)
 
@@ -33,11 +38,27 @@ class StorageBoardBindingTests(unittest.TestCase):
         sd = source.index("mmcsd_ret = p2_mmcsd_initialize();")
         self.assertLess(flash, sd)
         self.assertIn('P2STORAGE:W25=PRIVATE', source)
+        self.assertIn('P2STORAGE:W25_FREQUENCY PROBE=', source)
         self.assertIn('P2STORAGE:W25_GEOMETRY BLOCK=', source)
         self.assertIn('P2STORAGE:W25_LAYOUT BOOT=', source)
         self.assertIn('P2STORAGE:W25_BOOT_CRC32=', source)
         self.assertIn('P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO', source)
         self.assertIn('P2STORAGE:MMCSD=/dev/mmcsd0', source)
+        self.assertIn('P2STORAGE:MMCSD_FREQUENCY ID=', source)
+
+    def test_probe_and_transfer_frequencies_have_compile_time_fences(self):
+        source = (BOARD / "src/p2_ec32mb_storage.c").read_text()
+        self.assertIn(
+            "CONFIG_P2_EC32MB_W25_PROBE_FREQUENCY > 400000", source
+        )
+        self.assertIn(
+            "CONFIG_P2_EC32MB_W25_PROBE_FREQUENCY >= "
+            "CONFIG_W25_SPIFREQUENCY",
+            source,
+        )
+        self.assertIn(
+            "CONFIG_MMCSD_IDMODE_CLOCK >= CONFIG_MMCSD_SPICLOCK", source
+        )
 
     def test_raw_w25_stays_private_while_only_data_partition_gets_smart(self):
         source = (BOARD / "src/p2_ec32mb_storage.c").read_text()

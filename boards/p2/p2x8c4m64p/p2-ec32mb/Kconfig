@@ -15,6 +15,17 @@ config P2_EC32MB_STORAGE_BINDINGS
 		registers /dev/mmcsd0 even when no card responds.  This option does
 		not automatically format or mount either medium.
 
+config P2_EC32MB_W25_PROBE_FREQUENCY
+	int "W25 wake and JEDEC probe frequency"
+	default 400000
+	range 100000 400000
+	depends on P2_EC32MB_STORAGE_BINDINGS && MTD_W25
+	help
+		Use this conservative frequency only while waking the onboard W25
+		flash and reading its JEDEC identity.  The board restores
+		CONFIG_W25_SPIFREQUENCY before handing the SPI lower half to the
+		generic W25 driver.
+
 config P2_EC32MB_GPIO
 	bool "Register the P2 Smart Pin GPIO loopback pair"
 	default n
@@ -150,4 +161,44 @@ config P2_EC32MB_DAC_PIN
 	default 4
 	range 0 39
 	depends on P2_EC32MB_DAC
+
+config P2_EC32MB_SPI
+	bool "Register the P6/P7 general-purpose SPI loopback controller"
+	default n
+	depends on P2_SMARTPIN && SPI_BITBANG && SPI_DRIVER && SPI_EXCHANGE
+	help
+		Register a generic bit-banged SPI controller as /dev/spi0.  The
+		default HIL wiring drives P6 MOSI into P7 MISO while P8 SCK and P9
+		chip select remain deliberately unconnected.  The receiver is
+		configured before the source and every pin floats after deselect.
+
+config P2_EC32MB_SPI_MOSI_PIN
+	int "General-purpose SPI MOSI pin"
+	default 6
+	range 0 37
+	depends on P2_EC32MB_SPI
+
+config P2_EC32MB_SPI_MISO_PIN
+	int "General-purpose SPI MISO pin"
+	default 7
+	range 0 37
+	depends on P2_EC32MB_SPI
+
+config P2_EC32MB_SPI_SCK_PIN
+	int "General-purpose SPI clock pin"
+	default 8
+	range 0 37
+	depends on P2_EC32MB_SPI
+
+config P2_EC32MB_SPI_CS_PIN
+	int "General-purpose SPI chip-select pin"
+	default 9
+	range 0 37
+	depends on P2_EC32MB_SPI
+
+config P2_EC32MB_SPI_MAX_FREQUENCY
+	int "General-purpose SPI maximum frequency"
+	default 100000
+	range 1000 100000
+	depends on P2_EC32MB_SPI
 endif

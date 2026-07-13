@@ -10,6 +10,11 @@ DEFAULT_STAGES = ("GPIO",)
 WIRING_MARKER = "P2SMART:WIRING=P0-P1,P2-P3,P4-P5,P6-P7"
 GPIO_PATTERN = (0, 1, 1, 0, 1, 0, 0, 1)
 DIGITAL_PAYLOAD_FNV1A = "504B8F7B"
+SPI_BEGIN_MARKER = (
+    "P2SMART:SPI:BEGIN=MOSI=6:MISO=7:SCK=8:CS=9:"
+    "MODE=0:REQUEST_HZ=100000"
+)
+SPI_SAFE_MARKER = "P2SMART:SPI:SAFE=MOSI6,MISO7,SCK8,CS9=FLOAT"
 CONFIG_STAGE_SYMBOLS = (
     ("GPIO", "CONFIG_TESTING_P2SMARTPINS"),
     ("EDGE", "CONFIG_TESTING_P2SMARTPINS_EDGE"),
@@ -69,11 +74,11 @@ STAGE_FIXED_MARKERS = {
         "P2SMART:DAC_ADC:PASS",
     ),
     "SPI": (
-        "P2SMART:SPI:BEGIN=6-7",
+        SPI_BEGIN_MARKER,
         "P2SMART:SPI:COUNT=16:TX={0}:RX={0}".format(
             DIGITAL_PAYLOAD_FNV1A
         ),
-        "P2SMART:SPI:SAFE=FLOAT",
+        SPI_SAFE_MARKER,
         "P2SMART:SPI:PASS",
     ),
 }
@@ -316,7 +321,7 @@ def parse_smartpins(
     stage_results: Dict[str, Dict[str, object]] = {}
     for stage in STAGE_ORDER:
         fixed = STAGE_FIXED_MARKERS[stage]
-        stage_positions: List[int] = []
+        fixed_positions: Dict[str, int] = {}
         present = any(_line_positions(lines, marker) for marker in fixed)
         pattern = SAMPLE_PATTERNS.get(stage)
         samples = [] if pattern is None else [
@@ -339,15 +344,22 @@ def parse_smartpins(
             elif len(found) != 1:
                 duplicates.append(marker)
             else:
-                stage_positions.append(found[0])
+                fixed_positions[marker] = found[0]
 
         sample_errors: List[str] = []
         if stage in SAMPLE_VALIDATORS:
             sample_errors = SAMPLE_VALIDATORS[stage](samples)
-            stage_positions.extend(position for position, match in samples)
             errors.extend(sample_errors)
 
-        stage_positions.sort()
+        sample_positions = [position for position, match in samples]
+        if all(marker in fixed_positions for marker in fixed):
+            stage_positions = [fixed_positions[fixed[0]]]
+            stage_positions.extend(sample_positions)
+            stage_positions.extend(fixed_positions[marker] for marker in fixed[1:])
+        else:
+            stage_positions = list(fixed_positions.values()) + sample_positions
+            stage_positions.sort()
+
         positions.extend(stage_positions)
         stage_results[stage] = {
             "complete": not sample_errors and all(

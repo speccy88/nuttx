@@ -172,10 +172,14 @@ class StorageProtocolTests(unittest.TestCase):
         )
         self.assertIn("P2STORAGE:SD:STRESS:COUNT=64:PASS", sd_labels)
 
-    def test_flash_full_requires_nonce_positive_bytes_and_real_enospc(self):
+    def test_flash_full_progress_preserves_strict_enospc_terminal(self):
         text = self.response(
             "flash-full",
             [
+                "P2STORAGE:FLASH:FULL:PROGRESS:SEQUENCE={}:"
+                "BYTES=1048576".format(self.sequence),
+                "P2STORAGE:FLASH:FULL:PROGRESS:SEQUENCE={}:"
+                "BYTES=2097152".format(self.sequence),
                 "P2STORAGE:FLASH:FULL:SEQUENCE={}:BYTES=15532032:"
                 "ENOSPC=1:PASS".format(self.sequence)
             ],
@@ -245,6 +249,9 @@ class StorageProtocolTests(unittest.TestCase):
             {
                 "P2STORAGE:W25=PRIVATE JEDEC=EF7018":
                     "\nP2STORAGE:W25=PRIVATE JEDEC=EF7018\r\n",
+                "P2STORAGE:W25_FREQUENCY PROBE=400000 ACTIVE=2000000":
+                    "\nP2STORAGE:W25_FREQUENCY PROBE=400000 "
+                    "ACTIVE=2000000\r\n",
                 "P2STORAGE:W25_GEOMETRY":
                     "\nP2STORAGE:W25_GEOMETRY BLOCK=256 ERASE=4096 "
                     "ERASEBLOCKS=4096 BYTES=16777216\r\n",
@@ -256,6 +263,9 @@ class StorageProtocolTests(unittest.TestCase):
                     "\nP2STORAGE:W25_BOOT_CRC32=89ABCDEF\r\n",
                 "P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO":
                     "\nP2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO\r\n",
+                "P2STORAGE:MMCSD_FREQUENCY ID=400000 TRANSFER=2000000":
+                    "\nP2STORAGE:MMCSD_FREQUENCY ID=400000 "
+                    "TRANSFER=2000000\r\n",
                 "P2STORAGE:MMCSD=/dev/mmcsd0":
                     "\nP2STORAGE:MMCSD=/dev/mmcsd0\r\n",
             }[label]

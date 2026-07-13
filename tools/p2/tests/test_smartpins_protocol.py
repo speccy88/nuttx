@@ -7,6 +7,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
 
 from smartpins_protocol import (
     DIGITAL_PAYLOAD_FNV1A,
+    SPI_BEGIN_MARKER,
+    SPI_SAFE_MARKER,
     hil_marker_patterns,
     parse_smartpins,
     stages_from_kconfig,
@@ -61,11 +63,11 @@ class SmartpinsProtocolTests(unittest.TestCase):
             "P2SMART:DAC_ADC:SAMPLE=2:DAC=49151:ADC=12200",
             "P2SMART:DAC_ADC:SAFE=FLOAT",
             "P2SMART:DAC_ADC:PASS",
-            "P2SMART:SPI:BEGIN=6-7",
+            SPI_BEGIN_MARKER,
             "P2SMART:SPI:COUNT=16:TX={0}:RX={0}".format(
                 DIGITAL_PAYLOAD_FNV1A
             ),
-            "P2SMART:SPI:SAFE=FLOAT",
+            SPI_SAFE_MARKER,
             "P2SMART:SPI:PASS",
             "P2SMART:PASS",
         ]
@@ -130,6 +132,55 @@ class SmartpinsProtocolTests(unittest.TestCase):
         self.assertFalse(result["complete"])
         self.assertIn("DAC_ADC ADC samples are not strictly increasing", result["errors"])
 
+    def test_spi_bus_pin_marker_is_exact(self):
+        stages = ("GPIO", "EDGE", "UART", "PWM_CAPTURE", "DAC_ADC", "SPI")
+        text = self.full_output().replace(":SCK=8:CS=9:", ":SCK=9:CS=8:")
+        result = parse_smartpins(text, stages)
+        self.assertFalse(result["complete"])
+        self.assertIn("missing {}".format(SPI_BEGIN_MARKER), result["errors"])
+
+    def test_spi_rx_hash_must_match_tx_hash(self):
+        stages = ("GPIO", "EDGE", "UART", "PWM_CAPTURE", "DAC_ADC", "SPI")
+        text = self.full_output().replace(
+            "RX={}".format(DIGITAL_PAYLOAD_FNV1A), "RX=00000000"
+        )
+        result = parse_smartpins(text, stages)
+        self.assertFalse(result["complete"])
+        self.assertTrue(
+            any("missing P2SMART:SPI:COUNT=16" in item for item in result["errors"])
+        )
+
+    def test_spi_safe_release_is_required_once(self):
+        stages = ("GPIO", "EDGE", "UART", "PWM_CAPTURE", "DAC_ADC", "SPI")
+        missing = parse_smartpins(
+            self.full_output().replace(SPI_SAFE_MARKER + "\r\n", ""), stages
+        )
+        self.assertFalse(missing["complete"])
+        self.assertIn("missing {}".format(SPI_SAFE_MARKER), missing["errors"])
+
+        duplicate = parse_smartpins(
+            self.full_output().replace(
+                SPI_SAFE_MARKER + "\r\n",
+                SPI_SAFE_MARKER + "\r\n" + SPI_SAFE_MARKER + "\r\n",
+            ),
+            stages,
+        )
+        self.assertFalse(duplicate["complete"])
+        self.assertIn(SPI_SAFE_MARKER, duplicate["duplicates"])
+
+    def test_spi_markers_must_remain_in_order(self):
+        stages = ("GPIO", "EDGE", "UART", "PWM_CAPTURE", "DAC_ADC", "SPI")
+        count = "P2SMART:SPI:COUNT=16:TX={0}:RX={0}".format(
+            DIGITAL_PAYLOAD_FNV1A
+        )
+        text = self.full_output().replace(
+            count + "\r\n" + SPI_SAFE_MARKER,
+            SPI_SAFE_MARKER + "\r\n" + count,
+        )
+        result = parse_smartpins(text, stages)
+        self.assertFalse(result["complete"])
+        self.assertIn("protocol markers are out of order", result["errors"])
+
     def test_exact_kconfig_derives_canonical_stages(self):
         config = {
             "CONFIG_TESTING_P2SMARTPINS": "y",
@@ -163,6 +214,12 @@ class SmartpinsProtocolTests(unittest.TestCase):
             labels.index("P2SMART:PWM_CAPTURE:SAMPLE=2"),
             labels.index("P2SMART:PWM_CAPTURE:SAFE=FLOAT"),
         )
+
+    def test_streaming_markers_include_exact_spi_bus_and_safe_state(self):
+        markers = hil_marker_patterns(("GPIO", "SPI"))
+        labels = [label for label, pattern in markers]
+        self.assertLess(labels.index(SPI_BEGIN_MARKER), labels.index(SPI_SAFE_MARKER))
+        self.assertLess(labels.index(SPI_SAFE_MARKER), labels.index("P2SMART:SPI:PASS"))
 
     def test_streaming_markers_reject_noncanonical_or_analog_only_stages(self):
         with self.assertRaisesRegex(ValueError, "canonical"):

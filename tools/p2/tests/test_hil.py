@@ -135,7 +135,7 @@ GOOD_SMARTPINS_OUTPUT = (
     b"loader output\n"
     b"P2SMART:BEGIN\r\n"
     b"P2SMART:WIRING=P0-P1,P2-P3,P4-P5,P6-P7\r\n"
-    b"P2SMART:CAPS=GPIO,EDGE,UART,PWM_CAPTURE\r\n"
+    b"P2SMART:CAPS=GPIO,EDGE,UART,PWM_CAPTURE,SPI\r\n"
     b"P2SMART:GPIO:BEGIN=0-1\r\n"
     b"P2SMART:GPIO:SAMPLE=0:TX=0:RX=0\r\n"
     b"P2SMART:GPIO:SAMPLE=1:TX=1:RX=1\r\n"
@@ -161,6 +161,11 @@ GOOD_SMARTPINS_OUTPUT = (
     b"P2SMART:PWM_CAPTURE:SAMPLE=2:FREQ=1000:DUTY=75:EDGES=51\r\n"
     b"P2SMART:PWM_CAPTURE:SAFE=FLOAT\r\n"
     b"P2SMART:PWM_CAPTURE:PASS\r\n"
+    b"P2SMART:SPI:BEGIN=MOSI=6:MISO=7:SCK=8:CS=9:"
+    b"MODE=0:REQUEST_HZ=100000\r\n"
+    b"P2SMART:SPI:COUNT=16:TX=504B8F7B:RX=504B8F7B\r\n"
+    b"P2SMART:SPI:SAFE=MOSI6,MISO7,SCK8,CS9=FLOAT\r\n"
+    b"P2SMART:SPI:PASS\r\n"
     b"P2SMART:PASS\r\n"
 )
 
@@ -318,12 +323,21 @@ class HilTests(unittest.TestCase):
             "CONFIG_P2_EC32MB_PWM_PIN=4",
             "CONFIG_P2_EC32MB_CAPTURE=y",
             "CONFIG_P2_EC32MB_CAPTURE_PIN=5",
+            "CONFIG_SPI_BITBANG=y",
+            "CONFIG_SPI_DRIVER=y",
+            "CONFIG_SPI_EXCHANGE=y",
+            "CONFIG_P2_EC32MB_SPI=y",
+            "CONFIG_P2_EC32MB_SPI_MOSI_PIN=6",
+            "CONFIG_P2_EC32MB_SPI_MISO_PIN=7",
+            "CONFIG_P2_EC32MB_SPI_SCK_PIN=8",
+            "CONFIG_P2_EC32MB_SPI_CS_PIN=9",
+            "CONFIG_P2_EC32MB_SPI_MAX_FREQUENCY=100000",
         ]
         if dac_adc:
             values.append("CONFIG_TESTING_P2SMARTPINS_DAC_ADC=y")
         else:
             values.append("# CONFIG_TESTING_P2SMARTPINS_DAC_ADC is not set")
-        values.append("# CONFIG_TESTING_P2SMARTPINS_SPI is not set")
+        values.append("CONFIG_TESTING_P2SMARTPINS_SPI=y")
         (self.directory / ".config").write_text(
             "\n".join(values) + "\n", encoding="utf-8"
         )
@@ -344,6 +358,7 @@ class HilTests(unittest.TestCase):
     def storage_boot_output(self):
         return GOOD_BOOT_OUTPUT + (
             b"P2STORAGE:W25=PRIVATE JEDEC=EF7018\r\n"
+            b"P2STORAGE:W25_FREQUENCY PROBE=400000 ACTIVE=2000000\r\n"
             b"P2STORAGE:W25_GEOMETRY BLOCK=256 ERASE=4096 "
             b"ERASEBLOCKS=4096 BYTES=16777216\r\n"
             b"P2STORAGE:W25_LAYOUT BOOT=0x00000000+0x00080000 "
@@ -351,6 +366,7 @@ class HilTests(unittest.TestCase):
             b"NBLOCKS=63488\r\n"
             b"P2STORAGE:W25_BOOT_CRC32=89ABCDEF\r\n"
             b"P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO\r\n"
+            b"P2STORAGE:MMCSD_FREQUENCY ID=400000 TRANSFER=2000000\r\n"
             b"P2STORAGE:MMCSD=/dev/mmcsd0\r\n"
             b"nsh> "
         )
@@ -671,10 +687,10 @@ class HilTests(unittest.TestCase):
         )
         self.assertEqual(
             metadata["smartpins_stages"],
-            ["GPIO", "EDGE", "UART", "PWM_CAPTURE"],
+            ["GPIO", "EDGE", "UART", "PWM_CAPTURE", "SPI"],
         )
         self.assertIn("DISABLED", metadata["dac_adc_status"])
-        self.assertIn("BLOCKED", metadata["spi_status"])
+        self.assertIn("ENABLED", metadata["spi_status"])
         markers = json.loads(
             (
                 self.directory / "smartpins" / "cycle-001" / "markers.json"
@@ -729,7 +745,7 @@ class HilTests(unittest.TestCase):
         self.assertEqual(rc, hil.EXIT_SAFETY)
         self.assertEqual(lock.entered, 0)
 
-    def test_smartpins_config_rejects_pin_remaps_and_unimplemented_spi(self):
+    def test_smartpins_config_rejects_pin_remaps_and_accepts_exact_spi(self):
         self.write_smartpins_config()
         values = hil.read_kconfig(self.directory / ".config")
         values["CONFIG_P2_EC32MB_UART1_RX_PIN"] = "7"
@@ -739,8 +755,12 @@ class HilTests(unittest.TestCase):
             hil.validate_smartpins_config(values)
 
         values["CONFIG_P2_EC32MB_UART1_RX_PIN"] = "3"
-        values["CONFIG_TESTING_P2SMARTPINS_SPI"] = "y"
-        with self.assertRaisesRegex(hil.SafetyError, "SPI stage is blocked"):
+        self.assertIn("SPI", hil.validate_smartpins_config(values))
+
+        values["CONFIG_P2_EC32MB_SPI_MISO_PIN"] = "5"
+        with self.assertRaisesRegex(
+            hil.SafetyError, "does not match installed direct jumpers"
+        ):
             hil.validate_smartpins_config(values)
 
     def test_storage_actions_enforce_erase_and_sd_gates_before_serial(self):

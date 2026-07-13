@@ -93,6 +93,13 @@ BOARD_MARKER_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
         re.compile(r"^P2STORAGE:W25=PRIVATE JEDEC=EF7018\r?$", re.MULTILINE),
     ),
     (
+        "P2STORAGE:W25_FREQUENCY PROBE=400000 ACTIVE=2000000",
+        re.compile(
+            r"^P2STORAGE:W25_FREQUENCY PROBE=400000 ACTIVE=2000000\r?$",
+            re.MULTILINE,
+        ),
+    ),
+    (
         "P2STORAGE:W25_GEOMETRY",
         re.compile(
             r"^P2STORAGE:W25_GEOMETRY "
@@ -118,6 +125,13 @@ BOARD_MARKER_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
         "P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO",
         re.compile(
             r"^P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO\r?$",
+            re.MULTILINE,
+        ),
+    ),
+    (
+        "P2STORAGE:MMCSD_FREQUENCY ID=400000 TRANSFER=2000000",
+        re.compile(
+            r"^P2STORAGE:MMCSD_FREQUENCY ID=400000 TRANSFER=2000000\r?$",
             re.MULTILINE,
         ),
     ),

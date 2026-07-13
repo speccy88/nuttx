@@ -85,6 +85,8 @@ struct p2_w25_info_s
   uint32_t data_nblocks;
   uint32_t data_neraseblocks;
   uint32_t boot_crc32;
+  uint32_t probe_frequency;
+  uint32_t active_frequency;
   uint8_t jedec[3];
 };
 #endif

@@ -62,6 +62,34 @@
 #  define CONFIG_P2_STORAGE_MAX_FREQUENCY 1000000
 #endif
 
+#ifndef CONFIG_P2_EC32MB_W25_PROBE_FREQUENCY
+#  define CONFIG_P2_EC32MB_W25_PROBE_FREQUENCY 400000
+#endif
+
+#ifdef CONFIG_MTD_W25
+#  if CONFIG_P2_EC32MB_W25_PROBE_FREQUENCY > 400000
+#    error "W25 wake and JEDEC probing must not exceed 400 kHz"
+#  endif
+#  if CONFIG_P2_EC32MB_W25_PROBE_FREQUENCY >= CONFIG_W25_SPIFREQUENCY
+#    error "W25 probe frequency must be below its normal frequency"
+#  endif
+#  if CONFIG_W25_SPIFREQUENCY > CONFIG_P2_STORAGE_MAX_FREQUENCY
+#    error "W25 normal frequency exceeds the P2 storage ceiling"
+#  endif
+#endif
+
+#ifdef CONFIG_MMCSD_SPI
+#  if CONFIG_MMCSD_IDMODE_CLOCK > 400000
+#    error "MMC/SD identification mode must not exceed 400 kHz"
+#  endif
+#  if CONFIG_MMCSD_IDMODE_CLOCK >= CONFIG_MMCSD_SPICLOCK
+#    error "MMC/SD identification clock must be below its transfer clock"
+#  endif
+#  if CONFIG_MMCSD_SPICLOCK > CONFIG_P2_STORAGE_MAX_FREQUENCY
+#    error "MMC/SD transfer clock exceeds the P2 storage ceiling"
+#  endif
+#endif
+
 #define P2_STORAGE_MIN_HALF_CYCLES 4u
 
 #define P2_W25_JEDEC_ID_COMMAND    0x9fu
@@ -726,7 +754,9 @@ static int p2_storage_registercallback(FAR struct spi_dev_s *dev,
 
 #ifdef CONFIG_MTD_W25
 static int p2_w25_read_jedec(FAR struct spi_dev_s *spi,
-                             FAR uint8_t jedec[3])
+                             FAR uint8_t jedec[3],
+                             FAR uint32_t *probe_frequency,
+                             FAR uint32_t *active_frequency)
 {
   int ret;
   int unlock_ret;
@@ -740,7 +770,8 @@ static int p2_w25_read_jedec(FAR struct spi_dev_s *spi,
   SPI_SETMODE(spi, CONFIG_W25_SPIMODE);
   SPI_SETBITS(spi, 8);
   SPI_HWFEATURES(spi, 0);
-  SPI_SETFREQUENCY(spi, CONFIG_W25_SPIFREQUENCY);
+  *probe_frequency = SPI_SETFREQUENCY(
+    spi, CONFIG_P2_EC32MB_W25_PROBE_FREQUENCY);
 
   /* Match the W25 lower half's wake sequence.  Reading the identity before
    * w25_initialize() also avoids racing the status-register write that the
@@ -758,6 +789,12 @@ static int p2_w25_read_jedec(FAR struct spi_dev_s *spi,
   jedec[1] = (uint8_t)SPI_SEND(spi, P2_W25_DUMMY);
   jedec[2] = (uint8_t)SPI_SEND(spi, P2_W25_DUMMY);
   SPI_SELECT(spi, SPIDEV_FLASH(0), false);
+
+  /* Leave the logical flash lower half at its normal operating frequency.
+   * The generic W25 driver repeats this request for each locked transaction.
+   */
+
+  *active_frequency = SPI_SETFREQUENCY(spi, CONFIG_W25_SPIFREQUENCY);
 
   unlock_ret = SPI_LOCK(spi, false);
   return unlock_ret < 0 ? unlock_ret : 0;
@@ -838,7 +875,9 @@ int p2_w25_initialize(void)
 
   memset(&info, 0, sizeof(info));
 
-  ret = p2_w25_read_jedec(spi, info.jedec);
+  ret = p2_w25_read_jedec(spi, info.jedec,
+                          &info.probe_frequency,
+                          &info.active_frequency);
   if (ret < 0)
     {
       return ret;
