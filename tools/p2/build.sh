@@ -163,6 +163,15 @@ rm -f "$unsafe_relocs"
 
 cp nuttx nuttx.map System.map "$art/"
 "$P2LLVM_ROOT/bin/llvm-objcopy" -O binary nuttx nuttx.bin
+
+if [[ "$cfg" == "flashboot" ]] &&
+   ! LC_ALL=C grep -aFq \
+     'P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash:MOUNTED:AUTOFORMAT=NO:DESTRUCTIVE_HANDLERS=ABSENT' \
+     nuttx.bin; then
+  echo "ERROR: flashboot image does not contain the startup mount marker" >&2
+  exit 1
+fi
+
 cp nuttx.bin "$art/"
 "$P2LLVM_ROOT/bin/llvm-readelf" -h -l -S nuttx > "$art/elf.txt"
 "$P2LLVM_ROOT/bin/llvm-nm" -n nuttx > "$art/symbols.txt"

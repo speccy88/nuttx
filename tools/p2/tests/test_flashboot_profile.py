@@ -39,6 +39,15 @@ class FlashBootProfileTests(unittest.TestCase):
         self.assertNotIn("mksmartfs", script)
         self.assertNotIn("mkfatfs", script)
 
+    def test_clang_cpp_treats_extensionless_init_scripts_as_c(self):
+        make_defs = (BOARD / "scripts/Make.defs").read_text()
+        self.assertIn("CPP = $(P2_CLANG) -E -P -x c", make_defs)
+        build = (ROOT / "tools/p2/build.sh").read_text()
+        self.assertIn("flashboot image does not contain the startup mount marker", build)
+        self.assertIn(
+            "P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash:MOUNTED:", build
+        )
+
     def test_board_compile_fences_reject_destructive_flashboot_images(self):
         source = (BOARD / "src/p2_ec32mb_boot.c").read_text()
         for symbol in (
