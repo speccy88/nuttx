@@ -215,6 +215,9 @@ static_assert(offsetof(struct p2_psram_wire_s, status) ==
 static_assert(offsetof(struct p2_psram_wire_s, ce_cycles) ==
               P2_PSRAM_WIRE_CE_CYCLES_OFFSET,
               "PSRAM wire CE timing offset drifted");
+static_assert(offsetof(struct p2_psram_service_s, cancel_sequence) %
+              sizeof(uint32_t) == 0,
+              "PSRAM cancellation word must remain long-aligned");
 
 /****************************************************************************
  * Private Functions
@@ -529,9 +532,15 @@ static bool p2_psram_cancelled(uint32_t sequence)
 {
   bool cancelled;
 
-  p2_psram_raw_lock();
+  /* cancel_sequence is one aligned volatile Hub long.  P2 Hub longs are
+   * coherent between cogs, so the worker can sample cancellation without
+   * contending for the descriptor lock once per four-byte wire word.  The
+   * NuttX cog still publishes and clears the value under that lock.
+   */
+
+  p2_psram_compiler_barrier();
   cancelled = g_p2_psram.cancel_sequence == sequence;
-  p2_psram_raw_unlock();
+  p2_psram_compiler_barrier();
   return cancelled;
 }
 

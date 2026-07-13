@@ -217,6 +217,19 @@ class PsramSourceTests(unittest.TestCase):
         )
         self.assertNotIn("p2_psram_claim_pins();", worker)
         self.assertNotIn("p2_pin_release(", worker)
+
+        cancelled = source[
+            source.index("static bool p2_psram_cancelled(") :
+            source.index("static int p2_psram_execute(")
+        ]
+        self.assertIn("one aligned volatile Hub long", cancelled)
+        self.assertEqual(cancelled.count("p2_psram_compiler_barrier();"), 2)
+        self.assertNotIn("p2_psram_raw_lock();", cancelled)
+        self.assertNotIn("p2_psram_raw_unlock();", cancelled)
+        self.assertIn(
+            "PSRAM cancellation word must remain long-aligned", source
+        )
+
         startup_failure = worker[
             worker.index("if (ret < 0)") :
             worker.index("g_p2_psram.ready = 1;")
