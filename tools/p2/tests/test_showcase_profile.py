@@ -39,7 +39,7 @@ class ShowcaseProfileTests(unittest.TestCase):
             "CONFIG_P2_EC32MB_FLASHBOOT=y",
             "CONFIG_MTD_SMART=y",
             "CONFIG_MTD_SMART_MINIMIZE_RAM=y",
-            "CONFIG_MTD_SMART_SECTOR_CACHE_SIZE=512",
+            "CONFIG_MTD_SMART_SECTOR_CACHE_SIZE=2048",
             "CONFIG_MTD_SMART_SECTOR_PACK_COUNTS=y",
             "CONFIG_MMCSD_SPI=y",
             "CONFIG_FS_SMARTFS=y",
@@ -123,6 +123,34 @@ class ShowcaseProfileTests(unittest.TestCase):
         self.assertIn("sigaction(SIGINT, &state->oldact, NULL)", sleep_commands)
         self.assertEqual(sleep_commands.count("nsh_sleep_prepare(vtbl"), 2)
         self.assertEqual(sleep_commands.count("nsh_sleep_cleanup(vtbl"), 2)
+
+    def test_smartfs_minimized_cache_contract(self):
+        smart = self.read(ROOT / "drivers" / "mtd" / "smart.c")
+
+        cache_add = smart[
+            smart.index("static int smart_add_sector_to_cache") : smart.index(
+                "static uint16_t smart_cache_lookup"
+            )
+        ]
+        existing = cache_add.index("dev->scache[x].logical == logical")
+        append = cache_add.index(
+            "dev->cache_entries < CONFIG_MTD_SMART_SECTOR_CACHE_SIZE"
+        )
+        self.assertLess(existing, append)
+        self.assertIn("if (index == UINT16_MAX)", cache_add)
+        self.assertIn("return -ENOSPC;", cache_add)
+
+        scan = smart[
+            smart.index("static int smart_scan") : smart.index(
+                "static inline int smart_getformat"
+            )
+        ]
+        self.assertIn("if (duplicate)", scan)
+        self.assertIn(
+            "dev->cache_entries < CONFIG_MTD_SMART_SECTOR_CACHE_SIZE", scan
+        )
+        self.assertIn("else if (duplicate)", scan)
+        self.assertIn("smart_update_cache(dev, logicalsector, winner);", scan)
 
 
 if __name__ == "__main__":

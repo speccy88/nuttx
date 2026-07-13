@@ -1482,31 +1482,54 @@ static int smart_add_sector_to_cache(FAR struct smart_struct_s *dev,
   uint16_t x;
   uint16_t oldest;
 
-  /* If we aren't full yet, just add the sector to the end of the list */
+  /* Reuse an existing entry for this logical sector.  A duplicate can be
+   * found while the volume is scanned, and keeping two cache entries for
+   * it could leave one entry pointing at the losing physical sector.
+   */
 
-  index = 1;
+  index = UINT16_MAX;
+  oldest = 0;
+  for (x = 0; x < dev->cache_entries; x++)
+    {
+      if (dev->scache[x].logical == logical)
+        {
+          /* A mapping correction is not a logical-sector access.  Preserve
+           * the entry's age while replacing the physical winner.
+           */
+
+          dev->scache[x].physical = physical;
+          dev->cache_lastlog = logical;
+          dev->cache_lastphys = physical;
+
+          if (dev->debuglevel > 1)
+            {
+              _err("Update Cache sector: Log=%d, Phys=%d at index %d "
+                   "from line %d\n", logical, physical, x, line);
+            }
+
+          return x;
+        }
+    }
+
+  /* If we aren't full yet, add the sector to the end of the list. */
+
   if (dev->cache_entries < CONFIG_MTD_SMART_SECTOR_CACHE_SIZE)
     {
-      oldest = 0;
-      index  = dev->cache_entries++;
+      index = dev->cache_entries++;
     }
   else
     {
-      /* Cache is full.  We must find the least accessed entry and replace
-       * it
-       */
+      /* Cache is full.  Find the least accessed non-system entry. */
 
-      oldest = 0xffff;
+      oldest = UINT16_MAX;
       for (x = 0; x < CONFIG_MTD_SMART_SECTOR_CACHE_SIZE; x++)
         {
-          /* Never replace cache entries for system sectors */
+          /* Never replace cache entries for system sectors. */
 
           if (dev->scache[x].logical < SMART_FIRST_ALLOC_SECTOR)
             {
               continue;
             }
-
-          /* If the hit count is zero, then choose this entry */
 
           if (dev->scache[x].birth < oldest)
             {
@@ -1514,6 +1537,11 @@ static int smart_add_sector_to_cache(FAR struct smart_struct_s *dev,
               index  = x;
             }
         }
+    }
+
+  if (index == UINT16_MAX)
+    {
+      return -ENOSPC;
     }
 
   /* Now add the sector at index */
@@ -1962,6 +1990,7 @@ static int smart_scan(FAR struct smart_struct_s *dev)
 #ifdef CONFIG_MTD_SMART_MINIMIZE_RAM
   int       dupsector;
   uint16_t  duplogsector;
+  bool      duplicate;
 #endif
 #ifdef CONFIG_SMARTFS_MULTI_ROOT_DIRS
   int       x;
@@ -2260,7 +2289,9 @@ static int smart_scan(FAR struct smart_struct_s *dev)
 #ifndef CONFIG_MTD_SMART_MINIMIZE_RAM
       if (dev->smap[logicalsector] != 0xffff)
 #else
-      if (dev->sbitmap[logicalsector >> 3] & (1 << (logicalsector & 0x07)))
+      duplicate = (dev->sbitmap[logicalsector >> 3] &
+                   (1 << (logicalsector & 0x07))) != 0;
+      if (duplicate)
 #endif
         {
           /* Uh-oh, we found more than 1 physical sector claiming to be
@@ -2490,9 +2521,19 @@ static int smart_scan(FAR struct smart_struct_s *dev)
 
       dev->sbitmap[logicalsector >> 3] |= 1 << (logicalsector & 0x07);
 
-      if (logicalsector < SMART_FIRST_ALLOC_SECTOR)
+      /* Preload live mappings until the bounded cache is full.  Keep
+       * system sectors resident and update cached duplicate winners without
+       * churning the working set for every later sector on a large volume.
+       */
+
+      if (logicalsector < SMART_FIRST_ALLOC_SECTOR ||
+          dev->cache_entries < CONFIG_MTD_SMART_SECTOR_CACHE_SIZE)
         {
           smart_add_sector_to_cache(dev, logicalsector, winner, __LINE__);
+        }
+      else if (duplicate)
+        {
+          smart_update_cache(dev, logicalsector, winner);
         }
 #endif
     }

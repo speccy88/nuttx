@@ -298,7 +298,9 @@ class FlashLayoutTests(unittest.TestCase):
                 path.chmod(0o755)
 
             image = source / "image.bin"
-            image.write_bytes(b"P2!!")
+            image_bytes = flashboot_protocol.STARTUP_MOUNT_MARKER.encode("ascii")
+            image_bytes += b"\0" * (-len(image_bytes) % 4)
+            image.write_bytes(image_bytes)
             image.with_suffix(".bin.json").write_text(
                 json.dumps(flash_layout.image_manifest(image.read_bytes())),
                 encoding="utf-8",

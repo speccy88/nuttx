@@ -30,7 +30,7 @@ BOOT_CRC = "89ABCDEF"
 FLASHBOOT_CRC = "76543210"
 
 
-def make_build_artifact(root, image):
+def make_build_artifact(root, image, profile="flashboot"):
     root.mkdir()
     for name in build_artifact.PASS_REQUIRED_FILES:
         path = root / name
@@ -63,10 +63,10 @@ def make_build_artifact(root, image):
         "status": "PASS",
         "exit_code": 0,
         "board": "p2-ec32mb",
-        "profile": "flashboot",
+        "profile": profile,
         "started_utc": "2026-07-13T11:58:00.000Z",
         "ended_utc": "2026-07-13T11:59:00.000Z",
-        "build_command": "tools/p2/build.sh flashboot",
+        "build_command": "tools/p2/build.sh {}".format(profile),
         "nuttx_branch": "codex/test",
         "nuttx_commit": "1" * 40,
         "nuttx_commit_after": "1" * 40,
@@ -154,18 +154,25 @@ def make_flash_artifact(root, port="/dev/fake-p2"):
     return flashboot_protocol.load_flash_artifact(root)
 
 
-def make_program_artifact(root, port="/dev/fake-p2"):
+def make_program_artifact(root, port="/dev/fake-p2", profile="flashboot"):
     root.mkdir()
     inputs = root / "inputs"
     inputs.mkdir()
-    image = b"P2 flashboot img"
+    image_parts = [
+        b"P2 boot image",
+        flashboot_protocol.STARTUP_MOUNT_MARKER.encode("ascii"),
+    ]
+    if profile == "showcase":
+        image_parts.append(flashboot_protocol.SHOWCASE_READY_MARKER.encode("ascii"))
+    image = b"\0".join(image_parts)
+    image += b"\0" * (-len(image) % 4)
     image_path = inputs / "flash-input.bin"
     image_path.write_bytes(image)
     manifest_path = inputs / "flash-input.bin.json"
     manifest_path.write_text(
         json.dumps(flash_layout.image_manifest(image)), encoding="utf-8"
     )
-    build = make_build_artifact(inputs / "build", image)
+    build = make_build_artifact(inputs / "build", image, profile=profile)
     loader_source = pathlib.Path("/opt/p2/bin/loadp2")
     loader_copy = inputs / "loadp2"
     loader_copy.write_bytes(b"fixture sealed loadp2\n")
@@ -511,6 +518,39 @@ class FlashBootRunnerTests(unittest.TestCase):
                 lock_factory=FakeLock,
             )
 
+            self.assertEqual(result, 0)
+            self.assertFalse(output.exists())
+            self.assertEqual(FakeLock.enters, 0)
+
+    def test_dry_run_accepts_exact_showcase_program_artifact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            make_flash_artifact(root / "prior", port="/dev/not-used")
+            program = make_program_artifact(
+                root / "program", port="/dev/not-used", profile="showcase"
+            )
+            output = root / "must-not-exist"
+
+            def forbidden_factory(**arguments):
+                raise AssertionError("dry-run opened serial")
+
+            result = flashboot_script.main(
+                [
+                    "--port",
+                    "/dev/not-used",
+                    "--flash-artifact",
+                    str(root / "prior"),
+                    "--program-artifact",
+                    str(root / "program"),
+                    "--artifact-dir",
+                    str(output),
+                ],
+                environment={},
+                serial_factory=forbidden_factory,
+                lock_factory=FakeLock,
+            )
+
+            self.assertEqual(program.build.profile, "showcase")
             self.assertEqual(result, 0)
             self.assertFalse(output.exists())
             self.assertEqual(FakeLock.enters, 0)

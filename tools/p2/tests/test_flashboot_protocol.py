@@ -20,7 +20,13 @@ SEQUENCE = "1234ABCD"
 BOOT_CRC = "89ABCDEF"
 
 
-def make_build_artifact(root, image):
+def make_build_artifact(
+    root,
+    image,
+    profile="flashboot",
+    board="p2-ec32mb",
+    clock_hz=180000000,
+):
     root.mkdir()
     for name in build_artifact.PASS_REQUIRED_FILES:
         path = root / name
@@ -30,7 +36,9 @@ def make_build_artifact(root, image):
         elif name == "nuttx":
             path.write_bytes(b"ELF flashboot fixture")
         elif name == "config":
-            path.write_text("CONFIG_P2_SYSCLK_HZ=180000000\n", encoding="utf-8")
+            path.write_text(
+                "CONFIG_P2_SYSCLK_HZ={}\n".format(clock_hz), encoding="utf-8"
+            )
         elif name == "toolchain.lock":
             path.write_text(
                 "nuttx_commit={}\nnuttx_apps_commit={}\n".format("1" * 40, "2" * 40),
@@ -52,11 +60,11 @@ def make_build_artifact(root, image):
         "format": build_artifact.FORMAT,
         "status": "PASS",
         "exit_code": 0,
-        "board": "p2-ec32mb",
-        "profile": "flashboot",
+        "board": board,
+        "profile": profile,
         "started_utc": "2026-07-13T11:58:00.000Z",
         "ended_utc": "2026-07-13T11:59:00.000Z",
-        "build_command": "tools/p2/build.sh flashboot",
+        "build_command": "tools/p2/build.sh {} --board {}".format(profile, board),
         "nuttx_branch": "codex/test",
         "nuttx_commit": "1" * 40,
         "nuttx_commit_after": "1" * 40,
@@ -70,7 +78,7 @@ def make_build_artifact(root, image):
         "p2llvm_root": "/tmp/p2llvm",
         "compiler": "fixture clang",
         "jobs": 1,
-        "board_clock_hz": 180000000,
+        "board_clock_hz": clock_hz,
         "binary_sha256": files["nuttx.bin"]["sha256"],
         "elf_sha256": files["nuttx"]["sha256"],
         "files": files,
@@ -152,17 +160,37 @@ def make_flash_artifact(
     return root
 
 
-def make_program_artifact(root, erase_end=0x1000):
+def make_program_artifact(
+    root,
+    erase_end=0x1000,
+    profile="flashboot",
+    board="p2-ec32mb",
+    clock_hz=180000000,
+    include_flashboot_marker=True,
+    include_showcase_marker=True,
+):
     inputs = root / "inputs"
     inputs.mkdir()
-    image = b"P2 flashboot img"
+    image_parts = [b"P2 boot image"]
+    if include_flashboot_marker:
+        image_parts.append(flashboot.STARTUP_MOUNT_MARKER.encode("ascii"))
+    if profile == "showcase" and include_showcase_marker:
+        image_parts.append(flashboot.SHOWCASE_READY_MARKER.encode("ascii"))
+    image = b"\0".join(image_parts)
+    image += b"\0" * (-len(image) % 4)
     image_path = inputs / "flash-input.bin"
     image_path.write_bytes(image)
     manifest_path = inputs / "flash-input.bin.json"
     manifest_path.write_text(
         json.dumps(flash_layout.image_manifest(image)), encoding="utf-8"
     )
-    build = make_build_artifact(inputs / "build", image)
+    build = make_build_artifact(
+        inputs / "build",
+        image,
+        profile=profile,
+        board=board,
+        clock_hz=clock_hz,
+    )
     loader_source = pathlib.Path("/opt/p2/bin/loadp2")
     loader_copy = inputs / "loadp2"
     loader_copy.write_bytes(b"fixture sealed loadp2\n")
@@ -233,6 +261,50 @@ def make_program_artifact(root, erase_end=0x1000):
 
 
 class FlashBootProtocolTests(unittest.TestCase):
+    def test_program_artifact_accepts_flashboot_and_exact_showcase(self):
+        for profile in ("flashboot", "showcase"):
+            with (
+                self.subTest(profile=profile),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = make_program_artifact(pathlib.Path(temporary), profile=profile)
+                result = flashboot.load_program_artifact(root)
+                self.assertEqual(result.build.board, "p2-ec32mb")
+                self.assertEqual(result.build.profile, profile)
+                self.assertEqual(result.build.board_clock_hz, 180000000)
+
+    def test_program_artifact_profile_board_clock_and_markers_fail_closed(self):
+        cases = (
+            (
+                {"profile": "storage"},
+                "profile must be flashboot or showcase",
+            ),
+            (
+                {"board": "p2-ec"},
+                "build board is not p2-ec32mb",
+            ),
+            (
+                {"clock_hz": 200000000},
+                "board clock is not 180 MHz",
+            ),
+            (
+                {"include_flashboot_marker": False},
+                "exact flashboot startup mount marker",
+            ),
+            (
+                {"profile": "showcase", "include_showcase_marker": False},
+                "exact p2-ec32mb showcase marker",
+            ),
+        )
+        for arguments, reason in cases:
+            with (
+                self.subTest(arguments=arguments),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = make_program_artifact(pathlib.Path(temporary), **arguments)
+                with self.assertRaisesRegex(flashboot.ProgramArtifactError, reason):
+                    flashboot.load_program_artifact(root)
+
     def test_program_artifact_pins_image_and_boot_partition_boundary(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = make_program_artifact(pathlib.Path(temporary))

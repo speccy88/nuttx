@@ -28,6 +28,10 @@ STARTUP_MOUNT_MARKER = (
 STARTUP_MOUNT_PATTERN = re.compile(
     r"^" + re.escape(STARTUP_MOUNT_MARKER) + r"\r?$", re.MULTILINE
 )
+SHOWCASE_READY_MARKER = "P2SHOWCASE:READY:BOARD=p2-ec32mb:RUN=p2help"
+PROGRAM_BUILD_PROFILES = ("flashboot", "showcase")
+PROGRAM_BOARD = "p2-ec32mb"
+PROGRAM_CLOCK_HZ = 180000000
 
 PREREQUISITE_BOOT_MARKER_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
     (
@@ -342,8 +346,26 @@ def load_program_artifact(path: pathlib.Path) -> ProgramArtifact:
                     key
                 )
             )
-    if build.profile != "flashboot":
-        raise ProgramArtifactError("embedded build profile is not flashboot")
+    if build.profile not in PROGRAM_BUILD_PROFILES:
+        raise ProgramArtifactError(
+            "embedded build profile must be flashboot or showcase"
+        )
+    if build.board != PROGRAM_BOARD:
+        raise ProgramArtifactError(
+            "embedded build board is not {}".format(PROGRAM_BOARD)
+        )
+    if build.board_clock_hz != PROGRAM_CLOCK_HZ:
+        raise ProgramArtifactError("embedded build board clock is not 180 MHz")
+    image_bytes = image.read_bytes()
+    if STARTUP_MOUNT_MARKER.encode("ascii") not in image_bytes:
+        raise ProgramArtifactError(
+            "programmed image lacks the exact flashboot startup mount marker"
+        )
+    if (build.profile == "showcase" and
+            SHOWCASE_READY_MARKER.encode("ascii") not in image_bytes):
+        raise ProgramArtifactError(
+            "showcase image lacks the exact p2-ec32mb showcase marker"
+        )
     program_settle_seconds = status.get("program_settle_seconds")
     if (not isinstance(program_settle_seconds, int) or
             program_settle_seconds < 3):
