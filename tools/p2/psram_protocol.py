@@ -94,7 +94,10 @@ def marker_patterns(sequence: str) -> Tuple[Tuple[str, re.Pattern], ...]:
     return (
         (
             "P2PSRAM begin",
-            _line(r"P2PSRAM:BEGIN:SEQUENCE=" + re.escape(sequence)),
+            _line(
+                r"(?:nsh> (?:\x1b\[K)?)?P2PSRAM:BEGIN:SEQUENCE="
+                + re.escape(sequence)
+            ),
         ),
         (
             "P2PSRAM geometry",

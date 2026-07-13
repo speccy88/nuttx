@@ -69,6 +69,26 @@ class PsramProtocolTests(unittest.TestCase):
         self.assertEqual(result["values"]["fnv1a"], int(CHECKSUM, 16))
         self.assertEqual(result["values"]["max_ce_cycles"], 711)
 
+    def test_exact_nsh_prompt_prefixed_begin_is_accepted(self):
+        text = complete_log().replace(
+            "P2PSRAM:BEGIN:SEQUENCE=" + SEQUENCE,
+            "nsh> \x1b[KP2PSRAM:BEGIN:SEQUENCE=" + SEQUENCE,
+            1,
+        )
+        result = parse_psram(text, SEQUENCE)
+        self.assertTrue(result["complete"], result["errors"])
+
+    def test_duplicate_prompt_prefixed_begin_is_rejected(self):
+        duplicate = "nsh> \x1b[KP2PSRAM:BEGIN:SEQUENCE=" + SEQUENCE + "\r\n"
+        text = complete_log().replace(
+            "P2PSRAM:BEGIN:SEQUENCE=" + SEQUENCE + "\r\n",
+            "P2PSRAM:BEGIN:SEQUENCE=" + SEQUENCE + "\r\n" + duplicate,
+            1,
+        )
+        result = parse_psram(text, SEQUENCE)
+        self.assertFalse(result["complete"])
+        self.assertTrue(any("exactly one" in error for error in result["errors"]))
+
     def test_missing_progress_is_rejected(self):
         text = complete_log().replace(
             progress_line("READ", 32 * 1024 * 1024) + "\r\n", ""
