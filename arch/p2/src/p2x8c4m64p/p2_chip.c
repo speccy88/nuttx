@@ -28,6 +28,8 @@
 
 #include <stdint.h>
 
+#include <nuttx/board.h>
+
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
@@ -76,7 +78,7 @@ void p2_clockconfig(void)
   __asm__ __volatile__("hubset %0" : : "ri" (P2_CLOCK_FINAL));
 }
 
-void board_reset(int status)
+int board_reset(int status)
 {
   (void)status;
 

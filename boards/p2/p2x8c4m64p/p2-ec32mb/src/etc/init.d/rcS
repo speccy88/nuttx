@@ -1,0 +1,19 @@
+/****************************************************************************
+ * boards/p2/p2x8c4m64p/p2-ec32mb/src/etc/init.d/rcS
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ ****************************************************************************/
+
+#include <nuttx/config.h>
+
+#ifdef CONFIG_P2_EC32MB_FLASHBOOT
+
+mkdir -p /mnt/flash
+if mount -t smartfs /dev/smart0 /mnt/flash
+then
+  echo P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash:MOUNTED:AUTOFORMAT=NO:DESTRUCTIVE_HANDLERS=ABSENT
+else
+  echo P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash:FAIL:AUTOFORMAT=NO
+fi
+
+#endif

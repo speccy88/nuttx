@@ -33,4 +33,8 @@ ifeq ($(CONFIG_P2_STORAGE),y)
 CSRCS += p2_ec32mb_storage.c p2_ec32mb_storage_arbiter.c
 endif
 
+ifeq ($(CONFIG_ETC_ROMFS),y)
+RCSRCS = etc/init.d/rc.sysinit etc/init.d/rcS
+endif
+
 include $(TOPDIR)/boards/Board.mk

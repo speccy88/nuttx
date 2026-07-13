@@ -26,6 +26,16 @@ config P2_EC32MB_W25_PROBE_FREQUENCY
 		CONFIG_W25_SPIFREQUENCY before handing the SPI lower half to the
 		generic W25 driver.
 
+config P2_EC32MB_FLASHBOOT
+	bool "Enable the reset-only flash-boot persistence profile"
+	default n
+	depends on P2_EC32MB_STORAGE_BINDINGS && ETC_ROMFS
+	help
+		Build the board ROMFS startup contract that mounts the existing
+		/dev/smart0 filesystem without formatting it.  This profile is
+		intentionally incompatible with destructive p2storage handlers and
+		filesystem-formatting utilities.
+
 config P2_EC32MB_GPIO
 	bool "Register the P2 Smart Pin GPIO loopback pair"
 	default n

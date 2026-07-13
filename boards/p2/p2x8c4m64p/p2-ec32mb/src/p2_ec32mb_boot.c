@@ -42,6 +42,19 @@
 
 #include "p2_ec32mb_pins.h"
 
+#ifdef CONFIG_P2_EC32MB_FLASHBOOT
+#  if defined(CONFIG_TESTING_P2STORAGE_DESTRUCTIVE) || \
+      defined(CONFIG_FSUTILS_MKSMARTFS) || defined(CONFIG_FSUTILS_MKFATFS)
+#    error "P2 flashboot image must not contain destructive storage tools"
+#  endif
+#  ifndef CONFIG_TESTING_P2STORAGE_FLASH_PREMOUNTED
+#    error "P2 flashboot verification requires the premounted read path"
+#  endif
+#  ifndef CONFIG_BOARDCTL_RESET
+#    error "P2 flashboot profile requires BOARDIOC_RESET support"
+#  endif
+#endif
+
 #ifdef CONFIG_FS_PROCFS
 #  ifdef CONFIG_NSH_PROC_MOUNTPOINT
 #    define P2_PROCFS_MOUNTPOINT CONFIG_NSH_PROC_MOUNTPOINT

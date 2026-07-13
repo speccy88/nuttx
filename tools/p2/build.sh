@@ -19,6 +19,7 @@ cfg=${1:-bringup}
 apps=${NUTTX_APPS_DIR:-$ROOT/../apps}
 python=${P2_PYTHON:-python3}
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 art=${P2_ARTIFACTS:-$ROOT/artifacts/hil/$timestamp-build-$cfg}
 log=$art/build.log
 
@@ -46,6 +47,21 @@ jobs=${NPROC:-$jobs}
 
 mkdir -p "$art"
 
+nuttx_branch=$(git -C "$ROOT" branch --show-current)
+nuttx_commit=$(git -C "$ROOT" rev-parse HEAD)
+apps_branch=$(git -C "$apps" branch --show-current)
+apps_commit=$(git -C "$apps" rev-parse HEAD)
+compiler=$("$P2LLVM_ROOT/bin/clang" --version | head -1)
+build_command="$ROOT/tools/p2/build.sh $cfg"
+git -C "$ROOT" status --porcelain=v1 --untracked-files=all \
+  > "$art/nuttx-source-status-before.txt"
+git -C "$apps" status --porcelain=v1 --untracked-files=all \
+  > "$art/apps-source-status-before.txt"
+[[ ! -s "$art/nuttx-source-status-before.txt" ]] && nuttx_clean=1 || nuttx_clean=0
+[[ ! -s "$art/apps-source-status-before.txt" ]] && apps_clean=1 || apps_clean=0
+printf '%q ' "$ROOT/tools/p2/build.sh" "$cfg" > "$art/build-command.txt"
+printf '\n' >> "$art/build-command.txt"
+
 finish()
 {
   local rc=$?
@@ -59,8 +75,41 @@ finish()
     cp "$ROOT/tools/p2/toolchain.lock" "$art/toolchain.lock"
   fi
 
+  local nuttx_commit_after apps_commit_after nuttx_final_clean apps_final_clean
+  local nuttx_stable apps_stable
+  nuttx_commit_after=$(git -C "$ROOT" rev-parse HEAD)
+  apps_commit_after=$(git -C "$apps" rev-parse HEAD)
+  git -C "$ROOT" status --porcelain=v1 --untracked-files=all \
+    > "$art/nuttx-source-status.txt"
+  git -C "$apps" status --porcelain=v1 --untracked-files=all \
+    > "$art/apps-source-status.txt"
+  [[ ! -s "$art/nuttx-source-status.txt" ]] && nuttx_final_clean=1 || nuttx_final_clean=0
+  [[ ! -s "$art/apps-source-status.txt" ]] && apps_final_clean=1 || apps_final_clean=0
+  [[ $nuttx_clean -eq 1 && $nuttx_final_clean -eq 1 && \
+     "$nuttx_commit" == "$nuttx_commit_after" ]] && nuttx_stable=1 || nuttx_stable=0
+  [[ $apps_clean -eq 1 && $apps_final_clean -eq 1 && \
+     "$apps_commit" == "$apps_commit_after" ]] && apps_stable=1 || apps_stable=0
+
   printf 'status=%s\nexit_code=%d\n' \
     "$([[ $rc -eq 0 ]] && echo PASS || echo FAIL)" "$rc" > "$art/status.txt"
+  local ended_utc
+  ended_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  P2_BUILD_ARTIFACT="$art" \
+  P2_BUILD_STATUS="$([[ $rc -eq 0 ]] && echo PASS || echo FAIL)" \
+  P2_BUILD_EXIT_CODE="$rc" P2_BUILD_PROFILE="$cfg" \
+  P2_BUILD_STARTED_UTC="$started_utc" P2_BUILD_ENDED_UTC="$ended_utc" \
+  P2_BUILD_COMMAND="$build_command" \
+  P2_BUILD_NUTTX_BRANCH="$nuttx_branch" \
+  P2_BUILD_NUTTX_COMMIT="$nuttx_commit" \
+  P2_BUILD_NUTTX_COMMIT_AFTER="$nuttx_commit_after" \
+  P2_BUILD_APPS_PATH="$apps" P2_BUILD_APPS_BRANCH="$apps_branch" \
+  P2_BUILD_APPS_COMMIT="$apps_commit" \
+  P2_BUILD_APPS_COMMIT_AFTER="$apps_commit_after" \
+  P2_BUILD_NUTTX_CLEAN="$nuttx_stable" P2_BUILD_APPS_CLEAN="$apps_stable" \
+  P2_BUILD_P2LLVM_ROOT="$P2LLVM_ROOT" P2_BUILD_COMPILER="$compiler" \
+  P2_BUILD_JOBS="$jobs" \
+    "$python" "$ROOT/tools/p2/build_artifact.py" --finalize-environment || \
+    { [[ $rc -ne 0 ]] || rc=1; }
   exit "$rc"
 }
 
@@ -69,12 +118,15 @@ cd "$ROOT"
 
 {
   echo "# p2-ec32mb:$cfg build $timestamp"
-  echo "nuttx_branch=$(git branch --show-current)"
-  echo "nuttx_commit=$(git rev-parse HEAD)"
+  echo "nuttx_branch=$nuttx_branch"
+  echo "nuttx_commit=$nuttx_commit"
   echo "apps=$apps"
-  echo "apps_commit=$(git -C "$apps" rev-parse HEAD)"
+  echo "apps_branch=$apps_branch"
+  echo "apps_commit=$apps_commit"
+  echo "nuttx_source_clean=$nuttx_clean"
+  echo "apps_source_clean=$apps_clean"
   echo "P2LLVM_ROOT=$P2LLVM_ROOT"
-  echo "compiler=$("$P2LLVM_ROOT/bin/clang" --version | head -1)"
+  echo "compiler=$compiler"
   echo "jobs=$jobs"
   ./tools/configure.sh -E -a "$apps_arg" "p2-ec32mb:$cfg"
   make olddefconfig

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import pathlib
 from typing import Iterable
@@ -17,6 +18,7 @@ PAYLOAD_OFFSET = 0x90
 MIN_PROGRAM_PAGES = ROM_BOOT_WINDOW_SIZE // PAGE_SIZE
 HUB_RAM = 0x7C000
 LARGE_ERASE_THRESHOLD_PAGES = 64
+FLASH_INPUT_FORMAT = "loadp2-single-flash-input-v1"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -39,6 +41,56 @@ class FlashPlan:
     payload_end: int
     program_end: int
     erase_end: int
+
+
+def image_manifest(data: bytes) -> dict[str, object]:
+    """Return the canonical mkflash manifest for one raw Hub image."""
+
+    plan = image_plan(len(data))
+    validate(image_size=len(data))
+    return {
+        "format": FLASH_INPUT_FORMAT,
+        "image_size": len(data),
+        "image_sha256": hashlib.sha256(data).hexdigest(),
+        "payload_offset": plan.payload_offset,
+        "payload_end": plan.payload_end,
+        "program_end": plan.program_end,
+        "erase_end": plan.erase_end,
+    }
+
+
+def validate_image_manifest(image: pathlib.Path,
+                            manifest: pathlib.Path | None = None
+                            ) -> dict[str, object]:
+    """Validate an adjacent mkflash manifest against its raw image."""
+
+    image = pathlib.Path(image)
+    if manifest is None:
+        manifest = image.with_suffix(image.suffix + ".json")
+    else:
+        manifest = pathlib.Path(manifest)
+
+    try:
+        data = image.read_bytes()
+        observed = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read flash input manifest: {exc}") from exc
+
+    if not isinstance(observed, dict):
+        raise ValueError("flash input manifest must contain a JSON object")
+
+    expected = image_manifest(data)
+    if set(observed) != set(expected):
+        raise ValueError("flash input manifest fields do not match the schema")
+
+    for key, value in expected.items():
+        if observed.get(key) != value:
+            raise ValueError(
+                f"flash input manifest {key} mismatch: "
+                f"expected {value!r}, got {observed.get(key)!r}"
+            )
+
+    return expected
 
 
 def align_up(value: int, alignment: int) -> int:
@@ -73,8 +125,10 @@ def image_plan(image_size: int) -> FlashPlan:
         raise ValueError("image is empty")
     if image_size > HUB_RAM:
         raise ValueError("hub image overflow")
+    if image_size % 4 != 0:
+        raise ValueError("hub image size must be four-byte aligned")
 
-    padded = align_up(image_size, 4)
+    padded = image_size
     payload_end = PAYLOAD_OFFSET + padded
     program_pages = max(
         MIN_PROGRAM_PAGES,
