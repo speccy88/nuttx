@@ -110,8 +110,8 @@ def interrupt_reset_elapsed(
 def stage_boot_crc32(stage_dir: pathlib.Path) -> str:
     """Read the one exact boot-reservation CRC emitted during a stage."""
 
-    text = (stage_dir / "cycle-001" / "console.log").read_text(
-        encoding="utf-8"
+    text = (stage_dir / "cycle-001" / "console.raw").read_bytes().decode(
+        "utf-8", "replace"
     )
     matches = list(BOOT_CRC_PATTERN.finditer(text))
     if len(matches) != 1:

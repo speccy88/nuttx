@@ -180,6 +180,17 @@ class StoragePlanTests(unittest.TestCase):
                 1.625,
             )
 
+    def test_boot_crc_is_read_from_the_preserved_raw_console(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stage = pathlib.Path(directory) / "01-probe" / "cycle-001"
+            stage.mkdir(parents=True)
+            (stage / "console.raw").write_bytes(
+                b"P2STORAGE:W25_BOOT_CRC32=EE5B9C97\r\n"
+            )
+            self.assertEqual(
+                storage_plan.stage_boot_crc32(stage.parent), "EE5B9C97"
+            )
+
     def test_flash_wrapper_never_formats_without_explicit_flag(self):
         wrapper = load_wrapper("test-flashfs.py", "p2_test_flashfs")
         with mock.patch.object(
