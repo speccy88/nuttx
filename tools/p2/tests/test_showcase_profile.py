@@ -17,6 +17,7 @@ class ShowcaseProfileTests(unittest.TestCase):
 
     def test_common_showcase_contract(self):
         required = (
+            "CONFIG_BCH=y",
             "CONFIG_BOARD_LATE_INITIALIZE=y",
             "CONFIG_ETC_ROMFS=y",
             "CONFIG_NSH_READLINE=y",
