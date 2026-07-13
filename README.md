@@ -264,7 +264,7 @@ screen -fn "$PORT" 230400,cs8,-ixon,-ixoff,-istrip
 Do not add a host newline conversion. The shorter
 `screen "$PORT" 230400` form often works, but it leaves flow-control details
 dependent on host defaults and is not the strict recipe. Exit Screen with
-`Ctrl-A`, then `\\`, and confirm.
+`Ctrl-A`, then `Ctrl-\`, then `y` to confirm.
 
 ### `minicom`
 
@@ -312,10 +312,13 @@ interrupt and terminate itself instead of sending byte `0x03` to NuttX.
 
 In the Propeller Tool on Windows, identify the hardware/COM port, open
 Parallax Serial Terminal with `F12`, select that COM port, choose **230400**,
-and click **Enable**. Do not enable an extra LF/CR transformation if the local
-version offers one. PST is convenient for the prompt, line-oriented commands,
-and sensor output; use tio, screen, minicom, picocom, or PuTTY when testing raw
-Tab, arrow-history, or Ctrl-C key sequences. Parallax's
+and clear **Echo On**. Open **Prefs...** (or press `F5`), select **Function**,
+clear **(10) = Line Feed**, leave **(13) = New Line** checked, then click
+**Enable**. Those PST settings make NuttX's `CR` advance the display while PST
+ignores the following `LF`, avoiding double-spaced output. PST is convenient
+for the prompt, line-oriented commands, and sensor output; use tio, screen,
+minicom, picocom, or PuTTY when testing raw Tab, arrow-history, or Ctrl-C key
+sequences. Parallax's
 [PST setup guide](https://learn.parallax.com/kickstarts/using-the-parallax-serial-terminal/)
 shows the COM/baud/Enable workflow. Click **Disable**, then close PST when
 finished.

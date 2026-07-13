@@ -181,7 +181,7 @@ def events_through_ctrl_c(include_ctrl_prompt=True):
             "led_daemon: LED set 0x01\r\n"
         ).encode("ascii"),
         b"\r\nnsh> ",
-        b"\r\nSIGTERM received\r\nled_daemon: Terminated.\r\n",
+        b"\r\nnsh> \x1b[KSIGTERM received\r\nled_daemon: Terminated.\r\n",
         b"\r\nnsh> ",
         b"\r\nNuttX 12.9.0 p2 p2-ec32mb\r\n",
         b"\r\nnsh> ",

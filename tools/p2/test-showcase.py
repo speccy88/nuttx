@@ -177,6 +177,15 @@ def _line_literal(value: str) -> re.Pattern:
     return re.compile(r"^" + re.escape(value) + r"\r?$", re.MULTILINE)
 
 
+def _async_line_pattern(body: str) -> re.Pattern:
+    """Match daemon output even when NSH rendered its prompt first."""
+
+    return re.compile(
+        r"^(?:" + hil.NSH_PROMPT_PATTERN + r")?" + body + r"\r?$",
+        re.MULTILINE,
+    )
+
+
 def _is_relative_to(path: pathlib.Path, parent: pathlib.Path) -> bool:
     try:
         path.relative_to(parent)
@@ -713,27 +722,32 @@ class ShowcaseRunner:
                 (
                     (
                         "leds main start",
-                        _line_literal("leds_main: Starting the led_daemon"),
+                        _async_line_pattern(
+                            re.escape("leds_main: Starting the led_daemon")
+                        ),
                     ),
                     (
                         "led daemon pid",
-                        re.compile(
-                            r"^led_daemon \(pid# "
-                            r"(?P<led_pid>[1-9][0-9]*)\): Running\r?$",
-                            re.MULTILINE,
+                        _async_line_pattern(
+                            r"led_daemon \(pid# "
+                            r"(?P<led_pid>[1-9][0-9]*)\): Running"
                         ),
                     ),
                     (
                         "open /dev/userleds",
-                        _line_literal("led_daemon: Opening /dev/userleds"),
+                        _async_line_pattern(
+                            re.escape("led_daemon: Opening /dev/userleds")
+                        ),
                     ),
                     (
                         "two LEDs supported",
-                        _line_literal("led_daemon: Supported LEDs 0x03"),
+                        _async_line_pattern(
+                            re.escape("led_daemon: Supported LEDs 0x03")
+                        ),
                     ),
                     (
                         "LED write through driver",
-                        re.compile(r"^led_daemon: LED set 0x0[1-3]\r?$", re.MULTILINE),
+                        _async_line_pattern(r"led_daemon: LED set 0x0[1-3]"),
                     ),
                 ),
                 self.config.stage_timeout,
@@ -749,10 +763,13 @@ class ShowcaseRunner:
             stopped = console.wait_sequence(
                 "user LEDs",
                 (
-                    ("SIGTERM received", _line_literal("SIGTERM received")),
+                    (
+                        "SIGTERM received",
+                        _async_line_pattern(re.escape("SIGTERM received")),
+                    ),
                     (
                         "daemon terminated",
-                        _line_literal("led_daemon: Terminated."),
+                        _async_line_pattern(re.escape("led_daemon: Terminated.")),
                     ),
                 ),
                 self.config.stage_timeout,
