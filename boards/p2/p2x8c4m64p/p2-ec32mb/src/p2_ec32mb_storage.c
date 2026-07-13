@@ -26,12 +26,15 @@
 
 #include <nuttx/config.h>
 
+#include <assert.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <nuttx/compiler.h>
+#include <nuttx/crc32.h>
 #ifdef CONFIG_MMCSD_SPI
 #  include <nuttx/mmcsd.h>
 #endif
@@ -39,9 +42,11 @@
 #  include <nuttx/mtd/mtd.h>
 #endif
 #include <nuttx/mutex.h>
+#include <nuttx/sched.h>
 #include <nuttx/spi/spi.h>
 
 #include <arch/board/board.h>
+#include <arch/board/board_flash_layout.h>
 
 #include "p2_ec32mb_storage_arbiter.h"
 
@@ -58,6 +63,39 @@
 #endif
 
 #define P2_STORAGE_MIN_HALF_CYCLES 4u
+
+#define P2_W25_JEDEC_ID_COMMAND    0x9fu
+#define P2_W25_RELEASE_POWERDOWN   0xabu
+#define P2_W25_DUMMY               0xffu
+#define P2_W25_DATA_FIRSTBLOCK     2048u
+#define P2_W25_DATA_NBLOCKS        63488u
+#define P2_W25_RAW_ERASEBLOCKS     4096u
+#define P2_W25_DATA_ERASEBLOCKS    3968u
+#define P2_W25_CRC_BLOCK_BYTES     256u
+
+static_assert(P2_FLASH_PAGE_BYTES == 256u,
+              "W25 partition requires 256-byte blocks");
+static_assert(P2_FLASH_ERASE_BYTES == 4096u,
+              "W25 partition requires 4-KiB erase blocks");
+static_assert(P2_FLASH_SIZE_BYTES / P2_FLASH_ERASE_BYTES ==
+              P2_W25_RAW_ERASEBLOCKS,
+              "W25 raw erase-block count changed");
+static_assert(P2_FLASH_FS_OFFSET / P2_FLASH_PAGE_BYTES ==
+              P2_W25_DATA_FIRSTBLOCK,
+              "W25 data partition offset changed");
+static_assert(P2_FLASH_FS_SIZE / P2_FLASH_PAGE_BYTES ==
+              P2_W25_DATA_NBLOCKS,
+              "W25 data partition size changed");
+static_assert(P2_FLASH_FS_SIZE / P2_FLASH_ERASE_BYTES ==
+              P2_W25_DATA_ERASEBLOCKS,
+              "W25 data erase-block count changed");
+static_assert(P2_FLASH_FS_OFFSET == P2_FLASH_BOOT_SIZE,
+              "W25 data partition must follow the boot reservation");
+static_assert(P2_FLASH_FS_OFFSET % P2_FLASH_ERASE_BYTES == 0,
+              "W25 data partition must be erase aligned");
+static_assert(P2_FLASH_FS_OFFSET + P2_FLASH_FS_SIZE ==
+              P2_FLASH_SIZE_BYTES,
+              "W25 partition layout must cover the device");
 
 /****************************************************************************
  * Private Types
@@ -182,6 +220,13 @@ static struct p2_storage_arbiter_s g_p2_storage_arbiter;
 static bool g_p2_storage_initialized;
 #ifdef CONFIG_MTD_W25
 static FAR struct mtd_dev_s *g_p2_w25;
+static struct p2_w25_info_s g_p2_w25_info;
+static bool g_p2_w25_info_valid;
+#  if defined(CONFIG_MTD_PARTITION) && defined(CONFIG_MTD_SMART) && \
+      defined(CONFIG_FS_SMARTFS)
+static FAR struct mtd_dev_s *g_p2_w25_data;
+static bool g_p2_w25_smart_initialized;
+#  endif
 #endif
 #ifdef CONFIG_MMCSD_SPI
 static bool g_p2_mmcsd_initialized;
@@ -679,6 +724,84 @@ static int p2_storage_registercallback(FAR struct spi_dev_s *dev,
   return -ENOSYS;
 }
 
+#ifdef CONFIG_MTD_W25
+static int p2_w25_read_jedec(FAR struct spi_dev_s *spi,
+                             FAR uint8_t jedec[3])
+{
+  int ret;
+  int unlock_ret;
+
+  ret = SPI_LOCK(spi, true);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  SPI_SETMODE(spi, CONFIG_W25_SPIMODE);
+  SPI_SETBITS(spi, 8);
+  SPI_HWFEATURES(spi, 0);
+  SPI_SETFREQUENCY(spi, CONFIG_W25_SPIFREQUENCY);
+
+  /* Match the W25 lower half's wake sequence.  Reading the identity before
+   * w25_initialize() also avoids racing the status-register write that the
+   * writable W25 lower half uses to clear block-protect bits.
+   */
+
+  SPI_SELECT(spi, SPIDEV_FLASH(0), true);
+  SPI_SEND(spi, P2_W25_RELEASE_POWERDOWN);
+  SPI_SELECT(spi, SPIDEV_FLASH(0), false);
+  nxsched_usleep(20);
+
+  SPI_SELECT(spi, SPIDEV_FLASH(0), true);
+  SPI_SEND(spi, P2_W25_JEDEC_ID_COMMAND);
+  jedec[0] = (uint8_t)SPI_SEND(spi, P2_W25_DUMMY);
+  jedec[1] = (uint8_t)SPI_SEND(spi, P2_W25_DUMMY);
+  jedec[2] = (uint8_t)SPI_SEND(spi, P2_W25_DUMMY);
+  SPI_SELECT(spi, SPIDEV_FLASH(0), false);
+
+  unlock_ret = SPI_LOCK(spi, false);
+  return unlock_ret < 0 ? unlock_ret : 0;
+}
+
+static int p2_w25_geometry(FAR struct mtd_dev_s *mtd,
+                           FAR struct mtd_geometry_s *geometry)
+{
+  memset(geometry, 0, sizeof(*geometry));
+  return MTD_IOCTL(mtd, MTDIOC_GEOMETRY,
+                   (unsigned long)(uintptr_t)geometry);
+}
+
+static int p2_w25_boot_crc32(FAR struct mtd_dev_s *mtd,
+                             FAR uint32_t *result)
+{
+  uint8_t buffer[P2_W25_CRC_BLOCK_BYTES];
+  uint32_t value = 0;
+  uint32_t block;
+
+  for (block = 0;
+       block < P2_FLASH_BOOT_SIZE / P2_W25_CRC_BLOCK_BYTES;
+       block++)
+    {
+      ssize_t nread = MTD_BREAD(mtd, (off_t)block, 1, buffer);
+
+      if (nread < 0)
+        {
+          return (int)nread;
+        }
+
+      if (nread != 1)
+        {
+          return -EIO;
+        }
+
+      value = crc32part(buffer, sizeof(buffer), value);
+    }
+
+  *result = value;
+  return 0;
+}
+#endif
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -701,12 +824,11 @@ FAR struct spi_dev_s *p2_sdspi_initialize(void)
 #ifdef CONFIG_MTD_W25
 int p2_w25_initialize(void)
 {
+  struct p2_w25_info_s info;
+  struct mtd_geometry_s raw_geometry;
+  struct mtd_geometry_s data_geometry;
   FAR struct spi_dev_s *spi;
-
-  if (g_p2_w25 != NULL)
-    {
-      return 0;
-    }
+  int ret;
 
   spi = p2_spiflash_spi_initialize();
   if (spi == NULL)
@@ -714,13 +836,131 @@ int p2_w25_initialize(void)
       return -ENODEV;
     }
 
+  memset(&info, 0, sizeof(info));
+
+  ret = p2_w25_read_jedec(spi, info.jedec);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
   /* Keep the raw MTD private.  Phase 13 must partition it before registering
    * any writable device so the boot image is never exposed as filesystem
    * storage.
    */
 
-  g_p2_w25 = w25_initialize(spi);
-  return g_p2_w25 == NULL ? -ENODEV : 0;
+  if (g_p2_w25 == NULL)
+    {
+      g_p2_w25 = w25_initialize(spi);
+      if (g_p2_w25 == NULL)
+        {
+          return -ENODEV;
+        }
+    }
+
+  ret = p2_w25_geometry(g_p2_w25, &raw_geometry);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (raw_geometry.blocksize != P2_FLASH_PAGE_BYTES ||
+      raw_geometry.erasesize != P2_FLASH_ERASE_BYTES ||
+      raw_geometry.neraseblocks != P2_W25_RAW_ERASEBLOCKS)
+    {
+      return -ENODEV;
+    }
+
+  /* The W25 driver has already validated the manufacturer and memory type.
+   * Cross-check the capacity byte against its reported 16-MiB geometry so
+   * the board never applies this fixed layout to a smaller supported part.
+   */
+
+  if (info.jedec[2] != 0x18u)
+    {
+      return -ENODEV;
+    }
+
+  info.raw_blocksize = raw_geometry.blocksize;
+  info.raw_erasesize = raw_geometry.erasesize;
+  info.raw_neraseblocks = raw_geometry.neraseblocks;
+  info.data_firstblock = P2_W25_DATA_FIRSTBLOCK;
+  info.data_nblocks = P2_W25_DATA_NBLOCKS;
+
+  ret = p2_w25_boot_crc32(g_p2_w25, &info.boot_crc32);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+#if defined(CONFIG_MTD_PARTITION) && defined(CONFIG_MTD_SMART) && \
+    defined(CONFIG_FS_SMARTFS)
+  if (g_p2_w25_data == NULL)
+    {
+      /* mtd_partition() takes 256-byte read/write block units.  These exact
+       * values expose [0x080000, 0x1000000) and make the boot reservation
+       * [0x000000, 0x080000) unreachable through the SMART device.
+       */
+
+      g_p2_w25_data = mtd_partition(g_p2_w25, 2048, 63488);
+      if (g_p2_w25_data == NULL)
+        {
+          return -ENOMEM;
+        }
+    }
+
+  ret = p2_w25_geometry(g_p2_w25_data, &data_geometry);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (data_geometry.blocksize != P2_FLASH_PAGE_BYTES ||
+      data_geometry.erasesize != P2_FLASH_ERASE_BYTES ||
+      data_geometry.neraseblocks != P2_W25_DATA_ERASEBLOCKS)
+    {
+      return -EINVAL;
+    }
+
+  info.data_neraseblocks = data_geometry.neraseblocks;
+
+  if (!g_p2_w25_smart_initialized)
+    {
+      /* Register /dev/smart0 only.  Formatting and mounting are deliberate
+       * later HIL operations; board initialization never requests either.
+       */
+
+      ret = smart_initialize(0, g_p2_w25_data, NULL);
+      if (ret < 0)
+        {
+          return ret;
+        }
+
+      g_p2_w25_smart_initialized = true;
+    }
+#else
+  (void)data_geometry;
+#endif
+
+  g_p2_w25_info = info;
+  g_p2_w25_info_valid = true;
+  return 0;
+}
+
+int p2_w25_get_info(FAR struct p2_w25_info_s *info)
+{
+  if (info == NULL)
+    {
+      return -EINVAL;
+    }
+
+  if (!g_p2_w25_info_valid)
+    {
+      return -EAGAIN;
+    }
+
+  memcpy(info, &g_p2_w25_info, sizeof(*info));
+  return 0;
 }
 #endif
 

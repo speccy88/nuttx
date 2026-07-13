@@ -38,6 +38,7 @@
 #endif
 
 #include <arch/board/board.h>
+#include <arch/board/board_flash_layout.h>
 
 #include "p2_ec32mb_pins.h"
 
@@ -227,6 +228,7 @@ void board_late_initialize(void)
 
 #ifdef CONFIG_P2_EC32MB_STORAGE_BINDINGS
 #  ifdef CONFIG_MTD_W25
+  struct p2_w25_info_s w25_info;
   int w25_ret;
 
   w25_ret = p2_w25_initialize();
@@ -236,11 +238,43 @@ void board_late_initialize(void)
     }
   else
     {
-      /* The MTD is deliberately retained inside the board storage driver.
-       * There is no raw /dev node and no writable filesystem binding.
-       */
-
-      syslog(LOG_NOTICE, "P2STORAGE:W25=PRIVATE\n");
+      w25_ret = p2_w25_get_info(&w25_info);
+      if (w25_ret < 0)
+        {
+          syslog(LOG_ERR, "P2STORAGE:W25_INFO=FAIL:%d\n", w25_ret);
+        }
+      else
+        {
+          syslog(LOG_NOTICE,
+                 "P2STORAGE:W25=PRIVATE JEDEC=%02X%02X%02X\n",
+                 w25_info.jedec[0], w25_info.jedec[1],
+                 w25_info.jedec[2]);
+          syslog(LOG_NOTICE,
+                 "P2STORAGE:W25_GEOMETRY BLOCK=%lu ERASE=%lu "
+                 "ERASEBLOCKS=%lu BYTES=%lu\n",
+                 (unsigned long)w25_info.raw_blocksize,
+                 (unsigned long)w25_info.raw_erasesize,
+                 (unsigned long)w25_info.raw_neraseblocks,
+                 (unsigned long)(w25_info.raw_erasesize *
+                                 w25_info.raw_neraseblocks));
+          syslog(LOG_NOTICE,
+                 "P2STORAGE:W25_LAYOUT BOOT=0x%08lX+0x%08lX "
+                 "DATA=0x%08lX+0x%08lX FIRSTBLOCK=%lu NBLOCKS=%lu\n",
+                 (unsigned long)P2_FLASH_BOOT_OFFSET,
+                 (unsigned long)P2_FLASH_BOOT_SIZE,
+                 (unsigned long)P2_FLASH_FS_OFFSET,
+                 (unsigned long)P2_FLASH_FS_SIZE,
+                 (unsigned long)w25_info.data_firstblock,
+                 (unsigned long)w25_info.data_nblocks);
+          syslog(LOG_NOTICE,
+                 "P2STORAGE:W25_BOOT_CRC32=%08lX\n",
+                 (unsigned long)w25_info.boot_crc32);
+#    if defined(CONFIG_MTD_PARTITION) && defined(CONFIG_MTD_SMART) && \
+        defined(CONFIG_FS_SMARTFS)
+          syslog(LOG_NOTICE,
+                 "P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO\n");
+#    endif
+        }
     }
 #  endif
 

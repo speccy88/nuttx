@@ -9,10 +9,11 @@ config P2_EC32MB_STORAGE_BINDINGS
 	depends on P2_STORAGE && BOARD_LATE_INITIALIZE
 	help
 		Bind each configured standard storage driver after the scheduler is
-		available.  The W25 MTD remains private and is not registered as a
-		writable device until a protected partition layout exists.  The
-		MMC/SD SPI driver registers /dev/mmcsd0 even when no card responds.
-		This option does not mount, format, erase, or write either medium.
+		available.  When MTD partition, SMART, and SmartFS support are
+		enabled, the raw W25 MTD remains private while a SMART block driver
+		is bound only to the board's data partition.  The MMC/SD SPI driver
+		registers /dev/mmcsd0 even when no card responds.  This option does
+		not automatically format or mount either medium.
 
 config P2_EC32MB_GPIO
 	bool "Register the P2 Smart Pin GPIO loopback pair"

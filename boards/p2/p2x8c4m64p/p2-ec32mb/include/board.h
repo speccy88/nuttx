@@ -30,6 +30,7 @@
 #include <nuttx/config.h>
 
 #ifndef __ASSEMBLY__
+#  include <stdint.h>
 #  include <nuttx/compiler.h>
 #endif
 
@@ -74,6 +75,20 @@
 
 struct spi_dev_s;
 
+#ifdef CONFIG_MTD_W25
+struct p2_w25_info_s
+{
+  uint32_t raw_blocksize;
+  uint32_t raw_erasesize;
+  uint32_t raw_neraseblocks;
+  uint32_t data_firstblock;
+  uint32_t data_nblocks;
+  uint32_t data_neraseblocks;
+  uint32_t boot_crc32;
+  uint8_t jedec[3];
+};
+#endif
+
 /****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
@@ -84,6 +99,7 @@ FAR struct spi_dev_s *p2_spiflash_spi_initialize(void);
 FAR struct spi_dev_s *p2_sdspi_initialize(void);
 #  ifdef CONFIG_MTD_W25
 int p2_w25_initialize(void);
+int p2_w25_get_info(FAR struct p2_w25_info_s *info);
 #  endif
 #  ifdef CONFIG_MMCSD_SPI
 int p2_mmcsd_initialize(void);
