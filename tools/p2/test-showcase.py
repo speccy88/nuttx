@@ -186,6 +186,14 @@ def _async_line_pattern(body: str) -> re.Pattern:
     )
 
 
+def _capture_segment(text: str, start: int, end: int) -> str:
+    """Keep the newline required by strict line-oriented response parsers."""
+
+    if end < len(text) and text[end] == "\n":
+        end += 1
+    return text[start:end]
+
+
 def _is_relative_to(path: pathlib.Path, parent: pathlib.Path) -> bool:
     try:
         path.relative_to(parent)
@@ -667,7 +675,7 @@ class ShowcaseRunner:
             self.config.stage_timeout if timeout is None else timeout,
             start=start,
         )
-        segment = console.text[start : capture.end]
+        segment = _capture_segment(console.text, start, capture.end)
         protocol = parser(segment) if parser is not None else {"complete": True}
         if protocol.get("complete") is not True:
             raise ShowcaseError("{} strict parser failed: {}".format(name, protocol))

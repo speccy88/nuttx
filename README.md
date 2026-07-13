@@ -358,10 +358,13 @@ nsh> echo P2HISTORY:PASS
 
 The shell is configured so Ctrl-C interrupts the foreground command and
 returns the prompt. A safe manual check is to run `sleep 30`, press Ctrl-C, and
-confirm that `nsh>` returns before 30 seconds. A Rev B development image passed
-that check and then interrupted a foreground 30-second PWM command in the same
-session. The exact clean release ELF must repeat both checks before publication;
-consult the status table for that hash-bound result.
+confirm that `nsh>` returns before 30 seconds. A clean-at-build Rev B
+development candidate passed both checks under the automated showcase runner.
+That candidate used interim NuttX commit
+`6a77317aceeaa772cf3d9636153a0817fd797773`; the runner newline-capture fix and
+this documentation were not yet committed, so it is not the final release
+hash. Repeat both checks against the final hash-bound ELF before publication;
+consult the status table for that result.
 
 Useful low-footprint commands include `cat`, `cp`, `echo`, `hexdump`, `kill`,
 `ls`, `mkdir`, `mount`, `mv`, `ps`, `rm`, `rmdir`, `sleep`, `umount`, and the
@@ -448,12 +451,18 @@ the scheduler and applicable OSTest set, NSH, GPIO/edge, UART1, PWM/capture,
 DAC/ADC with the RC fixture, SPI loopback, P24/P25 BMP180 I2C, flash/SmartFS,
 runtime microSD/FAT, flash ROM boot, and explicit 32 MiB PSRAM service.
 
-The final release adds a single dual-board `showcase` configuration. Its
-P2-EC32MB development image has booted and exposed `p2help`, `/dev/userleds`,
-Tab completion, command history, and working Ctrl-C for both a built-in sleep
-and an external PWM app. Repeating those checks against the exact clean
-release hash, final flash boot, and packaged `_BOOT_P2.BIX` SD-only boot remain
-acceptance gates at this documentation update. P2-EC Rev D is build- and
+The final release adds a single dual-board `showcase` configuration. The latest
+clean-at-build P2-EC32MB development candidate used apps commit
+`f77074ac4715fad525239a464fb0d1d4a8c3b279` and interim NuttX commit
+`6a77317aceeaa772cf3d9636153a0817fd797773`. Its RAM HIL run reached every
+enabled target marker: ordered boot/readiness, `p2help`, the LED device/daemon
+path, Tab, history, both Ctrl-C checks, GPIO, edge, UART, DAC/ADC, safe PWM,
+SPI, BMP180, flash/SD runtime probes, and the full 32 MiB PSRAM final
+`P2PSRAM:PASS`. The saved host status is still FAIL because the runner sliced
+away the newline after that final PSRAM marker before strict parsing; the
+target did not fail, and the newline-slice bug now has a regression-tested
+fix. The final NuttX SHA and final hash-bound HIL, packaged flash boot, and
+packaged `_BOOT_P2.BIX` SD-only boot remain pending. P2-EC Rev D is build- and
 static-verification qualified only because no Rev D module is attached; its
 runtime claims remain **HIL-REQUIRED**. See the
 [goal status table](Documentation/platforms/p2/goal-status-table.md) for the
@@ -555,8 +564,9 @@ silently open serial, reset, erase flash, or write SD.
   separately obtained compatible loader and are not release-qualified here.
 - P2-EC Rev D compiles and passes static checks, but remains HIL-required until
   run on actual Rev D hardware.
-- Exact release-image Ctrl-C, flash boot, and SD-only `_BOOT_P2.BIX` results
-  remain pending until the status table records final preserved evidence.
+- Exact final-hash showcase HIL, packaged flash boot, and SD-only
+  `_BOOT_P2.BIX` boot remain pending until preserved PASS evidence binds them
+  to the final release hashes.
 
 ## Port documentation and evidence
 

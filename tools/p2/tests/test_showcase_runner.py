@@ -530,6 +530,19 @@ class ShowcaseRunnerTests(unittest.TestCase):
             "DAC_ADC ADC samples are not strictly increasing", result["errors"]
         )
 
+    def test_strict_command_capture_retains_final_marker_newline(self):
+        sequence = "A55A0713"
+        text = "P2PSRAM:PASS:SEQUENCE={}\r\nnsh> ".format(sequence)
+        final_pattern = dict(showcase.psram_protocol.marker_patterns(sequence))[
+            "P2PSRAM final pass"
+        ]
+        match = final_pattern.search(text)
+        self.assertIsNotNone(match)
+
+        segment = showcase._capture_segment(text, 0, match.end())
+        self.assertTrue(segment.endswith("\n"))
+        self.assertIsNotNone(final_pattern.search(segment))
+
 
 if __name__ == "__main__":
     unittest.main()
