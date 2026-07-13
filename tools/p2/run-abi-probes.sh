@@ -93,6 +93,7 @@ REQUIRED_C=(
   pressure
   arguments
   arithmetic
+  comparison64
   memory
   sections
   volatile

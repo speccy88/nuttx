@@ -296,6 +296,70 @@ index 9914d0d45b24..f6fa0095742d 100644
 -#endif // P2ISELLOWERING_H
 \ No newline at end of file
 +#endif // P2ISELLOWERING_H
+diff --git a/llvm/lib/Target/P2/P2InstrInfo.cpp b/llvm/lib/Target/P2/P2InstrInfo.cpp
+index 7cea8a4af5cc..97e8e1407bc9 100644
+--- a/llvm/lib/Target/P2/P2InstrInfo.cpp
++++ b/llvm/lib/Target/P2/P2InstrInfo.cpp
+@@ -502 +501,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+-    unsigned cmp_op_hi;
+@@ -521 +519,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+-                cmp_op_hi = P2::CMPXri;
+@@ -524 +521,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+-                cmp_op_hi = P2::CMPXrr;
+@@ -536 +532,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+-                cmp_op_hi = P2::CMPSXri;
+@@ -539 +534,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+-                cmp_op_hi = P2::CMPSXrr;
+@@ -593,5 +588,6 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+-        // 64 bit compare
+-        // 1. compare low words, writing cz.
+-        // 2. compare high words, with extended op, writing cz
+-        //
+-        // then, the moves can be correctly executed based on the flags
++        // Compare the high words first, signed or unsigned according to the
++        // condition.  If they are equal, compare the low words as unsigned.
++        // A conditional low-word CMP leaves the high-word flags intact when
++        // the high words differ and gives the correct lexicographic flags
++        // when they match.  This avoids relying on the P2 CMP[S]X carry
++        // convention, which does not implement a general two-limb compare.
+@@ -601,6 +596,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+-            // low compare
+-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(cmp_op), P2::SW)
+-                .addReg(RI.getSubReg(lhs.getReg(), P2::sub0))
+-                .addImm(rhs.getImm() & 0xffffffff)
+-                .addImm(P2::ALWAYS).addImm(P2::WCZ);
+-
+@@ -608 +598 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(cmp_op_hi), P2::SW)
++            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(cmp_op), P2::SW)
+@@ -612,6 +601,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+-        } else {
+-            // low compare
+-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(cmp_op), P2::SW)
+-                .addReg(RI.getSubReg(lhs.getReg(), P2::sub0))
+-                .addReg(RI.getSubReg(rhs.getReg(), P2::sub0))
+-                .addImm(P2::ALWAYS).addImm(P2::WCZ);
+@@ -618,0 +603,6 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
++            // low compare, only when the high words match
++            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(P2::CMPri), P2::SW)
++                .addReg(RI.getSubReg(lhs.getReg(), P2::sub0))
++                .addImm(rhs.getImm() & 0xffffffff)
++                .addImm(P2::IF_Z).addImm(P2::WCZ);
++        } else {
+@@ -620 +610 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+-            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(cmp_op_hi), P2::SW)
++            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(cmp_op), P2::SW)
+@@ -623,0 +614,6 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
++
++            // low compare, only when the high words match
++            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(P2::CMPrr), P2::SW)
++                .addReg(RI.getSubReg(lhs.getReg(), P2::sub0))
++                .addReg(RI.getSubReg(rhs.getReg(), P2::sub0))
++                .addImm(P2::IF_Z).addImm(P2::WCZ);
+@@ -714 +710 @@ unsigned P2InstrInfo::insertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TB
+-}
+\ No newline at end of file
++}
 diff --git a/llvm/lib/Target/P2/P2InstrInfo.td b/llvm/lib/Target/P2/P2InstrInfo.td
 index 02a18c61238b..0d6559551571 100644
 --- a/llvm/lib/Target/P2/P2InstrInfo.td

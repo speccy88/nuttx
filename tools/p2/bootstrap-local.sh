@@ -107,6 +107,34 @@ ensure_checkout()
   require_gitlink "$dir" "$ref"
 }
 
+ensure_apps_checkout()
+{
+  local url=https://github.com/apache/nuttx-apps.git
+  local actual_url
+
+  if [[ ! -d "$APPS_DIR/.git" ]]; then
+    ensure_checkout nuttx-apps "$url" "$APPS_DIR" "$APPS_REF"
+    return
+  fi
+
+  actual_url=$(git -C "$APPS_DIR" remote get-url origin)
+  [[ "${actual_url%.git}" == "${url%.git}" ]] ||
+    die "nuttx-apps origin is $actual_url; expected $url"
+
+  if ! git -C "$APPS_DIR" cat-file -e "$APPS_REF^{commit}" 2>/dev/null; then
+    git -C "$APPS_DIR" fetch --filter=blob:none origin
+  fi
+
+  git -C "$APPS_DIR" cat-file -e "$APPS_REF^{commit}" 2>/dev/null ||
+    die "nuttx-apps commit $APPS_REF is not available"
+  git -C "$APPS_DIR" merge-base --is-ancestor "$APPS_REF" HEAD ||
+    die "nuttx-apps HEAD is not based on pinned commit $APPS_REF"
+
+  # The apps tree is an active companion checkout during P2 bring-up.
+
+  git -C "$APPS_DIR" submodule update --init --recursive
+}
+
 find_kconfig_conf()
 {
   local candidate
@@ -422,12 +450,20 @@ p2llvm_bool_memory_valid()
   rm -rf "$probe_dir"
 }
 
+p2llvm_compare64_valid()
+{
+  p2llvm_tools_valid || return 1
+  "$PYTHON" "$ROOT/tools/p2/compare64_codegen.py" \
+    --toolchain-root "$P2LLVM_ROOT" >/dev/null 2>&1
+}
+
 p2llvm_valid()
 {
   p2llvm_tools_valid || return 1
   p2llvm_preemption_valid || return 1
   p2llvm_linker_aug20_valid || return 1
   p2llvm_bool_memory_valid || return 1
+  p2llvm_compare64_valid || return 1
   [[ -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]] || return 1
   [[ -f "$P2LLVM_ROOT/libp2/include/propeller2.h" ]] || return 1
 }
@@ -441,7 +477,8 @@ apply_p2llvm_patch()
     die "required p2llvm preemption patch is missing: $P2LLVM_PATCH"
 
   current_patch=$(mktemp "$CACHE/p2llvm-current-patch.XXXXXX")
-  git -C "$llvm_dir" diff -U0 -- > "$current_patch"
+  git -C "$llvm_dir" diff -U0 -- |
+    sed -E 's/[[:space:]]+$//' > "$current_patch"
 
   if git -C "$llvm_dir" apply --unidiff-zero --reverse --check \
        "$P2LLVM_PATCH" \
@@ -533,7 +570,7 @@ build_p2llvm()
     die "p2llvm compiler and LLVM tools did not satisfy their postconditions"
 
   if ! p2llvm_preemption_valid || ! p2llvm_linker_aug20_valid ||
-     ! p2llvm_bool_memory_valid;
+     ! p2llvm_bool_memory_valid || ! p2llvm_compare64_valid;
   then
     (
       cd "$P2LLVM_SRC"
@@ -549,6 +586,9 @@ build_p2llvm()
     die "p2llvm linker does not safely reject offset-zero R_P2_AUG20"
   p2llvm_bool_memory_valid ||
     die "p2llvm does not correctly select global/static i1 memory operations"
+  "$PYTHON" "$ROOT/tools/p2/compare64_codegen.py" \
+    --toolchain-root "$P2LLVM_ROOT" ||
+    die "p2llvm does not correctly lower 64-bit comparisons"
 
   if [[ ! -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]]; then
     build_libp2
@@ -624,6 +664,7 @@ write_lock()
     echo "p2llvm_preempt_safe_integer=verified q-free Hub libcalls and limb-expanded mulh"
     echo "p2llvm_linker_aug20_guard=verified offset-zero rejection and explicit-AUGS link"
     echo "p2llvm_bool_memory=verified global/static i1 loads and stores at O0 Os O2"
+    echo "p2llvm_compare64=verified high-first signed/unsigned limb comparisons at O0 Os O2"
     echo "p2llvm_preempt_patch=$(basename "$P2LLVM_PATCH")"
     echo "p2llvm_darwin_cmake=-DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_LIBXML2=OFF -DCMAKE_DISABLE_FIND_PACKAGE_Backtrace:BOOL=TRUE"
     echo "p2_flags=--target=p2 -fno-jump-tables -ffunction-sections -fdata-sections -fno-common -fno-builtin -Os"
@@ -648,8 +689,7 @@ require_hil_host_tools
 JOBS=${JOBS:-$(host_jobs)}
 mkdir -p "$CACHE"
 
-ensure_checkout nuttx-apps https://github.com/apache/nuttx-apps.git \
-  "$APPS_DIR" "$APPS_REF"
+ensure_apps_checkout
 ensure_checkout p2llvm https://github.com/ne75/p2llvm.git \
   "$P2LLVM_SRC" "$P2LLVM_REF"
 require_gitlink "$P2LLVM_SRC/llvm-project" "$LLVM_PROJECT_REF"

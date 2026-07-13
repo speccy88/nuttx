@@ -15,3 +15,11 @@ The 64-bit divide/modulo and atomic load/store/compare-exchange probes are
 separately classified because this backend may explicitly reject them or
 report that no atomic width is lock-free.  An unexpected compiler failure is
 still fatal; only a known unsupported-backend diagnostic is accepted.
+
+`comparison64.c` is also consumed by `../compare64_codegen.py`.  That checker
+requires signed relational comparisons to start with a high-word `CMPS`,
+unsigned comparisons to start with a high-word `CMP`, and both forms to use an
+`IF_Z` low-word `CMP`.  A large low immediate additionally proves that both
+the generated `AUGS` and its `CMP` retain `IF_Z`.  The checker runs at `-O0`,
+`-Os`, and `-O2` and exhausts boundary limb combinations in a host-side model;
+it performs no serial or other target I/O.
