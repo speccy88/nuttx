@@ -675,7 +675,11 @@ def parse_verify_response(text: str, sequence: str) -> Dict[str, object]:
             errors.append("flash persistence byte count is not exactly one MiB")
         if record.group("fnv1a") != expected_checksum:
             errors.append("flash persistence FNV does not match the host prediction")
-    elif "P2STORAGE:FLASH:PERSISTENCE:" in text:
+    elif re.search(
+        r"^P2STORAGE:FLASH:PERSISTENCE:[^\r\n]*\r?\n",
+        text,
+        re.MULTILINE,
+    ) is not None:
         errors.append("flash persistence record is malformed")
 
     prompts = list(PROMPT_PATTERN.finditer(text))

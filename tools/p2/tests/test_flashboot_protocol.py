@@ -385,6 +385,20 @@ class FlashBootProtocolTests(unittest.TestCase):
             result["expected_fnv1a"], storage.stream_checksum("flash", SEQUENCE)
         )
 
+        partial = text[: text.index("FNV1A=") + 2]
+        partial_result = flashboot.parse_verify_response(partial, SEQUENCE)
+        self.assertFalse(partial_result["complete"])
+        self.assertNotIn(
+            "flash persistence record is malformed", partial_result["errors"]
+        )
+
+        malformed_result = flashboot.parse_verify_response(
+            partial + "BROKEN\r\n", SEQUENCE
+        )
+        self.assertIn(
+            "flash persistence record is malformed", malformed_result["errors"]
+        )
+
         for changed in (
             text.replace("BYTES=1048576", "BYTES=1048575"),
             text.replace(result["expected_fnv1a"], "00000000"),
