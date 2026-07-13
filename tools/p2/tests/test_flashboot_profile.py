@@ -17,7 +17,7 @@ class FlashBootProfileTests(unittest.TestCase):
             "CONFIG_BOARDCTL_RESET=y",
             "CONFIG_ETC_ROMFS=y",
             "CONFIG_FS_ROMFS=y",
-            "CONFIG_NSH_LINELEN=128",
+            "CONFIG_LINE_MAX=128",
             "CONFIG_P2_EC32MB_FLASHBOOT=y",
             "CONFIG_TESTING_P2STORAGE=y",
             "CONFIG_TESTING_P2STORAGE_FLASH_PREMOUNTED=y",
