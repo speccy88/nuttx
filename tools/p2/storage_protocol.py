@@ -403,6 +403,7 @@ def response_marker_patterns(
         if action == "sd-write":
             literal("P2STORAGE:READY:RESET=SD:SEQUENCE={}".format(sequence_text))
     elif action == "sd-rename-delete":
+        literal("P2STORAGE:SD:MKDIR:SEQUENCE={}:PASS".format(sequence_text))
         literal("P2STORAGE:SD:RENAME:SEQUENCE={}:PASS".format(sequence_text))
         literal("P2STORAGE:SD:DELETE:SEQUENCE={}:PASS".format(sequence_text))
     elif action == "sd-stress":

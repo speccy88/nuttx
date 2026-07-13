@@ -4,9 +4,25 @@ import unittest
 
 ROOT = pathlib.Path(__file__).parents[3]
 BOARD = ROOT / "boards/p2/p2x8c4m64p/p2-ec32mb"
+P2STORAGE = ROOT.parent / "apps/testing/p2storage/p2storage_main.c"
 
 
 class StorageBoardBindingTests(unittest.TestCase):
+    def test_sd_test_paths_work_without_fat_long_filename_support(self):
+        source = P2STORAGE.read_text()
+        for path in (
+            "p2record.bin",
+            "p2dir/source.tmp",
+            "p2dir/renamed.bin",
+            "p2scrtch.bin",
+        ):
+            for component in path.split("/"):
+                stem, separator, suffix = component.partition(".")
+                self.assertLessEqual(len(stem), 8, component)
+                if separator:
+                    self.assertLessEqual(len(suffix), 3, component)
+            self.assertIn('"{}"'.format(path), source)
+
     def test_board_specific_kconfig_is_reachable(self):
         board_kconfig = (ROOT / "boards/Kconfig").read_text()
         self.assertIn(

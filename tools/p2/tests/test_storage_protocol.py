@@ -134,6 +134,7 @@ class StorageProtocolTests(unittest.TestCase):
             "sd-rename-delete",
             [
                 "P2STORAGE:SD:DELETE:SEQUENCE={}:PASS".format(self.sequence),
+                "P2STORAGE:SD:MKDIR:SEQUENCE={}:PASS".format(self.sequence),
                 "P2STORAGE:SD:RENAME:SEQUENCE={}:PASS".format(self.sequence),
             ],
         )
