@@ -1,0 +1,2 @@
+# P2 Edge Rev D uses the common P2 Edge options defined by the sibling
+# p2-ec32mb board Kconfig.  boards/Kconfig sources that file for both boards.

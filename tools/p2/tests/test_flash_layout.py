@@ -30,6 +30,11 @@ def make_build_artifact(root, image):
             path.write_bytes(b"ELF fixture")
         elif name == "config":
             path.write_text("CONFIG_P2_SYSCLK_HZ=180000000\n", encoding="utf-8")
+        elif name == "toolchain.lock":
+            path.write_text(
+                "nuttx_commit={}\nnuttx_apps_commit={}\n".format("1" * 40, "2" * 40),
+                encoding="utf-8",
+            )
         elif name in ("nuttx-source-status.txt", "apps-source-status.txt"):
             path.write_text("", encoding="utf-8")
         else:
@@ -39,7 +44,8 @@ def make_build_artifact(root, image):
             "size": path.stat().st_size,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
-        for path in root.iterdir() if path.is_file()
+        for path in root.iterdir()
+        if path.is_file()
     }
     status = {
         "format": build_artifact.FORMAT,
@@ -105,7 +111,7 @@ class FlashLayoutTests(unittest.TestCase):
                 "  echo '[ -FLASH ] program application to SPI flash'\n"
                 "  exit 0\n"
                 "fi\n"
-                "touch \"$FAKE_LOADP2_INVOKED\"\n"
+                'touch "$FAKE_LOADP2_INVOKED"\n'
                 "exit 99\n",
                 encoding="utf-8",
             )
@@ -119,9 +125,7 @@ class FlashLayoutTests(unittest.TestCase):
             build = make_build_artifact(temp / "build", image.read_bytes())
             digest = hashlib.sha256(loader.read_bytes()).hexdigest()
             lock = temp / "toolchain.lock"
-            lock.write_text(
-                f"sha256={digest}  {loader}\n", encoding="utf-8"
-            )
+            lock.write_text(f"sha256={digest}  {loader}\n", encoding="utf-8")
             env = os.environ.copy()
             env.update(
                 {
@@ -223,9 +227,7 @@ class FlashLayoutTests(unittest.TestCase):
             image.write_bytes(b"P2 manifest input!!!")
             digest = hashlib.sha256(loader.read_bytes()).hexdigest()
             lock = temp / "toolchain.lock"
-            lock.write_text(
-                f"sha256={digest}  {loader}\n", encoding="utf-8"
-            )
+            lock.write_text(f"sha256={digest}  {loader}\n", encoding="utf-8")
             env = os.environ.copy()
             env.update(
                 {
@@ -246,8 +248,7 @@ class FlashLayoutTests(unittest.TestCase):
                 str(temp / "missing-build"),
             ]
             missing = subprocess.run(
-                command, cwd=ROOT, env=env, text=True,
-                capture_output=True, check=False
+                command, cwd=ROOT, env=env, text=True, capture_output=True, check=False
             )
             self.assertEqual(missing.returncode, 2)
             self.assertIn("cannot read flash input manifest", missing.stderr)
@@ -258,8 +259,7 @@ class FlashLayoutTests(unittest.TestCase):
                 json.dumps(manifest), encoding="utf-8"
             )
             tampered = subprocess.run(
-                command, cwd=ROOT, env=env, text=True,
-                capture_output=True, check=False
+                command, cwd=ROOT, env=env, text=True, capture_output=True, check=False
             )
             self.assertEqual(tampered.returncode, 2)
             self.assertIn("image_sha256 mismatch", tampered.stderr)
@@ -282,13 +282,13 @@ class FlashLayoutTests(unittest.TestCase):
                 "  echo '[ -FLASH ] program application to SPI flash'\n"
                 "  exit 0\n"
                 "fi\n"
-                "printf '%s\\n' \"$0\" \"$@\" > \"$FAKE_LOADP2_RECORD\"\n"
+                'printf \'%s\\n\' "$0" "$@" > "$FAKE_LOADP2_RECORD"\n'
                 "exit 0\n",
                 encoding="utf-8",
             )
             loader.chmod(0o755)
             for name, script in {
-                "timeout": "#!/bin/sh\nshift\nexec \"$@\"\n",
+                "timeout": '#!/bin/sh\nshift\nexec "$@"\n',
                 "flock": "#!/bin/sh\nexit 0\n",
                 "lsof": "#!/bin/sh\nexit 1\n",
                 "sleep": "#!/bin/sh\nexit 0\n",
@@ -306,9 +306,7 @@ class FlashLayoutTests(unittest.TestCase):
             build = make_build_artifact(source / "build", image.read_bytes())
             digest = hashlib.sha256(loader.read_bytes()).hexdigest()
             lock = source / "toolchain.lock"
-            lock.write_text(
-                "sha256={}  {}\n".format(digest, loader), encoding="utf-8"
-            )
+            lock.write_text("sha256={}  {}\n".format(digest, loader), encoding="utf-8")
             output = temp / "flash-program"
             env = os.environ.copy()
             env.update(
@@ -354,9 +352,7 @@ class FlashLayoutTests(unittest.TestCase):
             invocation = record.read_text(encoding="utf-8").splitlines()
             self.assertEqual(invocation[0], str(sealed_loader))
             self.assertNotEqual(invocation[0], str(loader))
-            command = json.loads(
-                (output / "command.json").read_text(encoding="utf-8")
-            )
+            command = json.loads((output / "command.json").read_text(encoding="utf-8"))
             self.assertEqual(command["argv"][0], str(sealed_loader))
             self.assertEqual(
                 hashlib.sha256(sealed_loader.read_bytes()).hexdigest(), digest

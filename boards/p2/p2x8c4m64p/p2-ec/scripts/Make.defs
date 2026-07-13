@@ -1,0 +1,35 @@
+############################################################################
+# boards/p2/p2x8c4m64p/p2-ec/scripts/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+############################################################################
+
+include $(TOPDIR)/.config
+include $(TOPDIR)/tools/Config.mk
+
+P2LLVM_ROOT ?= $(HOME)/.cache/p2-nuttx/p2llvm/install
+P2_CLANG ?= $(P2LLVM_ROOT)/bin/clang
+P2_LLD ?= $(P2LLVM_ROOT)/bin/ld.lld
+CC = $(P2_CLANG)
+CXX = $(P2_CLANG)++
+CPP = $(P2_CLANG) -E -P -x c
+LD = $(P2_LLD)
+AR = $(P2LLVM_ROOT)/bin/llvm-ar rcs
+NM = $(P2LLVM_ROOT)/bin/llvm-nm
+OBJCOPY = $(P2LLVM_ROOT)/bin/llvm-objcopy
+OBJDUMP = $(P2LLVM_ROOT)/bin/llvm-objdump
+STRIP = $(P2LLVM_ROOT)/bin/llvm-strip
+
+P2_EDGE_SHARED = $(TOPDIR)$(DELIM)boards$(DELIM)p2$(DELIM)p2x8c4m64p$(DELIM)p2-ec32mb
+ARCHSCRIPT += $(P2_EDGE_SHARED)$(DELIM)scripts$(DELIM)ld.script
+
+ARCHCPUFLAGS = --target=p2 -fno-jump-tables -fno-builtin -fno-common -ffunction-sections -fdata-sections
+ARCHWARNINGS = -Wall -Wextra -Wshadow -Wundef -Wstrict-prototypes
+ARCHOPTIMIZATION ?= -Os
+ARCHINCLUDES = -I$(TOPDIR)$(DELIM)include
+CFLAGS = $(ARCHCPUFLAGS) $(ARCHWARNINGS) $(ARCHOPTIMIZATION) $(ARCHINCLUDES) $(EXTRAFLAGS)
+CXXFLAGS = $(ARCHCPUFLAGS) $(ARCHWARNINGS) $(ARCHOPTIMIZATION) $(ARCHINCLUDES) $(EXTRAFLAGS)
+CPPFLAGS = $(ARCHCPUFLAGS) $(ARCHINCLUDES)
+AFLAGS = $(ARCHCPUFLAGS) $(ARCHINCLUDES) -D__ASSEMBLY__
+LDFLAGS += --gc-sections -Map=$(TOPDIR)/nuttx.map
+MKDEP = $(TOPDIR)$(DELIM)tools$(DELIM)mknulldeps.sh

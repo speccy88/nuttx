@@ -14,6 +14,7 @@ from typing import Dict, Optional
 
 
 FORMAT = "p2-build-artifact-v1"
+SUPPORTED_BOARDS = ("p2-ec32mb", "p2-ec")
 PASS_REQUIRED_FILES = (
     "System.map",
     "apps-source-status.txt",
@@ -44,6 +45,7 @@ class BuildArtifact:
     path: pathlib.Path
     status_path: pathlib.Path
     status_sha256: str
+    board: str
     profile: str
     nuttx_commit: str
     apps_commit: str
@@ -61,6 +63,7 @@ class BuildArtifact:
             "path": str(self.path),
             "status_path": str(self.status_path),
             "status_sha256": self.status_sha256,
+            "board": self.board,
             "profile": self.profile,
             "nuttx_commit": self.nuttx_commit,
             "apps_commit": self.apps_commit,
@@ -103,6 +106,44 @@ def _files(root: pathlib.Path) -> Dict[str, Dict[str, object]]:
     return result
 
 
+def _toolchain_source_commits(path: pathlib.Path) -> Dict[str, str]:
+    """Read the source commits pinned by the copied bootstrap lock."""
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise BuildArtifactError(
+            "cannot read embedded toolchain lock {}: {}".format(path, exc)
+        ) from exc
+    names = {
+        "nuttx_commit": "nuttx_commit",
+        "nuttx_apps_commit": "apps_commit",
+    }
+    found: Dict[str, str] = {}
+    for line in lines:
+        if "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        if name not in names:
+            continue
+        target = names[name]
+        if target in found:
+            raise BuildArtifactError("embedded toolchain lock repeats {}".format(name))
+        if re.fullmatch(r"[0-9a-f]{40}", value) is None:
+            raise BuildArtifactError(
+                "embedded toolchain lock {} is malformed".format(name)
+            )
+        found[target] = value
+    missing = [name for name in ("nuttx_commit", "apps_commit") if name not in found]
+    if missing:
+        raise BuildArtifactError(
+            "embedded toolchain lock lacks source commit(s): {}".format(
+                ", ".join(missing)
+            )
+        )
+    return found
+
+
 def finalize_from_environment() -> None:
     env = os.environ
     root = pathlib.Path(env["P2_BUILD_ARTIFACT"]).resolve()
@@ -124,7 +165,7 @@ def finalize_from_environment() -> None:
         "format": FORMAT,
         "status": status_text,
         "exit_code": exit_code,
-        "board": "p2-ec32mb",
+        "board": env.get("P2_BUILD_BOARD", "p2-ec32mb"),
         "profile": env["P2_BUILD_PROFILE"],
         "started_utc": env["P2_BUILD_STARTED_UTC"],
         "ended_utc": env["P2_BUILD_ENDED_UTC"],
@@ -139,8 +180,7 @@ def finalize_from_environment() -> None:
         "nuttx_source_clean": env["P2_BUILD_NUTTX_CLEAN"] == "1",
         "apps_source_clean": env["P2_BUILD_APPS_CLEAN"] == "1",
         "source_clean": (
-            env["P2_BUILD_NUTTX_CLEAN"] == "1"
-            and env["P2_BUILD_APPS_CLEAN"] == "1"
+            env["P2_BUILD_NUTTX_CLEAN"] == "1" and env["P2_BUILD_APPS_CLEAN"] == "1"
         ),
         "p2llvm_root": env["P2_BUILD_P2LLVM_ROOT"],
         "compiler": env["P2_BUILD_COMPILER"],
@@ -157,8 +197,11 @@ def finalize_from_environment() -> None:
     temporary.replace(root / "status.json")
 
 
-def load(path: pathlib.Path, image: Optional[pathlib.Path] = None,
-         require_clean: bool = False) -> BuildArtifact:
+def load(
+    path: pathlib.Path,
+    image: Optional[pathlib.Path] = None,
+    require_clean: bool = False,
+) -> BuildArtifact:
     requested = pathlib.Path(path).expanduser().resolve()
     if requested.name == "status.json":
         root = requested.parent
@@ -173,7 +216,6 @@ def load(path: pathlib.Path, image: Optional[pathlib.Path] = None,
         ("format", FORMAT),
         ("status", "PASS"),
         ("exit_code", 0),
-        ("board", "p2-ec32mb"),
     ):
         if status.get(key) != expected:
             raise BuildArtifactError(
@@ -181,12 +223,21 @@ def load(path: pathlib.Path, image: Optional[pathlib.Path] = None,
                     key, expected, status.get(key)
                 )
             )
+    board = status.get("board")
+    if board not in SUPPORTED_BOARDS:
+        raise BuildArtifactError(
+            "build artifact board must be one of {}, got {!r}".format(
+                ", ".join(SUPPORTED_BOARDS), board
+            )
+        )
     if require_clean and (
         status.get("source_clean") is not True
         or status.get("nuttx_source_clean") is not True
         or status.get("apps_source_clean") is not True
     ):
-        raise BuildArtifactError("build artifact was not produced from clean source trees")
+        raise BuildArtifactError(
+            "build artifact was not produced from clean source trees"
+        )
 
     manifest = status.get("files")
     if not isinstance(manifest, dict):
@@ -219,10 +270,23 @@ def load(path: pathlib.Path, image: Optional[pathlib.Path] = None,
                     "build artifact {} proves the tree was dirty".format(name)
                 )
 
+    locked_commits = _toolchain_source_commits(root / "toolchain.lock")
+    for key in ("nuttx_commit", "apps_commit"):
+        if locked_commits[key] != status.get(key):
+            raise BuildArtifactError(
+                "embedded toolchain lock {} {} does not match artifact {}".format(
+                    key, locked_commits[key], status.get(key)
+                )
+            )
+
     profile = status.get("profile")
     clock_hz = status.get("board_clock_hz")
-    for key in ("nuttx_commit", "nuttx_commit_after",
-                "apps_commit", "apps_commit_after"):
+    for key in (
+        "nuttx_commit",
+        "nuttx_commit_after",
+        "apps_commit",
+        "apps_commit_after",
+    ):
         if re.fullmatch(r"[0-9a-f]{40}", str(status.get(key))) is None:
             raise BuildArtifactError("build artifact {} is malformed".format(key))
     if require_clean and (
@@ -242,6 +306,7 @@ def load(path: pathlib.Path, image: Optional[pathlib.Path] = None,
         path=root,
         status_path=status_path,
         status_sha256=sha256(status_path),
+        board=str(board),
         profile=profile,
         nuttx_commit=str(status["nuttx_commit"]),
         apps_commit=str(status["apps_commit"]),
@@ -272,6 +337,7 @@ def main(argv=None) -> int:
         artifact = load(args.artifact, args.image, args.require_clean)
         print("build_artifact={}".format(artifact.path))
         print("build_status_sha256={}".format(artifact.status_sha256))
+        print("build_board={}".format(artifact.board))
         print("build_profile={}".format(artifact.profile))
         print("build_nuttx_commit={}".format(artifact.nuttx_commit))
         print("build_apps_commit={}".format(artifact.apps_commit))

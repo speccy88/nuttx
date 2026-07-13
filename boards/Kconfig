@@ -243,6 +243,14 @@ config ARCH_BOARD_P2_EC32MB
 	---help---
 		First-draft P2 Edge Module Rev B board port. Hardware validation is HIL-REQUIRED.
 
+config ARCH_BOARD_P2_EC
+	bool "Parallax P2 Edge (P2-EC Rev D)"
+	depends on ARCH_CHIP_P2X8C4M64P
+	select ARCH_HAVE_LEDS
+	---help---
+		P2 Edge Module Rev D board support.  This variant has no onboard
+		PSRAM; P56 and P57 drive its active-high buffered LEDs.
+
 config ARCH_BOARD_QUICKFEATHER
 	bool "EOS S3 QuickFeather"
 	depends on ARCH_CHIP_EOSS3
@@ -3660,6 +3668,7 @@ endif # ARCH_BOARD_CUSTOM
 config ARCH_BOARD
 	string
 	default "p2-ec32mb" if ARCH_BOARD_P2_EC32MB
+	default "p2-ec"                         if ARCH_BOARD_P2_EC
 	default "amber"                        if ARCH_BOARD_AMBER
 	default "arduino-mega2560"             if ARCH_BOARD_ARDUINO_MEGA2560
 	default "arduino-due"                  if ARCH_BOARD_ARDUINO_DUE
@@ -4085,7 +4094,7 @@ config ARCH_IRQBUTTONS
 
 comment "Board-Specific Options"
 
-if ARCH_BOARD_P2_EC32MB
+if ARCH_BOARD_P2_EC32MB || ARCH_BOARD_P2_EC
 source "boards/p2/p2x8c4m64p/p2-ec32mb/Kconfig"
 endif
 

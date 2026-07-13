@@ -58,6 +58,7 @@ void p2_lowsetup(void);
 void p2_lowputc(int ch);
 void p2_serialinit(void);
 void p2_serialpoll(void);
+int p2_serialinterrupt(int irq, void *context, void *arg);
 int p2_uart_rx_cog_start(void);
 void up_fullcontextrestore(void *restoreregs) noreturn_function;
 

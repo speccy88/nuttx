@@ -70,15 +70,17 @@ static int p2_timer_isr(int irq, void *context, void *arg)
   uint32_t interval = p2_timer_interval();
   uint32_t deadline = g_p2_timer_deadline;
 
-  (void)irq;
-  (void)context;
-  (void)arg;
-
   /* Preserve absolute phase as the hardware-proven stress image does. */
 
   p2_timer_program(deadline, interval);
   g_p2_timer_deadline = deadline + interval;
 
+  /* The console RX smart pin is drained into a Hub ring by a dedicated
+   * cog.  Service that ring from the timer interrupt as well as the idle
+   * loop so a CPU-bound foreground command cannot starve input or Ctrl-C.
+   */
+
+  p2_serialinterrupt(irq, context, arg);
   nxsched_process_timer();
   return OK;
 }

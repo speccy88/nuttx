@@ -15,12 +15,35 @@ if [[ -f "$ROOT/.p2-hil.env" ]]; then
   source "$ROOT/.p2-hil.env"
 fi
 
-cfg=${1:-bringup}
+requested=${1:-bringup}
+if [[ "$requested" == *:* ]]; then
+  board=${requested%%:*}
+  cfg=${requested#*:}
+  artifact_suffix=$board-$cfg
+else
+  board=p2-ec32mb
+  cfg=$requested
+  artifact_suffix=$cfg
+fi
+
+case "$board" in
+  p2-ec32mb|p2-ec)
+    ;;
+  *)
+    echo "ERROR: unsupported P2 board '$board'" >&2
+    exit 2
+    ;;
+esac
+
+[[ "$cfg" =~ ^[A-Za-z0-9._-]+$ ]] ||
+  { echo "ERROR: invalid P2 profile '$cfg'" >&2; exit 2; }
+
+target=$board:$cfg
 apps=${NUTTX_APPS_DIR:-$ROOT/../apps}
 python=${P2_PYTHON:-python3}
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-art=${P2_ARTIFACTS:-$ROOT/artifacts/hil/$timestamp-build-$cfg}
+art=${P2_ARTIFACTS:-$ROOT/artifacts/hil/$timestamp-build-$artifact_suffix}
 log=$art/build.log
 
 if [[ "$apps" != /* ]]; then
@@ -52,14 +75,14 @@ nuttx_commit=$(git -C "$ROOT" rev-parse HEAD)
 apps_branch=$(git -C "$apps" branch --show-current)
 apps_commit=$(git -C "$apps" rev-parse HEAD)
 compiler=$("$P2LLVM_ROOT/bin/clang" --version | head -1)
-build_command="$ROOT/tools/p2/build.sh $cfg"
+build_command="$ROOT/tools/p2/build.sh $requested"
 git -C "$ROOT" status --porcelain=v1 --untracked-files=all \
   > "$art/nuttx-source-status-before.txt"
 git -C "$apps" status --porcelain=v1 --untracked-files=all \
   > "$art/apps-source-status-before.txt"
 [[ ! -s "$art/nuttx-source-status-before.txt" ]] && nuttx_clean=1 || nuttx_clean=0
 [[ ! -s "$art/apps-source-status-before.txt" ]] && apps_clean=1 || apps_clean=0
-printf '%q ' "$ROOT/tools/p2/build.sh" "$cfg" > "$art/build-command.txt"
+printf '%q ' "$ROOT/tools/p2/build.sh" "$requested" > "$art/build-command.txt"
 printf '\n' >> "$art/build-command.txt"
 
 finish()
@@ -71,8 +94,9 @@ finish()
     cp "$ROOT/.config" "$art/config"
   fi
 
-  if [[ -f "$ROOT/tools/p2/toolchain.lock" ]]; then
-    cp "$ROOT/tools/p2/toolchain.lock" "$art/toolchain.lock"
+  local toolchain_lock=${P2_TOOLCHAIN_LOCK:-$ROOT/tools/p2/toolchain.lock}
+  if [[ -f "$toolchain_lock" ]]; then
+    cp "$toolchain_lock" "$art/toolchain.lock"
   fi
 
   local nuttx_commit_after apps_commit_after nuttx_final_clean apps_final_clean
@@ -96,7 +120,8 @@ finish()
   ended_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   P2_BUILD_ARTIFACT="$art" \
   P2_BUILD_STATUS="$([[ $rc -eq 0 ]] && echo PASS || echo FAIL)" \
-  P2_BUILD_EXIT_CODE="$rc" P2_BUILD_PROFILE="$cfg" \
+  P2_BUILD_EXIT_CODE="$rc" P2_BUILD_BOARD="$board" \
+  P2_BUILD_PROFILE="$cfg" \
   P2_BUILD_STARTED_UTC="$started_utc" P2_BUILD_ENDED_UTC="$ended_utc" \
   P2_BUILD_COMMAND="$build_command" \
   P2_BUILD_NUTTX_BRANCH="$nuttx_branch" \
@@ -117,7 +142,7 @@ trap finish EXIT
 cd "$ROOT"
 
 {
-  echo "# p2-ec32mb:$cfg build $timestamp"
+  echo "# $target build $timestamp"
   echo "nuttx_branch=$nuttx_branch"
   echo "nuttx_commit=$nuttx_commit"
   echo "apps=$apps"
@@ -128,7 +153,7 @@ cd "$ROOT"
   echo "P2LLVM_ROOT=$P2LLVM_ROOT"
   echo "compiler=$compiler"
   echo "jobs=$jobs"
-  ./tools/configure.sh -E -a "$apps_arg" "p2-ec32mb:$cfg"
+  ./tools/configure.sh -E -a "$apps_arg" "$target"
   make olddefconfig
   make -j"$jobs" V=1
 } 2>&1 | tee "$log"
@@ -164,12 +189,27 @@ rm -f "$unsafe_relocs"
 cp nuttx nuttx.map System.map "$art/"
 "$P2LLVM_ROOT/bin/llvm-objcopy" -O binary nuttx nuttx.bin
 
-if [[ "$cfg" == "flashboot" ]] &&
+if [[ "$cfg" == "flashboot" || "$cfg" == "showcase" ]] &&
    ! LC_ALL=C grep -aFq \
      'P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash:MOUNTED:AUTOFORMAT=NO:DESTRUCTIVE_HANDLERS=ABSENT' \
      nuttx.bin; then
-  echo "ERROR: flashboot image does not contain the startup mount marker" >&2
+  echo "ERROR: $target flashboot image does not contain the startup mount marker" >&2
   exit 1
+fi
+
+if [[ "$cfg" == "showcase" ]]; then
+  sd_boot_max=491516
+  image_bytes=$(wc -c < nuttx.bin | tr -d '[:space:]')
+  if (( image_bytes > sd_boot_max )); then
+    echo "ERROR: $target image is $image_bytes bytes; serial SD writer limit is $sd_boot_max" >&2
+    exit 1
+  fi
+
+  if ! LC_ALL=C grep -aFq \
+       "P2SHOWCASE:READY:BOARD=$board:RUN=p2help" nuttx.bin; then
+    echo "ERROR: $target image does not contain its board-specific showcase marker" >&2
+    exit 1
+  fi
 fi
 
 cp nuttx.bin "$art/"

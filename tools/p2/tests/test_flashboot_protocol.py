@@ -31,6 +31,11 @@ def make_build_artifact(root, image):
             path.write_bytes(b"ELF flashboot fixture")
         elif name == "config":
             path.write_text("CONFIG_P2_SYSCLK_HZ=180000000\n", encoding="utf-8")
+        elif name == "toolchain.lock":
+            path.write_text(
+                "nuttx_commit={}\nnuttx_apps_commit={}\n".format("1" * 40, "2" * 40),
+                encoding="utf-8",
+            )
         elif name in ("nuttx-source-status.txt", "apps-source-status.txt"):
             path.write_text("", encoding="utf-8")
         else:
@@ -40,7 +45,8 @@ def make_build_artifact(root, image):
             "size": path.stat().st_size,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
-        for path in root.rglob("*") if path.is_file()
+        for path in root.rglob("*")
+        if path.is_file()
     }
     status = {
         "format": build_artifact.FORMAT,
@@ -61,8 +67,6 @@ def make_build_artifact(root, image):
         "nuttx_source_clean": True,
         "apps_source_clean": True,
         "source_clean": True,
-        "nuttx_source_clean": True,
-        "apps_source_clean": True,
         "p2llvm_root": "/tmp/p2llvm",
         "compiler": "fixture clang",
         "jobs": 1,
@@ -77,21 +81,21 @@ def make_build_artifact(root, image):
 
 def boot_text(crc=BOOT_CRC, flashboot_profile=True):
     lines = [
-            "P2BOOT:ENTRY",
-            "P2BOOT:DATA=OK",
-            "P2BOOT:BSS=OK",
-            "P2BOOT:NX_START",
-            "P2STORAGE:W25=PRIVATE JEDEC=EF7018",
-            "P2STORAGE:W25_FREQUENCY PROBE=400000 ACTIVE=2000000",
-            "P2STORAGE:W25_GEOMETRY BLOCK=256 ERASE=4096 "
-            "ERASEBLOCKS=4096 BYTES=16777216",
-            "P2STORAGE:W25_LAYOUT BOOT=0x00000000+0x00080000 "
-            "DATA=0x00080000+0x00F80000 FIRSTBLOCK=2048 NBLOCKS=63488",
-            "P2STORAGE:W25_BOOT_CRC32={}".format(crc),
-            "P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO",
-            "P2STORAGE:MMCSD_FREQUENCY ID=400000 TRANSFER=2000000",
-            "P2STORAGE:MMCSD=/dev/mmcsd0",
-        ]
+        "P2BOOT:ENTRY",
+        "P2BOOT:DATA=OK",
+        "P2BOOT:BSS=OK",
+        "P2BOOT:NX_START",
+        "P2STORAGE:W25=PRIVATE JEDEC=EF7018",
+        "P2STORAGE:W25_FREQUENCY PROBE=400000 ACTIVE=2000000",
+        "P2STORAGE:W25_GEOMETRY BLOCK=256 ERASE=4096 "
+        "ERASEBLOCKS=4096 BYTES=16777216",
+        "P2STORAGE:W25_LAYOUT BOOT=0x00000000+0x00080000 "
+        "DATA=0x00080000+0x00F80000 FIRSTBLOCK=2048 NBLOCKS=63488",
+        "P2STORAGE:W25_BOOT_CRC32={}".format(crc),
+        "P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO",
+        "P2STORAGE:MMCSD_FREQUENCY ID=400000 TRANSFER=2000000",
+        "P2STORAGE:MMCSD=/dev/mmcsd0",
+    ]
     if flashboot_profile:
         lines.append(flashboot.STARTUP_MOUNT_MARKER)
     lines.append("nsh> ")
@@ -113,8 +117,9 @@ def storage_response(action, stage, sequence=SEQUENCE, checksum=None):
     return "\r\n".join(lines) + "\r\n"
 
 
-def make_flash_artifact(root, cycles=1, crc=BOOT_CRC, response=None,
-                        port="/dev/cu.fake-p2"):
+def make_flash_artifact(
+    root, cycles=1, crc=BOOT_CRC, response=None, port="/dev/cu.fake-p2"
+):
     status = {
         "status": "PASS",
         "protocol": "storage",
@@ -127,19 +132,21 @@ def make_flash_artifact(root, cycles=1, crc=BOOT_CRC, response=None,
         "started_utc": "2026-07-13T12:00:00.000Z",
         "ended_utc": "2026-07-13T12:01:00.000Z",
     }
-    (root / "status.json").write_text(
-        json.dumps(status), encoding="utf-8"
-    )
+    (root / "status.json").write_text(json.dumps(status), encoding="utf-8")
     for cycle in range(1, cycles + 1):
         cycle_dir = root / "cycle-{:03d}".format(cycle)
         cycle_dir.mkdir()
         (cycle_dir / "status.json").write_text(
             json.dumps({"status": "PASS"}), encoding="utf-8"
         )
-        console = boot_text(crc=crc, flashboot_profile=False) + "\r\n" + (
-            response
-            if response is not None
-            else storage_response("flash-write", "WRITE")
+        console = (
+            boot_text(crc=crc, flashboot_profile=False)
+            + "\r\n"
+            + (
+                response
+                if response is not None
+                else storage_response("flash-write", "WRITE")
+            )
         )
         (cycle_dir / "console.raw").write_bytes(console.encode("utf-8"))
     return root
@@ -216,9 +223,7 @@ def make_program_artifact(root, erase_end=0x1000):
             str(image_path.resolve()),
         ],
     }
-    (root / "command.json").write_text(
-        json.dumps(command), encoding="utf-8"
-    )
+    (root / "command.json").write_text(json.dumps(command), encoding="utf-8")
     (root / "command.txt").write_text(
         " ".join(command["argv"]) + "\n", encoding="utf-8"
     )
@@ -236,9 +241,7 @@ class FlashBootProtocolTests(unittest.TestCase):
             self.assertEqual(result.program_end, 0x400)
 
         with tempfile.TemporaryDirectory() as temporary:
-            root = make_program_artifact(
-                pathlib.Path(temporary), erase_end=0x81000
-            )
+            root = make_program_artifact(pathlib.Path(temporary), erase_end=0x81000)
             with self.assertRaisesRegex(
                 flashboot.ProgramArtifactError, "crosses the data partition"
             ):
@@ -296,9 +299,7 @@ class FlashBootProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = make_flash_artifact(
                 pathlib.Path(temporary),
-                response=storage_response(
-                    "flash-write", "WRITE", checksum="00000000"
-                ),
+                response=storage_response("flash-write", "WRITE", checksum="00000000"),
             )
             with self.assertRaisesRegex(
                 flashboot.FlashArtifactError, "one-MiB write proof"
@@ -375,9 +376,7 @@ class FlashBootProtocolTests(unittest.TestCase):
                 self.assertEqual(result["rejection"]["kind"], kind)
 
     def test_verify_requires_exact_one_mib_host_fnv_and_final_prompt(self):
-        text = "nsh> \x1b[K\r\n" + storage_response(
-            "flash-verify", "PERSISTENCE"
-        )
+        text = "nsh> \x1b[K\r\n" + storage_response("flash-verify", "PERSISTENCE")
         result = flashboot.parse_verify_response(text, SEQUENCE)
         self.assertTrue(result["complete"], result)
         self.assertEqual(result["expected_bytes"], 1048576)

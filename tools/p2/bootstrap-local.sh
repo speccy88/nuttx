@@ -19,8 +19,11 @@ P2LLVM_ROOT=${P2LLVM_ROOT:-$CACHE/p2llvm/install}
 FLEXPROP_ROOT=${FLEXPROP_ROOT:-$CACHE/flexprop-src}
 PYTHON=${PYTHON:-python3}
 PYTHON_VENV=${P2_PYTHON_VENV:-$CACHE/venv}
+RUNTIME_LOCK=${P2_TOOLCHAIN_LOCK:-$CACHE/toolchain.lock}
 
-APPS_REF=62b7e955300b6dafa4f36d391474d3c8925b8106
+APPS_URL=${P2_APPS_URL:-https://github.com/speccy88/nuttx-apps.git}
+APPS_BRANCH=${P2_APPS_BRANCH:-codex/p2-hil-finish-apps}
+APPS_REF=b9433dda16c6b5e0fc3651fc1631ddcc0a779037
 P2LLVM_REF=bdcefcce7860b2232c06f35726fea679a3a7309c
 LLVM_PROJECT_REF=72a9bb1ef2656d9953d1f41a8196d425ff2ab0b1
 P2LLVM_LOADP2_REF=21e074cc7ee6fbd4fb12ef5352544b3457a6729c
@@ -109,20 +112,14 @@ ensure_checkout()
 
 ensure_apps_checkout()
 {
-  local url=https://github.com/apache/nuttx-apps.git
-  local actual_url
-
   if [[ ! -d "$APPS_DIR/.git" ]]; then
-    ensure_checkout nuttx-apps "$url" "$APPS_DIR" "$APPS_REF"
+    ensure_checkout nuttx-apps "$APPS_URL" "$APPS_DIR" "$APPS_REF"
     return
   fi
 
-  actual_url=$(git -C "$APPS_DIR" remote get-url origin)
-  [[ "${actual_url%.git}" == "${url%.git}" ]] ||
-    die "nuttx-apps origin is $actual_url; expected $url"
-
   if ! git -C "$APPS_DIR" cat-file -e "$APPS_REF^{commit}" 2>/dev/null; then
-    git -C "$APPS_DIR" fetch --filter=blob:none origin
+    git -C "$APPS_DIR" fetch --filter=blob:none "$APPS_URL" \
+      "+refs/heads/$APPS_BRANCH:refs/remotes/p2-release/$APPS_BRANCH"
   fi
 
   git -C "$APPS_DIR" cat-file -e "$APPS_REF^{commit}" 2>/dev/null ||
@@ -621,6 +618,7 @@ write_environment()
     printf 'export LOADP2=%q\n' "$FLEXPROP_ROOT/bin/loadp2"
     printf 'export P2_PYTHON=%q\n' "$PYTHON_VENV/bin/python"
     printf 'export KCONFIG_CONF=%q\n' "$KCONFIG_CONF"
+    printf 'export P2_TOOLCHAIN_LOCK=%q\n' "$RUNTIME_LOCK"
     printf 'export PATH=%q:%s\n' \
       "$PYTHON_VENV/bin:$P2LLVM_ROOT/bin:$FLEXPROP_ROOT/bin:$(dirname "$KCONFIG_CONF")" \
       "\$PATH"
@@ -631,7 +629,7 @@ write_environment()
 
 write_lock()
 {
-  local lock=$ROOT/tools/p2/toolchain.lock
+  local lock=$RUNTIME_LOCK
   local tmp=$lock.tmp
   local kconfig_pc
   local kconfig_version=unknown
@@ -642,6 +640,7 @@ write_lock()
     kconfig_version=$(sed -n 's/^Version:[[:space:]]*//p' "$kconfig_pc")
   fi
 
+  mkdir -p "$(dirname "$lock")"
   {
     echo "nuttx_commit=$(git_head "$ROOT")"
     echo "nuttx_apps_commit=$(git_head "$APPS_DIR")"

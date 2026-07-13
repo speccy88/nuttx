@@ -1,5 +1,5 @@
 /****************************************************************************
- * boards/p2/p2x8c4m64p/p2-ec32mb/src/etc/init.d/rcS
+ * boards/p2/p2x8c4m64p/p2-ec/src/etc/init.d/rcS
  *
  * SPDX-License-Identifier: Apache-2.0
  ****************************************************************************/
@@ -19,5 +19,5 @@ fi
 #endif
 
 #ifdef CONFIG_SYSTEM_P2HELP
-echo P2SHOWCASE:READY:BOARD=p2-ec32mb:RUN=p2help
+echo P2SHOWCASE:READY:BOARD=p2-ec:RUN=p2help
 #endif

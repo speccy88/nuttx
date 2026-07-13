@@ -23,7 +23,7 @@ LLVM_NM=${P2_NM:-$P2LLVM_ROOT/bin/llvm-nm}
 LLVM_OBJDUMP=${P2_OBJDUMP:-$P2LLVM_ROOT/bin/llvm-objdump}
 LLVM_READELF=${P2_READELF:-$P2LLVM_ROOT/bin/llvm-readelf}
 LLVM_SIZE=${P2_SIZE:-$P2LLVM_ROOT/bin/llvm-size}
-LOCK=$ROOT/tools/p2/toolchain.lock
+LOCK=${P2_TOOLCHAIN_LOCK:-$ROOT/tools/p2/toolchain.lock}
 
 TOOLS=("$CLANG" "$LD_LLD" "$LLVM_NM" "$LLVM_OBJDUMP" "$LLVM_READELF" "$LLVM_SIZE")
 for tool in "${TOOLS[@]}"; do
@@ -46,7 +46,7 @@ fi
 
 actual_clang_sha=$(shasum -a 256 "$CLANG" | awk '{print $1}')
 if [[ "$actual_clang_sha" != "$expected_clang_sha" ]]; then
-  echo "BLOCKED: clang hash differs from tools/p2/toolchain.lock" >&2
+  echo "BLOCKED: clang hash differs from $LOCK" >&2
   echo "expected=$expected_clang_sha" >&2
   echo "actual=$actual_clang_sha" >&2
   exit 2

@@ -1,4 +1,15 @@
+############################################################################
+# boards/p2/p2x8c4m64p/p2-ec/src/Makefile
+#
+# SPDX-License-Identifier: Apache-2.0
+############################################################################
+
 include $(TOPDIR)/Make.defs
+
+P2_EDGE_SRCDIR = $(TOPDIR)$(DELIM)boards$(DELIM)p2$(DELIM)p2x8c4m64p$(DELIM)p2-ec32mb$(DELIM)src
+VPATH += $(P2_EDGE_SRCDIR)
+DEPPATH += --dep-path $(P2_EDGE_SRCDIR)
+
 CSRCS = p2_ec32mb_boot.c p2_ec32mb_pins.c
 
 ifeq ($(CONFIG_USERLED),y)
@@ -35,11 +46,6 @@ endif
 
 ifeq ($(CONFIG_P2_EC32MB_I2C),y)
 CSRCS += p2_ec32mb_i2c.c
-endif
-
-ifeq ($(CONFIG_P2_EC32MB_PSRAM),y)
-CSRCS += p2_ec32mb_psram.c
-ASRCS += p2_ec32mb_psram_service.S
 endif
 
 ifeq ($(CONFIG_P2_STORAGE),y)

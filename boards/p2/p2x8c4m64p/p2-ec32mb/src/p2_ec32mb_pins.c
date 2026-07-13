@@ -34,6 +34,30 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifndef P2_PIN_MANAGER_HOST_TEST
+#  include <arch/board/board.h>
+#else
+#  ifndef BOARD_LED0_PIN
+#    define BOARD_LED0_PIN 38
+#  endif
+#  ifndef BOARD_LED1_PIN
+#    define BOARD_LED1_PIN 39
+#  endif
+#  if !defined(BOARD_PSRAM_FIRST_PIN) && \
+      !defined(P2_PIN_MANAGER_HOST_NO_PSRAM)
+#    define BOARD_PSRAM_FIRST_PIN 40
+#    define BOARD_PSRAM_LAST_PIN 57
+#    define BOARD_HAVE_PSRAM 1
+#  endif
+#  ifndef BOARD_FLASH_MISO_PIN
+#    define BOARD_FLASH_MISO_PIN 58
+#    define BOARD_FLASH_CS_PIN 61
+#  endif
+#  ifndef BOARD_CONSOLE_TX_PIN
+#    define BOARD_CONSOLE_TX_PIN 62
+#  endif
+#endif
+
 #include "p2_ec32mb_pins.h"
 
 /****************************************************************************
@@ -288,23 +312,25 @@ int p2_pin_reserved_role(unsigned int pin)
       return -EINVAL;
     }
 
-  if (pin >= 40 && pin <= 57)
+#ifdef BOARD_HAVE_PSRAM
+  if (pin >= BOARD_PSRAM_FIRST_PIN && pin <= BOARD_PSRAM_LAST_PIN)
     {
       return P2_PIN_ROLE_PSRAM;
     }
+#endif
 
-  if (pin >= 58 && pin <= 61)
+  if (pin >= BOARD_FLASH_MISO_PIN && pin <= BOARD_FLASH_CS_PIN)
     {
       return P2_PIN_ROLE_STORAGE;
     }
 
-  if (pin >= 62)
+  if (pin >= BOARD_CONSOLE_TX_PIN)
     {
       return P2_PIN_ROLE_CONSOLE;
     }
 
-#ifdef CONFIG_ARCH_LEDS
-  if (pin == 38 || pin == 39)
+#if defined(CONFIG_ARCH_LEDS) || defined(CONFIG_USERLED)
+  if (pin == BOARD_LED0_PIN || pin == BOARD_LED1_PIN)
     {
       return P2_PIN_ROLE_BOARD_LED;
     }

@@ -13,10 +13,10 @@ import unittest
 P2_TOOLS = pathlib.Path(__file__).parents[1]
 sys.path.insert(0, str(P2_TOOLS))
 
-import flashboot_protocol
-import build_artifact
-import flash_layout
-import storage_protocol
+import flashboot_protocol  # noqa: E402
+import build_artifact  # noqa: E402
+import flash_layout  # noqa: E402
+import storage_protocol  # noqa: E402
 
 
 SCRIPT_PATH = P2_TOOLS / "test-flashboot.py"
@@ -41,6 +41,11 @@ def make_build_artifact(root, image):
             path.write_bytes(b"ELF flashboot fixture")
         elif name == "config":
             path.write_text("CONFIG_P2_SYSCLK_HZ=180000000\n", encoding="utf-8")
+        elif name == "toolchain.lock":
+            path.write_text(
+                "nuttx_commit={}\nnuttx_apps_commit={}\n".format("1" * 40, "2" * 40),
+                encoding="utf-8",
+            )
         elif name in ("nuttx-source-status.txt", "apps-source-status.txt"):
             path.write_text("", encoding="utf-8")
         else:
@@ -50,7 +55,8 @@ def make_build_artifact(root, image):
             "size": path.stat().st_size,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
-        for path in root.rglob("*") if path.is_file()
+        for path in root.rglob("*")
+        if path.is_file()
     }
     status = {
         "format": build_artifact.FORMAT,
@@ -71,8 +77,6 @@ def make_build_artifact(root, image):
         "nuttx_source_clean": True,
         "apps_source_clean": True,
         "source_clean": True,
-        "nuttx_source_clean": True,
-        "apps_source_clean": True,
         "p2llvm_root": "/tmp/p2llvm",
         "compiler": "fixture clang",
         "jobs": 1,
@@ -87,21 +91,21 @@ def make_build_artifact(root, image):
 
 def boot_text(crc=BOOT_CRC, flashboot_profile=True):
     lines = [
-            "P2BOOT:ENTRY",
-            "P2BOOT:DATA=OK",
-            "P2BOOT:BSS=OK",
-            "P2BOOT:NX_START",
-            "P2STORAGE:W25=PRIVATE JEDEC=EF7018",
-            "P2STORAGE:W25_FREQUENCY PROBE=400000 ACTIVE=2000000",
-            "P2STORAGE:W25_GEOMETRY BLOCK=256 ERASE=4096 "
-            "ERASEBLOCKS=4096 BYTES=16777216",
-            "P2STORAGE:W25_LAYOUT BOOT=0x00000000+0x00080000 "
-            "DATA=0x00080000+0x00F80000 FIRSTBLOCK=2048 NBLOCKS=63488",
-            "P2STORAGE:W25_BOOT_CRC32={}".format(crc),
-            "P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO",
-            "P2STORAGE:MMCSD_FREQUENCY ID=400000 TRANSFER=2000000",
-            "P2STORAGE:MMCSD=/dev/mmcsd0",
-        ]
+        "P2BOOT:ENTRY",
+        "P2BOOT:DATA=OK",
+        "P2BOOT:BSS=OK",
+        "P2BOOT:NX_START",
+        "P2STORAGE:W25=PRIVATE JEDEC=EF7018",
+        "P2STORAGE:W25_FREQUENCY PROBE=400000 ACTIVE=2000000",
+        "P2STORAGE:W25_GEOMETRY BLOCK=256 ERASE=4096 "
+        "ERASEBLOCKS=4096 BYTES=16777216",
+        "P2STORAGE:W25_LAYOUT BOOT=0x00000000+0x00080000 "
+        "DATA=0x00080000+0x00F80000 FIRSTBLOCK=2048 NBLOCKS=63488",
+        "P2STORAGE:W25_BOOT_CRC32={}".format(crc),
+        "P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO",
+        "P2STORAGE:MMCSD_FREQUENCY ID=400000 TRANSFER=2000000",
+        "P2STORAGE:MMCSD=/dev/mmcsd0",
+    ]
     if flashboot_profile:
         lines.append(flashboot_protocol.STARTUP_MOUNT_MARKER)
     lines.append("nsh> ")
@@ -139,17 +143,13 @@ def make_flash_artifact(root, port="/dev/fake-p2"):
     (root / "status.json").write_text(json.dumps(status), encoding="utf-8")
     cycle = root / "cycle-001"
     cycle.mkdir()
-    (cycle / "status.json").write_text(
-        json.dumps({"status": "PASS"}), encoding="utf-8"
-    )
+    (cycle / "status.json").write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
     (cycle / "console.raw").write_bytes(
         (
             boot_text(flashboot_profile=False)
             + "\r\n"
             + response("flash-write", "WRITE")
-        ).encode(
-            "utf-8"
-        )
+        ).encode("utf-8")
     )
     return flashboot_protocol.load_flash_artifact(root)
 
@@ -225,9 +225,7 @@ def make_program_artifact(root, port="/dev/fake-p2"):
             str(image_path.resolve()),
         ],
     }
-    (root / "command.json").write_text(
-        json.dumps(command), encoding="utf-8"
-    )
+    (root / "command.json").write_text(json.dumps(command), encoding="utf-8")
     (root / "command.txt").write_text(
         " ".join(command["argv"]) + "\n", encoding="utf-8"
     )
@@ -253,8 +251,7 @@ class FakeLock:
 
 
 class FakeSerial:
-    def __init__(self, loader_cycle=None, crc_cycle=None,
-                 interrupt_cycle=None):
+    def __init__(self, loader_cycle=None, crc_cycle=None, interrupt_cycle=None):
         self.is_open = True
         self._dtr = False
         self.dtr_transitions = []
@@ -288,11 +285,7 @@ class FakeSerial:
             raise AssertionError("input flushed without a complete DTR pulse")
         self.pending_reset = False
         self.reset_count += 1
-        crc = (
-            "76543211"
-            if self.crc_cycle == self.reset_count
-            else self.steady_crc
-        )
+        crc = "76543211" if self.crc_cycle == self.reset_count else self.steady_crc
         prefix = "Prop_Ver G\r\n" if self.loader_cycle == self.reset_count else ""
         self.queue.append((prefix + boot_text(crc)).encode("utf-8"))
         self.prompt_delivered = False
@@ -317,8 +310,9 @@ class FakeSerial:
         if value != storage_protocol.command_bytes("flash-verify", SEQUENCE):
             raise AssertionError("unexpected target command")
         self.queue.append(
-            ("nsh> \x1b[K\r\n" +
-             response("flash-verify", "PERSISTENCE")).encode("utf-8")
+            ("nsh> \x1b[K\r\n" + response("flash-verify", "PERSISTENCE")).encode(
+                "utf-8"
+            )
         )
         return len(value)
 
@@ -370,9 +364,7 @@ class FlashBootRunnerTests(unittest.TestCase):
             self.assertEqual(len(factory.calls), 1)
             self.assertEqual(connection.close_count, 1)
             self.assertEqual(connection.reset_count, 20)
-            self.assertEqual(
-                connection.dtr_transitions, [True, False, True] * 20
-            )
+            self.assertEqual(connection.dtr_transitions, [True, False, True] * 20)
             self.assertEqual(len(connection.writes), 20)
             self.assertEqual(connection.write_after_prompt, [True] * 20)
             self.assertEqual(FakeLock.enters, 1)
@@ -388,12 +380,12 @@ class FlashBootRunnerTests(unittest.TestCase):
             self.assertEqual(evidence["format"], "p2-flashboot-prerequisites-v1")
             self.assertGreaterEqual(len(evidence["files"]), 9)
             self.assertTrue(
-                (output / "prerequisites/flash-write/cycle-001/console.raw")
-                .is_file()
+                (output / "prerequisites/flash-write/cycle-001/console.raw").is_file()
             )
             self.assertTrue(
-                (output / "prerequisites/flash-program/inputs/flash-input.bin.json")
-                .is_file()
+                (
+                    output / "prerequisites/flash-program/inputs/flash-input.bin.json"
+                ).is_file()
             )
             self.assertTrue(
                 (output / "prerequisites/flash-program/command.json").is_file()
@@ -402,8 +394,7 @@ class FlashBootRunnerTests(unittest.TestCase):
                 (output / "prerequisites/flash-program/inputs/loadp2").is_file()
             )
             self.assertTrue(
-                (output / "prerequisites/flash-program/inputs/toolchain.lock")
-                .is_file()
+                (output / "prerequisites/flash-program/inputs/toolchain.lock").is_file()
             )
             for cycle in range(1, 21):
                 cycle_dir = output / "cycle-{:03d}".format(cycle)

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
+import json
 import os
 import pathlib
 import sys
@@ -21,13 +23,17 @@ class BuildArtifactTests(unittest.TestCase):
             for name in build_artifact.PASS_REQUIRED_FILES:
                 path = root / name
                 if name == "config":
-                    path.write_text(
-                        "CONFIG_P2_SYSCLK_HZ=180000000\n", encoding="utf-8"
-                    )
+                    path.write_text("CONFIG_P2_SYSCLK_HZ=180000000\n", encoding="utf-8")
                 elif name == "nuttx.bin":
                     path.write_bytes(b"aligned P2 image")
-                elif name in ("nuttx-source-status.txt",
-                               "apps-source-status.txt"):
+                elif name == "toolchain.lock":
+                    path.write_text(
+                        "nuttx_commit={}\n" "nuttx_apps_commit={}\n".format(
+                            "1" * 40, "2" * 40
+                        ),
+                        encoding="utf-8",
+                    )
+                elif name in ("nuttx-source-status.txt", "apps-source-status.txt"):
                     path.write_text("", encoding="utf-8")
                 else:
                     path.write_text(name + "\n", encoding="utf-8")
@@ -36,6 +42,7 @@ class BuildArtifactTests(unittest.TestCase):
                 "P2_BUILD_ARTIFACT": str(root),
                 "P2_BUILD_STATUS": "PASS",
                 "P2_BUILD_EXIT_CODE": "0",
+                "P2_BUILD_BOARD": "p2-ec",
                 "P2_BUILD_PROFILE": "flashboot",
                 "P2_BUILD_STARTED_UTC": "2026-07-13T11:58:00Z",
                 "P2_BUILD_ENDED_UTC": "2026-07-13T11:59:00Z",
@@ -59,9 +66,38 @@ class BuildArtifactTests(unittest.TestCase):
             result = build_artifact.load(
                 root, image=root / "nuttx.bin", require_clean=True
             )
+            self.assertEqual(result.board, "p2-ec")
             self.assertEqual(result.profile, "flashboot")
             self.assertEqual(result.board_clock_hz, 180000000)
             self.assertTrue(result.source_clean)
+
+            lock = root / "toolchain.lock"
+            lock.write_text(
+                "nuttx_commit={}\nnuttx_apps_commit={}\n".format("3" * 40, "2" * 40),
+                encoding="utf-8",
+            )
+            status_path = root / "status.json"
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status["files"]["toolchain.lock"] = {
+                "size": lock.stat().st_size,
+                "sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
+            }
+            status_path.write_text(json.dumps(status), encoding="utf-8")
+            with self.assertRaisesRegex(
+                build_artifact.BuildArtifactError,
+                "toolchain lock nuttx_commit .* does not match",
+            ):
+                build_artifact.load(root, require_clean=True)
+
+            lock.write_text(
+                "nuttx_commit={}\nnuttx_apps_commit={}\n".format("1" * 40, "2" * 40),
+                encoding="utf-8",
+            )
+            status["files"]["toolchain.lock"] = {
+                "size": lock.stat().st_size,
+                "sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
+            }
+            status_path.write_text(json.dumps(status), encoding="utf-8")
 
             (root / "nuttx.bin").write_bytes(b"tampered")
             with self.assertRaisesRegex(

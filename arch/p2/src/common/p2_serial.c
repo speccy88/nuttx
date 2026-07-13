@@ -30,6 +30,7 @@
 #include <errno.h>
 #include <stdint.h>
 
+#include <nuttx/irq.h>
 #include <nuttx/serial/serial.h>
 
 #include <arch/board/board.h>
@@ -59,6 +60,7 @@ struct p2_uart_priv_s
 {
   volatile uint32_t rxenabled;
   uint32_t rxcog;
+  bool servicing;
 };
 
 /****************************************************************************
@@ -316,10 +318,34 @@ static bool p2_uart_txempty(struct uart_dev_s *dev)
 
 static void p2_uart_service(void)
 {
-  if (g_p2_uart_priv.rxenabled && p2_uart_rxavailable(&g_p2_uart_dev))
+  irqstate_t flags;
+  bool receive;
+
+  /* This function runs from both up_idle() and the timer ISR.  Protect the
+   * test-and-set with IRQ masking so the timer cannot re-enter
+   * uart_recvchars() while idle-context service owns the upper-half ring.
+   */
+
+  flags = enter_critical_section();
+  if (g_p2_uart_priv.servicing)
+    {
+      leave_critical_section(flags);
+      return;
+    }
+
+  g_p2_uart_priv.servicing = true;
+  receive = g_p2_uart_priv.rxenabled &&
+            p2_uart_rxavailable(&g_p2_uart_dev);
+  leave_critical_section(flags);
+
+  if (receive)
     {
       uart_recvchars(&g_p2_uart_dev);
     }
+
+  flags = enter_critical_section();
+  g_p2_uart_priv.servicing = false;
+  leave_critical_section(flags);
 }
 
 #endif /* USE_SERIALDRIVER */
@@ -420,6 +446,7 @@ void p2_serialinit(void)
   g_p2_uart_rx_tail = 0;
   g_p2_uart_rx_dropped = 0;
   g_p2_uart_rx_alive = 0;
+  g_p2_uart_priv.servicing = false;
   g_p2_uart_priv.rxcog = p2_uart_rx_cog_start() == 0;
   deadline = p2_counter() + P2_UART_TIMEOUT_TICKS;
   while (g_p2_uart_priv.rxcog && g_p2_uart_rx_alive == 0 &&

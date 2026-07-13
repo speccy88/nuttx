@@ -1,4 +1,4 @@
-if ARCH_BOARD_P2_EC32MB
+if ARCH_BOARD_P2_EC32MB || ARCH_BOARD_P2_EC
 
 config BOARD_LOOPSPERMSEC
 	int
@@ -39,6 +39,7 @@ config P2_EC32MB_FLASHBOOT
 config P2_EC32MB_PSRAM
 	bool "Register the onboard 32-MiB PSRAM service"
 	default n
+	depends on ARCH_BOARD_P2_EC32MB
 	depends on P2_SMARTPIN && BOARD_LATE_INITIALIZE
 	help
 		Start one non-scheduler cog as a bounded QPI transfer engine and
@@ -93,13 +94,15 @@ config P2_EC32MB_GPIO
 config P2_EC32MB_GPIO_OUT_PIN
 	int "GPIO loopback output pin"
 	default 0
-	range 0 39
+	range 0 39 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_GPIO
 
 config P2_EC32MB_GPIO_IN_PIN
 	int "GPIO loopback input pin"
 	default 1
-	range 0 39
+	range 0 39 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_GPIO
 
 config P2_EC32MB_UART1
@@ -115,13 +118,15 @@ config P2_EC32MB_UART1
 config P2_EC32MB_UART1_TX_PIN
 	int "Non-console UART TX pin"
 	default 2
-	range 0 39
+	range 0 39 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_UART1
 
 config P2_EC32MB_UART1_RX_PIN
 	int "Non-console UART RX pin"
 	default 3
-	range 0 39
+	range 0 39 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_UART1
 
 config P2_EC32MB_UART1_BAUD
@@ -154,7 +159,8 @@ config P2_EC32MB_PWM
 config P2_EC32MB_PWM_PIN
 	int "PWM output pin"
 	default 4
-	range 0 39
+	range 0 39 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_PWM
 
 config P2_EC32MB_CAPTURE
@@ -170,7 +176,8 @@ config P2_EC32MB_CAPTURE
 config P2_EC32MB_CAPTURE_PIN
 	int "Capture input pin"
 	default 5
-	range 0 39
+	range 0 39 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_CAPTURE
 
 config P2_EC32MB_ADC
@@ -187,7 +194,8 @@ config P2_EC32MB_ADC
 config P2_EC32MB_ADC_PIN
 	int "ADC input pin"
 	default 5
-	range 0 39
+	range 0 39 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_ADC
 
 config P2_EC32MB_ADC_SAMPLE_EXPONENT
@@ -212,7 +220,8 @@ config P2_EC32MB_DAC
 config P2_EC32MB_DAC_PIN
 	int "DAC output pin"
 	default 4
-	range 0 39
+	range 0 39 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_DAC
 
 config P2_EC32MB_SPI
@@ -228,25 +237,29 @@ config P2_EC32MB_SPI
 config P2_EC32MB_SPI_MOSI_PIN
 	int "General-purpose SPI MOSI pin"
 	default 6
-	range 0 37
+	range 0 37 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_SPI
 
 config P2_EC32MB_SPI_MISO_PIN
 	int "General-purpose SPI MISO pin"
 	default 7
-	range 0 37
+	range 0 37 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_SPI
 
 config P2_EC32MB_SPI_SCK_PIN
 	int "General-purpose SPI clock pin"
 	default 8
-	range 0 37
+	range 0 37 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_SPI
 
 config P2_EC32MB_SPI_CS_PIN
 	int "General-purpose SPI chip-select pin"
 	default 9
-	range 0 37
+	range 0 37 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_SPI
 
 config P2_EC32MB_SPI_MAX_FREQUENCY
@@ -271,13 +284,15 @@ config P2_EC32MB_I2C
 config P2_EC32MB_I2C_SDA_PIN
 	int "I2C SDA pin"
 	default 24
-	range 0 37
+	range 0 37 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_I2C
 
 config P2_EC32MB_I2C_SCL_PIN
 	int "I2C SCL pin"
 	default 25
-	range 0 37
+	range 0 37 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
 	depends on P2_EC32MB_I2C
 
 config P2_EC32MB_BMP180

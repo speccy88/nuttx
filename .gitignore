@@ -74,6 +74,7 @@ core
 Make*.dep
 uImage
 /external
+/artifacts/
 # $(TOPDIR)/Makefile.[unix|win]::$(CONTEXTDIRS_DEPS)
 .context
 .context\ *

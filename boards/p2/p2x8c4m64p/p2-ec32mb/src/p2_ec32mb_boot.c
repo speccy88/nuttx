@@ -30,11 +30,15 @@
 
 #include <nuttx/board.h>
 #if defined(CONFIG_FS_PROCFS) || defined(CONFIG_P2_SMARTPIN) || \
-    defined(CONFIG_P2_EC32MB_STORAGE_BINDINGS)
+    defined(CONFIG_P2_EC32MB_STORAGE_BINDINGS) || \
+    defined(CONFIG_USERLED_LOWER)
 #  include <syslog.h>
 #endif
 #ifdef CONFIG_FS_PROCFS
 #  include <nuttx/fs/fs.h>
+#endif
+#ifdef CONFIG_USERLED_LOWER
+#  include <nuttx/leds/userled.h>
 #endif
 
 #include <arch/board/board.h>
@@ -59,6 +63,10 @@
 #  endif
 #endif
 
+#if defined(CONFIG_ARCH_LEDS) && defined(CONFIG_USERLED_LOWER)
+#  error "P2 Edge LEDs cannot be OS status LEDs and /dev/userleds together"
+#endif
+
 #ifdef CONFIG_FS_PROCFS
 #  ifdef CONFIG_NSH_PROC_MOUNTPOINT
 #    define P2_PROCFS_MOUNTPOINT CONFIG_NSH_PROC_MOUNTPOINT
@@ -71,6 +79,7 @@
  * Private Functions
  ****************************************************************************/
 
+#ifdef CONFIG_ARCH_LEDS
 static void p2_led_write(unsigned int pin, bool on)
 {
   if (on)
@@ -88,11 +97,13 @@ static void p2_led_pair(bool led0, bool led1)
   p2_led_write(BOARD_LED0_PIN, led0);
   p2_led_write(BOARD_LED1_PIN, led1);
 }
+#endif
 
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
 
+#ifdef CONFIG_ARCH_LEDS
 void board_autoled_initialize(void)
 {
   p2_led_pair(false, false);
@@ -162,6 +173,7 @@ void board_autoled_off(int led)
         break;
     }
 }
+#endif
 
 void board_late_initialize(void)
 {
@@ -174,6 +186,17 @@ void board_late_initialize(void)
       syslog(LOG_ERR, "ERROR: Failed to initialize P2 pins: %d\n",
              pin_ret);
       return;
+    }
+#endif
+
+#ifdef CONFIG_USERLED_LOWER
+  int userled_ret;
+
+  userled_ret = userled_lower_initialize("/dev/userleds");
+  if (userled_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: Failed to register P2 user LEDs: %d\n",
+             userled_ret);
     }
 #endif
 
