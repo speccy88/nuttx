@@ -29,7 +29,22 @@ from bringup_protocol import (
     BRINGUP_FAILURE_PATTERNS as APP_BRINGUP_FAILURE_PATTERNS,
     BRINGUP_MARKERS as APP_BRINGUP_MARKERS,
 )
+from i2c_protocol import (
+    FAILURE_PATTERNS as I2C_FAILURE_PATTERNS,
+    marker_patterns as i2c_marker_patterns,
+    parse_i2c,
+)
 import monitor
+from schedstress_protocol import (
+    FAILURE_PATTERNS as SCHEDSTRESS_FAILURE_PATTERNS,
+    HEAP_CONCURRENCY_COUNT as SCHEDSTRESS_HEAP_CONCURRENCY_COUNT,
+    HEAP_CONCURRENCY_ROUNDS as SCHEDSTRESS_HEAP_CONCURRENCY_ROUNDS,
+    HEAP_CONCURRENCY_THREADS as SCHEDSTRESS_HEAP_CONCURRENCY_THREADS,
+    STAGES as SCHEDSTRESS_STAGES,
+    TOTAL_EVENTS as SCHEDSTRESS_TOTAL_EVENTS,
+    marker_patterns as schedstress_marker_patterns,
+    parse_schedstress,
+)
 from smartpins_protocol import (
     FAILURE_PATTERNS as SMARTPINS_FAILURE_PATTERNS,
     hil_marker_patterns as smartpins_marker_patterns,
@@ -116,6 +131,16 @@ OSTEST_CONFIG_ROOT = (
     / "p2-ec32mb"
     / "configs"
 )
+SCHEDSTRESS_PROFILE_PATH = (
+    REPO_ROOT
+    / "boards"
+    / "p2"
+    / "p2x8c4m64p"
+    / "p2-ec32mb"
+    / "configs"
+    / "schedstress"
+    / "defconfig"
+)
 
 SMARTPINS_DIRECT_CONFIG = (
     ("CONFIG_P2_EC32MB_GPIO", "y"),
@@ -138,6 +163,22 @@ SMARTPINS_DIRECT_CONFIG = (
     ("CONFIG_P2_EC32MB_SPI_SCK_PIN", "8"),
     ("CONFIG_P2_EC32MB_SPI_CS_PIN", "9"),
     ("CONFIG_P2_EC32MB_SPI_MAX_FREQUENCY", "100000"),
+)
+
+SMARTPINS_ANALOG_CONFIG = (
+    ("CONFIG_ANALOG", "y"),
+    ("CONFIG_P2_EC32MB_GPIO", "y"),
+    ("CONFIG_P2_EC32MB_GPIO_OUT_PIN", "0"),
+    ("CONFIG_P2_EC32MB_GPIO_IN_PIN", "1"),
+    ("CONFIG_P2_EC32MB_DAC", "y"),
+    ("CONFIG_P2_EC32MB_DAC_PIN", "4"),
+    ("CONFIG_P2_EC32MB_ADC", "y"),
+    ("CONFIG_P2_EC32MB_ADC_PIN", "5"),
+    ("CONFIG_P2_EC32MB_ADC_SAMPLE_EXPONENT", "10"),
+    ("CONFIG_TESTING_P2SMARTPINS", "y"),
+    ("CONFIG_TESTING_P2SMARTPINS_DAC_ADC", "y"),
+    ("CONFIG_TESTING_P2SMARTPINS_DAC_FULL_SCALE", "65535"),
+    ("CONFIG_INIT_ENTRYPOINT", '"p2smartpins_main"'),
 )
 
 STORAGE_REQUIRED_CONFIG = (
@@ -191,6 +232,25 @@ PSRAM_REQUIRED_CONFIG = (
     ("CONFIG_TESTING_P2PSRAM_WORKER_STACKSIZE", "2048"),
     ("CONFIG_TESTING_P2PSRAM_RANDOM_COUNT", "1024"),
     ("CONFIG_SYSTEM_DD", "n"),
+)
+
+I2C_REQUIRED_CONFIG = (
+    ("CONFIG_BOARD_LATE_INITIALIZE", "y"),
+    ("CONFIG_P2_SMARTPIN", "y"),
+    ("CONFIG_P2_EC32MB_I2C", "y"),
+    ("CONFIG_P2_EC32MB_I2C_SDA_PIN", "24"),
+    ("CONFIG_P2_EC32MB_I2C_SCL_PIN", "25"),
+    ("CONFIG_I2C", "y"),
+    ("CONFIG_I2C_BITBANG", "y"),
+    ("CONFIG_I2C_BITBANG_CLOCK_STRETCHING", "y"),
+    ("CONFIG_I2C_BITBANG_TIMEOUT", "1000"),
+    ("CONFIG_I2C_DRIVER", "y"),
+    ("CONFIG_P2_EC32MB_BMP180", "y"),
+    ("CONFIG_SENSORS", "y"),
+    ("CONFIG_SENSORS_BMP180", "y"),
+    ("CONFIG_SENSORS_BMP180_UORB", "n"),
+    ("CONFIG_TESTING_P2I2C", "y"),
+    ("CONFIG_INIT_ENTRYPOINT", '"p2i2c_main"'),
 )
 
 PANIC_PATTERNS = (
@@ -465,6 +525,20 @@ OSTEST_FAILURE_EXCEPTION = r"(?!(?:{}))".format(
 
 OSTEST_FAILURE_PATTERNS = BOOT_FAILURE_PATTERNS + (
     (
+        "ostest pthread rwlock thread order",
+        re.compile(
+            r"(?:^|[\r\n])pthread_rwlock:\s+Thread order unexpected\."
+            r"[^\r\n]*(?:\r?\n|$)"
+        ),
+    ),
+    (
+        "ostest pthread rwlock exclusivity",
+        re.compile(
+            r"(?:^|[\r\n])pthread_rwlock:\s+Opened rw_lock\b"
+            r"[^\r\n]*(?:\r?\n|$)"
+        ),
+    ),
+    (
         "ostest Roundrobin Failed",
         re.compile(
             r"(?:^|[\r\n])[^\r\n]*\bRoundrobin\s+Failed\b[^\r\n]*\r?\n",
@@ -556,10 +630,37 @@ def kconfig_integer(
         raise SafetyError("{} must be an integer in .config".format(name)) from exc
 
 
-def validate_smartpins_config(values: Mapping[str, str]) -> Tuple[str, ...]:
-    """Validate the exact direct-jumper image and return its protocol stages."""
+def validate_smartpins_config(
+    values: Mapping[str, str], fixture: str = "direct"
+) -> Tuple[str, ...]:
+    """Validate one exact Smart Pin fixture and return its protocol stages."""
 
     stages = smartpins_stages_from_kconfig(dict(values))
+    if fixture == "analog":
+        if stages != ("GPIO", "DAC_ADC"):
+            raise SafetyError(
+                "analog image stages are {}, required GPIO,DAC_ADC".format(
+                    ",".join(stages) or "<none>"
+                )
+            )
+
+        mismatches = [
+            "{}={} (required {})".format(
+                name, values.get(name, "<unset>"), expected
+            )
+            for name, expected in SMARTPINS_ANALOG_CONFIG
+            if values.get(name) != expected
+        ]
+        if mismatches:
+            raise SafetyError(
+                "analog image does not match the installed P4-P5 fixture: {}"
+                .format(", ".join(mismatches))
+            )
+        return stages
+
+    if fixture != "direct":
+        raise SafetyError("unknown Smart Pin fixture: {}".format(fixture))
+
     required = ("GPIO", "UART", "PWM_CAPTURE", "SPI")
     missing = tuple(stage for stage in required if stage not in stages)
     if missing:
@@ -632,6 +733,95 @@ def validate_psram_config(values: Mapping[str, str]) -> None:
             "psram image does not match the locked service profile: {}".format(
                 ", ".join(mismatches)
             )
+        )
+
+
+def validate_i2c_config(values: Mapping[str, str]) -> None:
+    """Require the exact P24/P25 BMP180 direct-init test profile."""
+
+    mismatches = [
+        "{}={} (required {})".format(name, values.get(name, "<unset>"), expected)
+        for name, expected in I2C_REQUIRED_CONFIG
+        if values.get(name) != expected
+    ]
+    if mismatches:
+        raise SafetyError(
+            "i2c image does not match the locked BMP180 profile: {}".format(
+                ", ".join(mismatches)
+            )
+        )
+
+
+def validate_schedstress_config(values: Mapping[str, str]) -> None:
+    """Require the exact flat-UP scheduler-stress profile and dependencies."""
+
+    expected = read_kconfig(SCHEDSTRESS_PROFILE_PATH)
+    mismatches = []
+    for name, wanted in expected.items():
+        actual = values.get(name, "n")
+        if actual != wanted:
+            mismatches.append("{}={} (expected {})".format(name, actual, wanted))
+
+    required = (
+        "CONFIG_BUILD_FLAT",
+        "CONFIG_CANCELLATION_POINTS",
+        "CONFIG_ENABLE_ALL_SIGNALS",
+        "CONFIG_P2_BOOT_TRACE",
+        "CONFIG_PRIORITY_INHERITANCE",
+        "CONFIG_PTHREAD_MUTEX_BOTH",
+        "CONFIG_PTHREAD_MUTEX_TYPES",
+        "CONFIG_SCHED_CHILD_STATUS",
+        "CONFIG_SCHED_HAVE_PARENT",
+        "CONFIG_SCHED_WAITPID",
+        "CONFIG_STACK_COLORATION",
+        "CONFIG_STACK_USAGE",
+        "CONFIG_TESTING_P2SCHEDSTRESS",
+    )
+    missing = [name for name in required if not kconfig_enabled(values, name)]
+    forbidden = (
+        "CONFIG_BUILD_KERNEL",
+        "CONFIG_DISABLE_MQUEUE",
+        "CONFIG_DISABLE_POSIX_TIMERS",
+        "CONFIG_DISABLE_PTHREAD",
+        "CONFIG_SMP",
+    )
+    enabled_forbidden = [
+        name for name in forbidden if kconfig_enabled(values, name)
+    ]
+
+    if values.get("CONFIG_INIT_ENTRYPOINT") != '"p2schedstress_main"':
+        mismatches.append(
+            'CONFIG_INIT_ENTRYPOINT={} (expected "p2schedstress_main")'.format(
+                values.get("CONFIG_INIT_ENTRYPOINT", "<unset>")
+            )
+        )
+    locked_integers = (
+        ("CONFIG_RAM_SIZE", 524288),
+        ("CONFIG_RR_INTERVAL", 10),
+        ("CONFIG_INIT_PRIORITY", 100),
+        ("CONFIG_TESTING_P2SCHEDSTRESS_PRIORITY", 120),
+        ("CONFIG_TESTING_P2SCHEDSTRESS_STACKSIZE", 3072),
+        ("CONFIG_TESTING_P2SCHEDSTRESS_TASK_STACKSIZE", 2048),
+    )
+    for name, wanted in locked_integers:
+        if kconfig_integer(values, name) != wanted:
+            mismatches.append(
+                "{}={} (expected {})".format(
+                    name, values.get(name, "<unset>"), wanted
+                )
+            )
+
+    if mismatches or missing or enabled_forbidden:
+        details = []
+        if mismatches:
+            details.append("mismatched " + "; ".join(mismatches))
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if enabled_forbidden:
+            details.append("forbidden " + ", ".join(enabled_forbidden))
+        raise SafetyError(
+            "schedstress image does not match the locked flat-UP profile: "
+            + "; ".join(details)
         )
 
 
@@ -970,6 +1160,8 @@ class HilConfig:
     ostest_debug_assertions: Optional[bool]
     smartpins_config_sha256: str
     smartpins_stages: Tuple[str, ...]
+    i2c_config_sha256: str
+    schedstress_config_sha256: str
     storage_config_sha256: str
     storage_action: str
     storage_sequence: str
@@ -1382,6 +1574,8 @@ def preserve_hil_inputs(config: HilConfig) -> Tuple[str, ...]:
         "nsh",
         "ostest",
         "smartpins",
+        "i2c",
+        "schedstress",
         "storage",
         "psram",
     ):
@@ -1396,8 +1590,13 @@ def preserve_hil_inputs(config: HilConfig) -> Tuple[str, ...]:
                 REPO_ROOT / "tools" / "p2" / "test-nsh.py",
                 REPO_ROOT / "tools" / "p2" / "test-ostest.py",
                 REPO_ROOT / "tools" / "p2" / "test-smartpins.py",
+                REPO_ROOT / "tools" / "p2" / "test-analog.py",
+                REPO_ROOT / "tools" / "p2" / "test-i2c.py",
+                REPO_ROOT / "tools" / "p2" / "test-schedstress.py",
                 REPO_ROOT / "tools" / "p2" / "test-storage.py",
                 REPO_ROOT / "tools" / "p2" / "smartpins_protocol.py",
+                REPO_ROOT / "tools" / "p2" / "i2c_protocol.py",
+                REPO_ROOT / "tools" / "p2" / "schedstress_protocol.py",
                 REPO_ROOT / "tools" / "p2" / "storage_plan.py",
                 REPO_ROOT / "tools" / "p2" / "storage_protocol.py",
                 REPO_ROOT / "tools" / "p2" / "test-flashfs.py",
@@ -1411,12 +1610,60 @@ def preserve_hil_inputs(config: HilConfig) -> Tuple[str, ...]:
     if config.protocol == "ostest" and config.ostest_profile:
         candidates.append(ostest_profile_path(config.ostest_profile))
 
+    if config.protocol == "smartpins":
+        profile = "analog" if "DAC_ADC" in config.smartpins_stages else "smartpins"
+        candidates.append(
+            REPO_ROOT / "boards" / "p2" / "p2x8c4m64p" / "p2-ec32mb"
+            / "configs" / profile / "defconfig"
+        )
+
     if config.protocol == "storage" and config.storage_action:
         p2storage_dir = REPO_ROOT.parent / "apps" / "testing" / "p2storage"
         candidates.extend(
             p2storage_dir / name
             for name in ("Kconfig", "Make.defs", "Makefile", "p2storage_main.c")
         )
+
+    if config.protocol == "i2c":
+        p2i2c_dir = REPO_ROOT.parent / "apps" / "testing" / "p2i2c"
+        candidates.extend(
+            p2i2c_dir / name
+            for name in (
+                "CMakeLists.txt",
+                "Kconfig",
+                "Make.defs",
+                "Makefile",
+                "p2i2c_main.c",
+            )
+        )
+        board_dir = (
+            REPO_ROOT / "boards" / "p2" / "p2x8c4m64p" / "p2-ec32mb"
+        )
+        candidates.extend(
+            (
+                board_dir / "Kconfig",
+                board_dir / "configs" / "i2c" / "defconfig",
+                board_dir / "src" / "Makefile",
+                board_dir / "src" / "p2_ec32mb_boot.c",
+                board_dir / "src" / "p2_ec32mb_i2c.c",
+                board_dir / "src" / "p2_ec32mb_pins.c",
+                board_dir / "src" / "p2_ec32mb_pins.h",
+            )
+        )
+
+    if config.protocol == "schedstress":
+        p2sched_dir = REPO_ROOT.parent / "apps" / "testing" / "p2schedstress"
+        candidates.extend(
+            p2sched_dir / name
+            for name in (
+                "CMakeLists.txt",
+                "Kconfig",
+                "Make.defs",
+                "Makefile",
+                "p2schedstress_main.c",
+            )
+        )
+        candidates.append(SCHEDSTRESS_PROFILE_PATH)
 
     if config.protocol == "psram":
         p2psram_dir = REPO_ROOT.parent / "apps" / "testing" / "p2psram"
@@ -1570,6 +1817,34 @@ def default_build_runner(protocol: str = "hello") -> int:
             check=False,
         ).returncode
 
+    if protocol == "analog":
+        return subprocess.run(
+            [str(REPO_ROOT / "tools" / "p2" / "build.sh"), "analog"],
+            cwd=str(REPO_ROOT),
+            check=False,
+        ).returncode
+
+    if protocol == "i2c":
+        return subprocess.run(
+            [str(REPO_ROOT / "tools" / "p2" / "build.sh"), "i2c"],
+            cwd=str(REPO_ROOT),
+            check=False,
+        ).returncode
+
+    if protocol == "clock":
+        return subprocess.run(
+            [str(REPO_ROOT / "tools" / "p2" / "build.sh"), "clock"],
+            cwd=str(REPO_ROOT),
+            check=False,
+        ).returncode
+
+    if protocol == "schedstress":
+        return subprocess.run(
+            [str(REPO_ROOT / "tools" / "p2" / "build.sh"), "schedstress"],
+            cwd=str(REPO_ROOT),
+            check=False,
+        ).returncode
+
     if protocol == "storage":
         return subprocess.run(
             [str(REPO_ROOT / "tools" / "p2" / "build.sh"), "storage"],
@@ -1641,6 +1916,16 @@ def exact_protocol_markers(
         markers = [
             MarkerSpec(label, pattern)
             for label, pattern in smartpins_marker_patterns(smartpins_stages)
+        ]
+    elif protocol == "i2c":
+        markers = [
+            MarkerSpec(label, pattern)
+            for label, pattern in i2c_marker_patterns()
+        ]
+    elif protocol == "schedstress":
+        markers = [
+            MarkerSpec(label, pattern)
+            for label, pattern in schedstress_marker_patterns()
         ]
     elif protocol == "storage":
         if storage_action:
@@ -1745,6 +2030,19 @@ class HilRunner:
                 raise SafetyError(
                     "smartpins .config changed after protocol derivation; refusing to load"
                 )
+        if config.protocol == "i2c":
+            config_path = REPO_ROOT / ".config"
+            if sha256_file(config_path) != config.i2c_config_sha256:
+                raise SafetyError(
+                    "i2c .config changed after protocol derivation; refusing to load"
+                )
+        if config.protocol == "schedstress":
+            config_path = REPO_ROOT / ".config"
+            if sha256_file(config_path) != config.schedstress_config_sha256:
+                raise SafetyError(
+                    "schedstress .config changed after protocol derivation; "
+                    "refusing to load"
+                )
         if config.protocol == "storage":
             config_path = REPO_ROOT / ".config"
             if sha256_file(config_path) != config.storage_config_sha256:
@@ -1771,6 +2069,26 @@ class HilRunner:
             ):
                 raise SafetyError(
                     "preserved psram .config does not match the validated profile"
+                )
+        if config.protocol == "i2c":
+            copied_config = config.artifact_dir / "inputs" / ".config"
+            if (
+                not copied_config.is_file()
+                or sha256_file(copied_config) != config.i2c_config_sha256
+            ):
+                raise SafetyError(
+                    "preserved i2c .config does not match the validated profile"
+                )
+        if config.protocol == "schedstress":
+            copied_config = config.artifact_dir / "inputs" / ".config"
+            if (
+                not copied_config.is_file()
+                or sha256_file(copied_config)
+                != config.schedstress_config_sha256
+            ):
+                raise SafetyError(
+                    "preserved schedstress .config does not match the "
+                    "validated profile"
                 )
         started = self.utc_now()
         overall = {
@@ -1814,22 +2132,74 @@ class HilRunner:
                 }
             )
         elif config.protocol == "smartpins":
+            fixtures = []
+            if "GPIO" in config.smartpins_stages:
+                fixtures.append("GPIO:P0-P1 direct")
+            if "UART" in config.smartpins_stages:
+                fixtures.append("UART:P2-P3 direct")
+            if "PWM_CAPTURE" in config.smartpins_stages:
+                fixtures.append("PWM_CAPTURE:P4-P5 direct")
+            if "DAC_ADC" in config.smartpins_stages:
+                fixtures.append(
+                    "DAC_ADC:P4-1kohm-P5; P5-100nF-GND"
+                )
+            if "SPI" in config.smartpins_stages:
+                fixtures.append(
+                    "SPI:P6-MOSI to P7-MISO; P8-SCK and P9-CS unconnected"
+                )
             overall.update(
                 {
                     "smartpins_config_sha256": config.smartpins_config_sha256,
                     "smartpins_stages": list(config.smartpins_stages),
-                    "required_direct_loopbacks": [
-                        "GPIO:P0-P1",
-                        "UART:P2-P3",
-                        "PWM_CAPTURE:P4-P5",
-                        "SPI:P6-MOSI to P7-MISO; P8-SCK and P9-CS unconnected",
-                    ],
+                    "required_fixtures": fixtures,
                     "dac_adc_status": (
-                        "DISABLED: direct P4-P5 jumper has no verified series resistance"
+                        "ENABLED: P4 series resistor to P5 with P5 capacitor to ground"
+                        if "DAC_ADC" in config.smartpins_stages
+                        else "DISABLED in this profile"
                     ),
                     "spi_status": (
                         "ENABLED: standard /dev/spi0 100-kHz mode-0 loopback"
+                        if "SPI" in config.smartpins_stages
+                        else "DISABLED in this profile"
                     ),
+                }
+            )
+        elif config.protocol == "i2c":
+            overall.update(
+                {
+                    "i2c_config_sha256": config.i2c_config_sha256,
+                    "bus_device": "/dev/i2c0",
+                    "pressure_device": "/dev/press0",
+                    "sda_pin": 24,
+                    "scl_pin": 25,
+                    "address": "0x77",
+                    "frequency_hz": 100000,
+                    "sensor_id": "0x55",
+                    "pressure_readings_per_cycle": 32,
+                }
+            )
+        elif config.protocol == "schedstress":
+            overall.update(
+                {
+                    "schedstress_config_sha256": (
+                        config.schedstress_config_sha256
+                    ),
+                    "scheduler_event_counts": {
+                        stage: count for stage, count in SCHEDSTRESS_STAGES
+                    },
+                    "scheduler_event_total": SCHEDSTRESS_TOTAL_EVENTS,
+                    "heap_concurrency_threads": (
+                        SCHEDSTRESS_HEAP_CONCURRENCY_THREADS
+                    ),
+                    "heap_concurrency_rounds_per_thread": (
+                        SCHEDSTRESS_HEAP_CONCURRENCY_ROUNDS
+                    ),
+                    "heap_concurrency_allocations": (
+                        SCHEDSTRESS_HEAP_CONCURRENCY_COUNT
+                    ),
+                    "heap_concurrency_counted_in_scheduler_total": False,
+                    "profile": "flat-UP",
+                    "ram_bytes": 524288,
                 }
             )
         elif config.protocol == "storage":
@@ -1904,6 +2274,23 @@ class HilRunner:
                             "smartpins .config changed during the run; refusing to load"
                         )
                     if (
+                        config.protocol == "i2c"
+                        and sha256_file(REPO_ROOT / ".config")
+                        != config.i2c_config_sha256
+                    ):
+                        raise SafetyError(
+                            "i2c .config changed during the run; refusing to load"
+                        )
+                    if (
+                        config.protocol == "schedstress"
+                        and sha256_file(REPO_ROOT / ".config")
+                        != config.schedstress_config_sha256
+                    ):
+                        raise SafetyError(
+                            "schedstress .config changed during the run; "
+                            "refusing to load"
+                        )
+                    if (
                         config.protocol == "storage"
                         and sha256_file(REPO_ROOT / ".config")
                         != config.storage_config_sha256
@@ -1955,6 +2342,8 @@ class HilRunner:
         )
         protocol_text: List[str] = []
         smartpins_result = None
+        i2c_result = None
+        schedstress_result = None
         storage_result = None
         psram_result = None
         raw_bytes = 0
@@ -2025,6 +2414,18 @@ class HilRunner:
                     "external_bytes": 33554432,
                 }
             )
+        elif config.protocol == "schedstress":
+            metadata.update(
+                {
+                    "schedstress_config_sha256": (
+                        config.schedstress_config_sha256
+                    ),
+                    "scheduler_event_total": SCHEDSTRESS_TOTAL_EVENTS,
+                    "heap_concurrency_allocations": (
+                        SCHEDSTRESS_HEAP_CONCURRENCY_COUNT
+                    ),
+                }
+            )
         write_json(cycle_dir / "metadata.json", metadata)
 
         try:
@@ -2062,7 +2463,8 @@ class HilRunner:
                             raw_log.flush()
                             raw_bytes += len(data)
                             decoded = normalizer.feed(data)
-                            if (config.protocol in ("smartpins", "psram") or
+                            if (config.protocol in (
+                                    "smartpins", "i2c", "schedstress", "psram") or
                                     config.storage_action):
                                 protocol_text.append(decoded)
                             previously_found = set(parser.found)
@@ -2134,6 +2536,45 @@ class HilRunner:
                                             )
                                         )
                                         break
+                                if config.protocol == "i2c":
+                                    i2c_result = parse_i2c(
+                                        "".join(protocol_text)
+                                    )
+                                    if not i2c_result["complete"]:
+                                        reason = (
+                                            "I2C protocol validation failed: {}"
+                                        ).format(
+                                            "; ".join(
+                                                i2c_result["errors"]
+                                                + i2c_result["duplicates"]
+                                                + [
+                                                    item["line"]
+                                                    for item in i2c_result["failures"]
+                                                ]
+                                            )
+                                        )
+                                        break
+                                if config.protocol == "schedstress":
+                                    schedstress_result = parse_schedstress(
+                                        "".join(protocol_text)
+                                    )
+                                    if not schedstress_result["complete"]:
+                                        reason = (
+                                            "scheduler-stress protocol validation "
+                                            "failed: {}"
+                                        ).format(
+                                            "; ".join(
+                                                schedstress_result["errors"]
+                                                + schedstress_result["duplicates"]
+                                                + [
+                                                    item["line"]
+                                                    for item in schedstress_result[
+                                                        "failures"
+                                                    ]
+                                                ]
+                                            )
+                                        )
+                                        break
                                 if config.storage_action:
                                     storage_result = parse_storage_response(
                                         "".join(protocol_text),
@@ -2194,7 +2635,8 @@ class HilRunner:
                     trailing = normalizer.finish()
                     if trailing:
                         parser.feed(trailing)
-                        if (config.protocol in ("smartpins", "psram") or
+                        if (config.protocol in (
+                                "smartpins", "i2c", "schedstress", "psram") or
                                 config.storage_action):
                             protocol_text.append(trailing)
         finally:
@@ -2209,6 +2651,14 @@ class HilRunner:
                     "".join(protocol_text), config.smartpins_stages
                 )
             marker_status["smartpins_protocol"] = smartpins_result
+        if config.protocol == "i2c":
+            if i2c_result is None:
+                i2c_result = parse_i2c("".join(protocol_text))
+            marker_status["i2c_protocol"] = i2c_result
+        if config.protocol == "schedstress":
+            if schedstress_result is None:
+                schedstress_result = parse_schedstress("".join(protocol_text))
+            marker_status["schedstress_protocol"] = schedstress_result
         if config.storage_action:
             if storage_result is None:
                 storage_result = parse_storage_response(
@@ -2300,6 +2750,8 @@ def build_parser() -> argparse.ArgumentParser:
             "nsh",
             "ostest",
             "smartpins",
+            "i2c",
+            "schedstress",
             "storage",
             "psram",
         ),
@@ -2310,6 +2762,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cycles", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--lock-timeout", type=float, default=0.0)
+    parser.add_argument(
+        "--smartpins-fixture",
+        choices=("direct", "analog"),
+        default="direct",
+        help="exact Smart Pin wiring/profile to validate",
+    )
     parser.add_argument("--loader-baud", type=int)
     parser.add_argument("--console-baud", type=int)
     parser.add_argument("--reset-method", choices=("loadp2", "dtr", "rts"))
@@ -2381,6 +2839,8 @@ def config_from_args(
     ostest_debug_assertions = None
     smartpins_config_sha = ""
     smartpins_stages: Tuple[str, ...] = ()
+    i2c_config_sha = ""
+    schedstress_config_sha = ""
     storage_config_sha = ""
     storage_action = args.storage_action or ""
     storage_sequence = ""
@@ -2412,8 +2872,24 @@ def config_from_args(
             )
         smartpins_config_path = REPO_ROOT / ".config"
         smartpins_config = read_kconfig(smartpins_config_path)
-        smartpins_stages = validate_smartpins_config(smartpins_config)
+        smartpins_stages = validate_smartpins_config(
+            smartpins_config, args.smartpins_fixture
+        )
         smartpins_config_sha = sha256_file(smartpins_config_path)
+    elif args.smartpins_fixture != "direct":
+        raise SafetyError("--smartpins-fixture is valid only for smartpins")
+
+    if args.protocol == "i2c":
+        i2c_config_path = REPO_ROOT / ".config"
+        i2c_config = read_kconfig(i2c_config_path)
+        validate_i2c_config(i2c_config)
+        i2c_config_sha = sha256_file(i2c_config_path)
+
+    if args.protocol == "schedstress":
+        schedstress_config_path = REPO_ROOT / ".config"
+        schedstress_config = read_kconfig(schedstress_config_path)
+        validate_schedstress_config(schedstress_config)
+        schedstress_config_sha = sha256_file(schedstress_config_path)
 
     if args.protocol == "storage":
         if env.get("P2_ALLOW_FLASH_WRITE", "0") != "1":
@@ -2528,6 +3004,8 @@ def config_from_args(
         "nsh",
         "ostest",
         "smartpins",
+        "i2c",
+        "schedstress",
         "storage",
         "psram",
     ):
@@ -2642,7 +3120,15 @@ def config_from_args(
                 else (
                     smartpins_marker_patterns(smartpins_stages)[0][1]
                     if args.protocol == "smartpins"
-                    else HELLO_MARKERS[0].pattern
+                    else (
+                        i2c_marker_patterns()[0][1]
+                        if args.protocol == "i2c"
+                        else (
+                            schedstress_marker_patterns()[0][1]
+                            if args.protocol == "schedstress"
+                            else HELLO_MARKERS[0].pattern
+                        )
+                    )
                 )
             )
         ),
@@ -2668,9 +3154,17 @@ def config_from_args(
                                     BOOT_FAILURE_PATTERNS + PSRAM_FAILURE_PATTERNS
                                     if args.protocol == "psram"
                                     else (
-                                        SMARTPINS_FAILURE_PATTERNS
-                                        if args.protocol == "smartpins"
-                                        else PROTOCOL_FAILURE_PATTERNS
+                                        I2C_FAILURE_PATTERNS
+                                        if args.protocol == "i2c"
+                                        else (
+                                            SCHEDSTRESS_FAILURE_PATTERNS
+                                            if args.protocol == "schedstress"
+                                            else (
+                                                SMARTPINS_FAILURE_PATTERNS
+                                                if args.protocol == "smartpins"
+                                                else PROTOCOL_FAILURE_PATTERNS
+                                            )
+                                        )
                                     )
                                 )
                             )
@@ -2728,6 +3222,8 @@ def config_from_args(
         reject_duplicate_markers=args.protocol in (
             "ostest",
             "smartpins",
+            "i2c",
+            "schedstress",
             "storage",
             "psram",
         ),
@@ -2736,6 +3232,8 @@ def config_from_args(
         ostest_debug_assertions=ostest_debug_assertions,
         smartpins_config_sha256=smartpins_config_sha,
         smartpins_stages=smartpins_stages,
+        i2c_config_sha256=i2c_config_sha,
+        schedstress_config_sha256=schedstress_config_sha,
         storage_config_sha256=storage_config_sha,
         storage_action=storage_action,
         storage_sequence=storage_sequence,
@@ -2780,7 +3278,12 @@ def main(
             build_target = (
                 args.ostest_profile
                 if args.protocol == "ostest"
-                else args.protocol
+                else (
+                    "analog"
+                    if args.protocol == "smartpins"
+                    and args.smartpins_fixture == "analog"
+                    else args.protocol
+                )
             )
             if build_target is None:
                 raise SafetyError("ostest build requires --ostest-profile")

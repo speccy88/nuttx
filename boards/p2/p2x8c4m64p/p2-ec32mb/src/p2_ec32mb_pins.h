@@ -170,6 +170,7 @@ int p2_capture_initialize(void);
 int p2_adc_initialize(void);
 int p2_dac_initialize(void);
 int p2_spi_initialize(void);
+int p2_i2c_initialize(void);
 
 #ifdef P2_PIN_MANAGER_HOST_TEST
 void p2_pin_test_reset(void);

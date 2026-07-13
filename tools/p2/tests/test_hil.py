@@ -171,6 +171,43 @@ GOOD_SMARTPINS_OUTPUT = (
     b"P2SMART:PASS\r\n"
 )
 
+GOOD_ANALOG_OUTPUT = (
+    b"loader output\n"
+    b"P2SMART:BEGIN\r\n"
+    b"P2SMART:WIRING=P0-P1,P2-P3,P4-P5,P6-P7\r\n"
+    b"P2SMART:CAPS=GPIO,DAC_ADC\r\n"
+    b"P2SMART:GPIO:BEGIN=0-1\r\n"
+    b"P2SMART:GPIO:SAMPLE=0:TX=0:RX=0\r\n"
+    b"P2SMART:GPIO:SAMPLE=1:TX=1:RX=1\r\n"
+    b"P2SMART:GPIO:SAMPLE=2:TX=1:RX=1\r\n"
+    b"P2SMART:GPIO:SAMPLE=3:TX=0:RX=0\r\n"
+    b"P2SMART:GPIO:SAMPLE=4:TX=1:RX=1\r\n"
+    b"P2SMART:GPIO:SAMPLE=5:TX=0:RX=0\r\n"
+    b"P2SMART:GPIO:SAMPLE=6:TX=0:RX=0\r\n"
+    b"P2SMART:GPIO:SAMPLE=7:TX=1:RX=1\r\n"
+    b"P2SMART:GPIO:SAFE=FLOAT\r\n"
+    b"P2SMART:GPIO:PASS\r\n"
+    b"P2SMART:DAC_ADC:BEGIN=4-5\r\n"
+    b"P2SMART:DAC_ADC:SAMPLE=0:DAC=16383:ADC=679\r\n"
+    b"P2SMART:DAC_ADC:SAMPLE=1:DAC=32767:ADC=1020\r\n"
+    b"P2SMART:DAC_ADC:SAMPLE=2:DAC=49151:ADC=1363\r\n"
+    b"P2SMART:DAC_ADC:SAFE=FLOAT\r\n"
+    b"P2SMART:DAC_ADC:PASS\r\n"
+    b"P2SMART:PASS\r\n"
+)
+
+GOOD_I2C_OUTPUT = (
+    b"loader output\n"
+    b"P2I2C:BUS_RECOVERY=PASS:SDA=24:SCL=25:PULSES=0\r\n"
+    b"P2I2C:BUS=PASS:DEV=/dev/i2c0:SDA=24:SCL=25:OPEN_DRAIN=YES\r\n"
+    b"P2I2C:BMP180=PASS:DEV=/dev/press0:ADDR=0x77:ID=0x55\r\n"
+    b"P2I2C:START:BUS=/dev/i2c0:SDA=24:SCL=25:ADDR=0x77:"
+    b"FREQ=100000\r\n"
+    b"P2I2C:ID=0x55:REGISTER=0xD0:TRANSFER=WRITE_RESTART_READ\r\n"
+    b"P2I2C:READINGS=32:MIN=100930:MAX=101144:FNV1A=8A79CB15\r\n"
+    b"P2I2C:PASS\r\n"
+)
+
 GOOD_BOOT_OUTPUT = (
     b"loader output\nP2BOOT:ENTRY\r\n"
     b"P2BOOT:DATA=OK\r\nP2BOOT:BSS=OK\r\nP2BOOT:NX_START\r\n"
@@ -381,6 +418,15 @@ class HilTests(unittest.TestCase):
             "\n".join(values) + "\n", encoding="utf-8"
         )
 
+    def write_analog_config(self):
+        values = [
+            "{}={}".format(name, value)
+            for name, value in hil.SMARTPINS_ANALOG_CONFIG
+        ]
+        (self.directory / ".config").write_text(
+            "\n".join(values) + "\n", encoding="utf-8"
+        )
+
     def write_storage_config(self):
         values = [
             "{}={}".format(name, value)
@@ -390,6 +436,15 @@ class HilTests(unittest.TestCase):
             "{}={}".format(name, value)
             for name, value in hil.STORAGE_ACTION_REQUIRED_CONFIG
         )
+        (self.directory / ".config").write_text(
+            "\n".join(values) + "\n", encoding="utf-8"
+        )
+
+    def write_i2c_config(self):
+        values = [
+            "{}={}".format(name, value)
+            for name, value in hil.I2C_REQUIRED_CONFIG
+        ]
         (self.directory / ".config").write_text(
             "\n".join(values) + "\n", encoding="utf-8"
         )
@@ -545,6 +600,76 @@ class HilTests(unittest.TestCase):
             ],
         )
 
+    def test_analog_wrapper_locks_fixture_cycles_timeout_gate_and_build(self):
+        wrapper_path = pathlib.Path(__file__).parents[1] / "test-analog.py"
+        spec = importlib.util.spec_from_file_location(
+            "p2_test_analog", wrapper_path
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        wrapper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(wrapper)
+
+        with mock.patch.object(
+            wrapper.hil,
+            "local_environment",
+            return_value={"P2_ALLOW_LOOPBACK_TESTS": "1"},
+        ), mock.patch.object(wrapper.hil, "main", return_value=39) as main:
+            rc = wrapper.main(
+                ["--execute", "--cycles", "1", "--timeout", "1"]
+            )
+
+        self.assertEqual(rc, 39)
+        self.assertEqual(
+            main.call_args.args[0],
+            [
+                "--execute",
+                "--protocol",
+                "smartpins",
+                "--smartpins-fixture",
+                "analog",
+                "--cycles",
+                "20",
+                "--timeout",
+                "15",
+                "--build-standalone",
+            ],
+        )
+
+        with mock.patch.object(
+            wrapper.hil, "local_environment", return_value={}
+        ), mock.patch.object(wrapper.hil, "main") as blocked_main:
+            self.assertEqual(wrapper.main(["--execute"]), 2)
+            blocked_main.assert_not_called()
+
+    def test_i2c_wrapper_locks_twenty_cycles_timeout_and_build(self):
+        wrapper_path = pathlib.Path(__file__).parents[1] / "test-i2c.py"
+        spec = importlib.util.spec_from_file_location("p2_test_i2c", wrapper_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        wrapper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(wrapper)
+
+        with mock.patch.object(wrapper.hil, "main", return_value=43) as main:
+            rc = wrapper.main(
+                ["--execute", "--cycles", "1", "--timeout", "1"]
+            )
+
+        self.assertEqual(rc, 43)
+        self.assertEqual(
+            main.call_args.args[0],
+            [
+                "--execute",
+                "--protocol",
+                "i2c",
+                "--cycles",
+                "20",
+                "--timeout",
+                "30",
+                "--build-standalone",
+            ],
+        )
+
     def test_psram_wrapper_locks_destructive_full_coverage_run_and_build(self):
         wrapper_path = pathlib.Path(__file__).parents[1] / "test-psram.py"
         spec = importlib.util.spec_from_file_location("p2_test_psram", wrapper_path)
@@ -685,6 +810,40 @@ class HilTests(unittest.TestCase):
             check=False,
         )
 
+    def test_analog_build_runner_selects_board_profile(self):
+        completed = mock.Mock(returncode=0)
+        with mock.patch.object(
+            hil.subprocess, "run", return_value=completed
+        ) as run:
+            rc = hil.default_build_runner("analog")
+
+        self.assertEqual(rc, 0)
+        run.assert_called_once_with(
+            [
+                str(hil.REPO_ROOT / "tools" / "p2" / "build.sh"),
+                "analog",
+            ],
+            cwd=str(hil.REPO_ROOT),
+            check=False,
+        )
+
+    def test_i2c_build_runner_selects_board_profile(self):
+        completed = mock.Mock(returncode=0)
+        with mock.patch.object(
+            hil.subprocess, "run", return_value=completed
+        ) as run:
+            rc = hil.default_build_runner("i2c")
+
+        self.assertEqual(rc, 0)
+        run.assert_called_once_with(
+            [
+                str(hil.REPO_ROOT / "tools" / "p2" / "build.sh"),
+                "i2c",
+            ],
+            cwd=str(hil.REPO_ROOT),
+            check=False,
+        )
+
     def test_psram_build_runner_selects_board_profile(self):
         completed = mock.Mock(returncode=0)
         with mock.patch.object(
@@ -794,6 +953,51 @@ class HilTests(unittest.TestCase):
         self.assertTrue(markers["complete"])
         self.assertTrue(markers["smartpins_protocol"]["complete"])
 
+    def test_analog_protocol_locks_config_and_records_fixture_metadata(self):
+        self.write_analog_config()
+        environment = self.env()
+        environment["P2_ALLOW_LOOPBACK_TESTS"] = "1"
+        session = FakeSession(self.clock, [GOOD_ANALOG_OUTPUT])
+        factory = SessionFactory([session])
+        lock = RecordingLock()
+        argv = self.argv("analog") + [
+            "--protocol",
+            "smartpins",
+            "--smartpins-fixture",
+            "analog",
+        ]
+
+        with mock.patch.object(hil, "REPO_ROOT", self.directory):
+            rc = self.invoke(argv, environment, factory, lock)
+
+        self.assertEqual(rc, hil.EXIT_OK)
+        metadata = json.loads(
+            (self.directory / "analog" / "metadata.json").read_text()
+        )
+        self.assertEqual(metadata["smartpins_stages"], ["GPIO", "DAC_ADC"])
+        self.assertEqual(
+            metadata["required_fixtures"],
+            [
+                "GPIO:P0-P1 direct",
+                "DAC_ADC:P4-1kohm-P5; P5-100nF-GND",
+            ],
+        )
+        self.assertIn("ENABLED", metadata["dac_adc_status"])
+        self.assertIn("DISABLED", metadata["spi_status"])
+        markers = json.loads(
+            (self.directory / "analog" / "cycle-001" / "markers.json")
+            .read_text()
+        )
+        self.assertTrue(markers["complete"])
+        self.assertTrue(markers["smartpins_protocol"]["complete"])
+
+        values = hil.read_kconfig(self.directory / ".config")
+        values["CONFIG_P2_EC32MB_ADC_PIN"] = "6"
+        with self.assertRaisesRegex(
+            hil.SafetyError, "installed P4-P5 fixture"
+        ):
+            hil.validate_smartpins_config(values, "analog")
+
     def test_smartpins_full_validator_rejects_out_of_tolerance_pwm(self):
         self.write_smartpins_config()
         environment = self.env()
@@ -857,6 +1061,40 @@ class HilTests(unittest.TestCase):
             hil.SafetyError, "does not match installed direct jumpers"
         ):
             hil.validate_smartpins_config(values)
+
+    def test_i2c_protocol_uses_exact_config_and_validates_sensor_data(self):
+        self.write_i2c_config()
+        session = FakeSession(self.clock, [GOOD_I2C_OUTPUT])
+        factory = SessionFactory([session])
+        lock = RecordingLock()
+        argv = self.argv("i2c") + ["--protocol", "i2c"]
+
+        with mock.patch.object(hil, "REPO_ROOT", self.directory):
+            rc = self.invoke(argv, self.env(), factory, lock)
+
+        self.assertEqual(rc, hil.EXIT_OK)
+        self.assertNotIn("-e", factory.commands[0])
+        metadata = json.loads(
+            (self.directory / "i2c" / "metadata.json").read_text()
+        )
+        self.assertEqual(metadata["bus_device"], "/dev/i2c0")
+        self.assertEqual(metadata["pressure_device"], "/dev/press0")
+        self.assertEqual(metadata["pressure_readings_per_cycle"], 32)
+        markers = json.loads(
+            (self.directory / "i2c" / "cycle-001" / "markers.json").read_text()
+        )
+        self.assertTrue(markers["complete"])
+        self.assertTrue(markers["i2c_protocol"]["complete"])
+        self.assertEqual(
+            markers["i2c_protocol"]["values"]["recovery_pulses"], 0
+        )
+
+    def test_i2c_validator_rejects_pin_remap_before_serial(self):
+        self.write_i2c_config()
+        values = hil.read_kconfig(self.directory / ".config")
+        values["CONFIG_P2_EC32MB_I2C_SDA_PIN"] = "23"
+        with self.assertRaisesRegex(hil.SafetyError, "locked BMP180 profile"):
+            hil.validate_i2c_config(values)
 
     def test_storage_actions_enforce_erase_and_sd_gates_before_serial(self):
         factory = SessionFactory([])
@@ -1521,6 +1759,15 @@ class HilTests(unittest.TestCase):
             ("worker failed unexpectedly\r\n", "FAIL/FAILED"),
             ("receiver_thread: returning nerrors=2\r\n", "nonzero nerrors"),
             ("rr_test: Roundrobin Failed\r\n", "Roundrobin Failed"),
+            (
+                "pthread_rwlock: Thread order unexpected. Expected 4, got 6\r\n",
+                "pthread rwlock thread order",
+            ),
+            (
+                "pthread_rwlock: Opened rw_lock for rd when locked for "
+                "writing: 0\r\n",
+                "pthread rwlock exclusivity",
+            ),
         )
         for index, (line, reason) in enumerate(failures):
             with self.subTest(index=index, line=line):

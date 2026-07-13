@@ -29,6 +29,10 @@ ifeq ($(CONFIG_P2_EC32MB_SPI),y)
 CSRCS += p2_ec32mb_spi.c
 endif
 
+ifeq ($(CONFIG_P2_EC32MB_I2C),y)
+CSRCS += p2_ec32mb_i2c.c
+endif
+
 ifeq ($(CONFIG_P2_EC32MB_PSRAM),y)
 CSRCS += p2_ec32mb_psram.c
 ASRCS += p2_ec32mb_psram_service.S

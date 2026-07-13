@@ -265,6 +265,17 @@ void board_late_initialize(void)
     }
 #endif
 
+#ifdef CONFIG_P2_EC32MB_I2C
+  int i2c_ret;
+
+  i2c_ret = p2_i2c_initialize();
+  if (i2c_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: Failed to initialize P2 I2C: %d\n",
+             i2c_ret);
+    }
+#endif
+
 #ifdef CONFIG_P2_EC32MB_STORAGE_BINDINGS
 #  ifdef CONFIG_MTD_W25
   struct p2_w25_info_s w25_info;

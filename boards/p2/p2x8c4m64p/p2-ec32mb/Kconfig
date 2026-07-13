@@ -254,4 +254,39 @@ config P2_EC32MB_SPI_MAX_FREQUENCY
 	default 100000
 	range 1000 100000
 	depends on P2_EC32MB_SPI
+
+config P2_EC32MB_I2C
+	bool "Register the P24/P25 open-drain I2C controller"
+	default n
+	depends on P2_SMARTPIN
+	select I2C
+	select I2C_BITBANG
+	select I2C_DRIVER
+	help
+		Register the normal NuttX I2C bit-bang lower half as /dev/i2c0.
+		Both lines use true open-drain release and must be held high by
+		external pull-ups.  The default P24 SDA and P25 SCL allocation matches
+		the documented BMP180 hardware-in-the-loop fixture.
+
+config P2_EC32MB_I2C_SDA_PIN
+	int "I2C SDA pin"
+	default 24
+	range 0 37
+	depends on P2_EC32MB_I2C
+
+config P2_EC32MB_I2C_SCL_PIN
+	int "I2C SCL pin"
+	default 25
+	range 0 37
+	depends on P2_EC32MB_I2C
+
+config P2_EC32MB_BMP180
+	bool "Bind the BMP180 pressure sensor on I2C0"
+	default n
+	depends on P2_EC32MB_I2C
+	select SENSORS_BMP180
+	help
+		Probe the BMP180 at its fixed 7-bit address 0x77 and register the
+		legacy pressure character interface as /dev/press0.  A successful
+		probe requires the documented chip ID 0x55.
 endif
