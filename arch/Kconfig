@@ -184,6 +184,7 @@ config ARCH_Z80
 
 config ARCH_P2
 	bool "Parallax Propeller 2"
+	select ARCH_HAVE_SERIAL_TERMIOS
 	select ARCH_HAVE_STACKCHECK
 	select ARCH_TOOLCHAIN_CLANG
 	---help---

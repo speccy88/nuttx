@@ -1,10 +1,5 @@
 if ARCH_BOARD_P2_EC32MB
-config ARCH_BOARD
-	string
-	default "p2-ec32mb"
-config ARCH_BOARD_COMMON
-	string
-	default ""
+
 config BOARD_LOOPSPERMSEC
 	int
 	default 18000
@@ -116,7 +111,7 @@ config P2_EC32MB_CAPTURE_PIN
 config P2_EC32MB_ADC
 	bool "Register a Smart Pin ADC input"
 	default n
-	depends on P2_SMARTPIN
+	depends on P2_SMARTPIN && ANALOG
 	select ADC
 	help
 		Register the P2 internal SINC2 Smart Pin ADC as /dev/adc0.  Samples
@@ -142,7 +137,7 @@ config P2_EC32MB_ADC_SAMPLE_EXPONENT
 config P2_EC32MB_DAC
 	bool "Register a Smart Pin 16-bit dithered DAC output"
 	default n
-	depends on P2_SMARTPIN
+	depends on P2_SMARTPIN && ANALOG
 	select DAC
 	help
 		Register /dev/dac0 using the P2 990-ohm, 3.3-V DAC with 16-bit PWM

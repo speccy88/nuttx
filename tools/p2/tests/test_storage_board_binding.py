@@ -7,6 +7,13 @@ BOARD = ROOT / "boards/p2/p2x8c4m64p/p2-ec32mb"
 
 
 class StorageBoardBindingTests(unittest.TestCase):
+    def test_board_specific_kconfig_is_reachable(self):
+        board_kconfig = (ROOT / "boards/Kconfig").read_text()
+        self.assertIn(
+            'source "boards/p2/p2x8c4m64p/p2-ec32mb/Kconfig"',
+            board_kconfig,
+        )
+
     def test_storage_profile_enables_late_private_and_block_bindings(self):
         profile = (BOARD / "configs/storage/defconfig").read_text()
         for setting in (

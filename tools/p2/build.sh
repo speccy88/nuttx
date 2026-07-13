@@ -76,7 +76,7 @@ cd "$ROOT"
   echo "P2LLVM_ROOT=$P2LLVM_ROOT"
   echo "compiler=$("$P2LLVM_ROOT/bin/clang" --version | head -1)"
   echo "jobs=$jobs"
-  ./tools/configure.sh -e -a "$apps_arg" "p2-ec32mb:$cfg"
+  ./tools/configure.sh -E -a "$apps_arg" "p2-ec32mb:$cfg"
   make olddefconfig
   make -j"$jobs" V=1
 } 2>&1 | tee "$log"
