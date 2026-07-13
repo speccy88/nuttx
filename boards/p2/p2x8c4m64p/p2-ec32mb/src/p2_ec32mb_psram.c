@@ -869,6 +869,12 @@ void p2_psram_service_worker(void)
     {
       if (!p2_psram_take_request(&request))
         {
+          /* Do not hammer the shared hardware lock from this dedicated cog.
+           * A short idle backoff gives the NuttX cog a deterministic window
+           * in which to publish the next descriptor.
+           */
+
+          __asm__ __volatile__("waitx #200");
           continue;
         }
 

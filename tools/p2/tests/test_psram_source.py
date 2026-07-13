@@ -207,6 +207,14 @@ class PsramSourceTests(unittest.TestCase):
             source.index("int p2_psram_initialize(")
         ]
         self.assertIn("g_p2_psram.start_allowed", worker)
+        self.assertIn(
+            "if (!p2_psram_take_request(&request))", worker
+        )
+        self.assertIn('__asm__ __volatile__("waitx #200");', worker)
+        self.assertLess(
+            worker.index('__asm__ __volatile__("waitx #200");'),
+            worker.index("continue;"),
+        )
         self.assertNotIn("p2_psram_claim_pins();", worker)
         self.assertNotIn("p2_pin_release(", worker)
         startup_failure = worker[
