@@ -47,6 +47,7 @@ DEFAULT_CONTEXT_IMAGE = (
 DEFAULT_NUTTX_IMAGE = REPO_ROOT / "nuttx"
 DEFAULT_LOCK_FILE = pathlib.Path("/tmp/nuttx-p2-hil.lock")
 DEFAULT_TOOLCHAIN_LOCK = REPO_ROOT / "tools" / "p2" / "toolchain.lock"
+LOADP2_FIFO_BYTES = 16384
 LOADP2_SCRIPT = "pausems(500)send(?)"
 NSH_COMMANDS = (
     "help",
@@ -1484,6 +1485,8 @@ def build_command(config: HilConfig) -> Tuple[str, ...]:
         str(config.loader_baud),
         "-b",
         str(config.console_baud),
+        "-FIFO",
+        str(LOADP2_FIFO_BYTES),
         "-ZERO",
         "-v",
         config.reset_flag,
@@ -1558,6 +1561,7 @@ class HilRunner:
             "toolchain_lock": str(config.toolchain_lock),
             "board_lock": str(config.board_lock),
             "loader_baud": config.loader_baud,
+            "loadp2_fifo_bytes": LOADP2_FIFO_BYTES,
             "console_baud": config.console_baud,
             "reset_flag": config.reset_flag,
             "timeout_seconds_per_cycle": config.timeout,
@@ -1722,6 +1726,7 @@ class HilRunner:
             "loadp2": str(config.loadp2),
             "loadp2_sha256": config.loadp2_sha256,
             "loader_baud": config.loader_baud,
+            "loadp2_fifo_bytes": LOADP2_FIFO_BYTES,
             "console_baud": config.console_baud,
             "reset_flag": config.reset_flag,
             "timeout_seconds": config.timeout,

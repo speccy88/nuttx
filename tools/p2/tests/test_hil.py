@@ -585,6 +585,8 @@ class HilTests(unittest.TestCase):
             "2000000",
             "-b",
             "230400",
+            "-FIFO",
+            "16384",
             "-ZERO",
             "-v",
             "-DTR",
