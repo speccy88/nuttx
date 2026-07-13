@@ -108,6 +108,17 @@ class PsramSourceTests(unittest.TestCase):
         self.assertIn("P2_PSRAM_SIZE_BYTES", source)
         self.assertIn("p2_psram_transfer", source)
         self.assertIn("(address >> 24) * 0x5bu", source)
+        self.assertIn("struct p2psram_pattern_state_s", source)
+        self.assertIn("p2psram_pattern_next(&state)", source)
+        self.assertIn("state->address & UINT32_C(0xffffff)", source)
+        self.assertIn("(value << 24) + (value << 8) + (value << 7)", source)
+        self.assertNotIn("hash *= P2PSRAM_FNV_PRIME", source)
+        self.assertIn(
+            "write_ticks += clock_systime_ticks() - start;", source
+        )
+        self.assertIn(
+            "read_ticks += clock_systime_ticks() - start;", source
+        )
         self.assertIn("base_actual != base_expected", source)
         self.assertIn("p2psram_buffer[index] !=", source)
         self.assertIn(

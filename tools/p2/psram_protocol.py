@@ -3,7 +3,7 @@
 
 import re
 from functools import lru_cache
-from typing import Dict, List, Tuple
+from typing import Dict, Iterator, List, Tuple
 
 
 PSRAM_SIZE = 32 * 1024 * 1024
@@ -58,26 +58,44 @@ def pattern_byte(sequence: str, address: int) -> int:
     ) & 0xFF
 
 
+def pattern_stream(sequence: str, address: int, length: int) -> Iterator[int]:
+    """Yield the locked byte pattern using the target's recurrence."""
+
+    sequence_value = int(normalize_sequence(sequence), 16)
+    if address < 0 or length < 0 or address + length > PSRAM_SIZE:
+        raise ValueError("PSRAM pattern range is outside the 32-MiB device")
+
+    sequence_bytes = tuple(
+        (sequence_value >> (index * 8)) & 0xFF for index in range(4)
+    )
+    address_byte = (
+        address * 37
+        + (address >> 8) * 17
+        + (address >> 16)
+        + (address >> 24) * 0x5B
+    ) & 0xFF
+
+    for _ in range(length):
+        yield (sequence_bytes[address & 3] + address_byte) & 0xFF
+        address += 1
+        address_byte = (address_byte + 37) & 0xFF
+        if address & 0xFF == 0:
+            address_byte = (address_byte + 17) & 0xFF
+        if address & 0xFFFF == 0:
+            address_byte = (address_byte + 1) & 0xFF
+        if address & 0xFFFFFF == 0:
+            address_byte = (address_byte + 0x5B) & 0xFF
+
+
 @lru_cache(maxsize=32)
 def expected_fnv1a(sequence: str) -> int:
     """Compute the nonce-specific FNV-1a for one complete 32-MiB pass."""
 
-    sequence_value = int(normalize_sequence(sequence), 16)
-    sequence_bytes = tuple(
-        (sequence_value >> (index * 8)) & 0xFF for index in range(4)
-    )
     fnv = PSRAM_FNV_OFFSET
     prime = PSRAM_FNV_PRIME
     mask = 0xFFFFFFFF
 
-    for address in range(PSRAM_SIZE):
-        value = (
-            sequence_bytes[address & 3]
-            + address * 37
-            + (address >> 8) * 17
-            + (address >> 16)
-            + (address >> 24) * 0x5B
-        ) & 0xFF
+    for value in pattern_stream(sequence, 0, PSRAM_SIZE):
         fnv = ((fnv ^ value) * prime) & mask
 
     return fnv

@@ -16,6 +16,7 @@ from psram_protocol import (
     normalize_sequence,
     parse_psram,
     pattern_byte,
+    pattern_stream,
 )
 
 
@@ -173,6 +174,36 @@ class PsramProtocolTests(unittest.TestCase):
             with self.subTest(address=address):
                 self.assertEqual(pattern_byte(SEQUENCE, address), expected)
         self.assertEqual(expected_fnv1a(SEQUENCE), int(CHECKSUM, 16))
+
+    def test_target_pattern_recurrence_matches_direct_formula(self):
+        starts = (
+            0,
+            1,
+            0xFC,
+            0xFF,
+            0xFFFC,
+            0xFFFF,
+            0xFFFFFC,
+            0xFFFFFF,
+            0x1000000,
+            0x1FFF800,
+        )
+        for start in starts:
+            length = min(0x900, 32 * 1024 * 1024 - start)
+            with self.subTest(start=start):
+                self.assertEqual(
+                    list(pattern_stream(SEQUENCE, start, length)),
+                    [pattern_byte(SEQUENCE, start + index)
+                     for index in range(length)],
+                )
+
+    def test_fnv_prime_shift_add_decomposition(self):
+        for value in (0, 1, 0x12345678, 0x80000000, 0xFFFFFFFF):
+            shifted = (
+                (value << 24) + (value << 8) + (value << 7)
+                + (value << 4) + (value << 1) + value
+            ) & 0xFFFFFFFF
+            self.assertEqual(shifted, value * 16777619 & 0xFFFFFFFF)
 
     def test_duplicate_final_pass_is_rejected(self):
         text = complete_log() + f"P2PSRAM:PASS:SEQUENCE={SEQUENCE}\r\n"
