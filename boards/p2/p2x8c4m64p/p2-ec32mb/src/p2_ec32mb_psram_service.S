@@ -37,6 +37,7 @@ p2_psram_cog_start:
         setq    #1
         wrlong  r0, ptra++
         mov     r0, #0x30
+        augs    #0
         mov     r1, ##p2_psram_cog_entry
         coginit r0, r1                  wc
         mov     r31, r0
@@ -48,6 +49,7 @@ p2_psram_cog_start:
         .globl p2_psram_cog_entry
         .type p2_psram_cog_entry,@function
 p2_psram_cog_entry:
+        augs    #0
         mov     ptra, ##g_p2_psram_service_stack
         add     ptra, #4
         calla   #\p2_psram_service_worker
@@ -121,6 +123,7 @@ p2_psram_timing_leaf:
         setq    #15
         wrlong  r0, ptra++
 
+        augs    #0
         mov     r15, ##g_p2_psram_wire
         rdlong  r14, r15
         mov     r0, r15

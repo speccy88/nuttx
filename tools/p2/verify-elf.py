@@ -246,6 +246,110 @@ def verify_context_trigger(
         )
 
 
+def executable_code(
+    sections: dict[str, object], address: int, length: int, name: str
+) -> bytes:
+    """Return one symbol's bytes from its containing executable section."""
+
+    for section in sections.values():
+        start = int(section["sh_addr"])
+        size = int(section["sh_size"])
+        if int(section["sh_flags"]) & SH_FLAGS.SHF_EXECINSTR and \
+                start <= address and address + length <= start + size:
+            offset = address - start
+            return section.data()[offset : offset + length]
+
+    fail(f"{name} is outside executable sections or is truncated")
+
+
+def verify_psram_service(
+    sections: dict[str, object], symbols: dict[str, int]
+) -> None:
+    """Verify optional PSRAM service-cog AUGS relocation pairs."""
+
+    required = (
+        "p2_psram_cog_start",
+        "p2_psram_cog_entry",
+        "p2_psram_timing_leaf",
+        "p2_psram_service_worker",
+        "g_p2_psram_service_stack",
+        "g_p2_psram_wire",
+    )
+    present = [name for name in required if name in symbols]
+    if not present:
+        return
+
+    missing = [name for name in required if name not in symbols]
+    if missing:
+        fail(f"incomplete PSRAM service symbols: {', '.join(missing)}")
+
+    start = executable_code(
+        sections, symbols["p2_psram_cog_start"], 40, "p2_psram_cog_start"
+    )
+    start_words = [
+        int.from_bytes(start[offset : offset + 4], "little")
+        for offset in range(0, len(start), 4)
+    ]
+    fixed_start = {
+        0: 0xFD640228,  # SETQ #1
+        1: 0xFC67A161,  # WRLONG r0, PTRA++
+        2: 0xF607A030,  # MOV r0, #0x30 (HUBEXEC_NEW)
+        5: 0xFCF3A1D1,  # COGINIT r0, r1 WC
+        6: 0xF603DFD0,  # MOV r31, r0
+        7: 0xFD640228,  # SETQ #1
+        8: 0xFB07A15F,  # RDLONG r0, --PTRA
+        9: 0xFD64002E,  # RETA
+    }
+    for index, expected in fixed_start.items():
+        if start_words[index] != expected:
+            fail(
+                "p2_psram_cog_start word {} is 0x{:08x}; expected "
+                "0x{:08x}".format(index, start_words[index], expected)
+            )
+
+    if start_words[4] & ~0x1FF != 0xF607A200:
+        fail("p2_psram_cog_start does not load its entry into r1")
+    if decode_augmented_source(start_words[3], start_words[4]) != \
+            symbols["p2_psram_cog_entry"]:
+        fail("p2_psram_cog_start AUGS/MOV target does not match its entry")
+
+    entry = executable_code(
+        sections, symbols["p2_psram_cog_entry"], 24, "p2_psram_cog_entry"
+    )
+    entry_words = [
+        int.from_bytes(entry[offset : offset + 4], "little")
+        for offset in range(0, len(entry), 4)
+    ]
+    if entry_words[1] & ~0x1FF != 0xF607F000:
+        fail("p2_psram_cog_entry does not load its guarded PTRA")
+    if decode_augmented_source(entry_words[0], entry_words[1]) != \
+            symbols["g_p2_psram_service_stack"]:
+        fail("p2_psram_cog_entry AUGS/MOV target does not match its stack")
+    if entry_words[2] != 0xF107F004:
+        fail("p2_psram_cog_entry does not advance its guarded PTRA")
+    if entry_words[3] & 0xFFF00000 != 0xFDC00000 or \
+            entry_words[3] & 0xFFFFF != symbols["p2_psram_service_worker"]:
+        fail("p2_psram_cog_entry CALLA target does not match its worker")
+    if entry_words[4:] != [0xFD63A001, 0xFD63A003]:
+        fail("p2_psram_cog_entry does not terminate with COGID/COGSTOP")
+
+    timing = executable_code(
+        sections, symbols["p2_psram_timing_leaf"], 16,
+        "p2_psram_timing_leaf",
+    )
+    timing_words = [
+        int.from_bytes(timing[offset : offset + 4], "little")
+        for offset in range(0, len(timing), 4)
+    ]
+    if timing_words[:2] != [0xFD641E28, 0xFC67A161]:
+        fail("p2_psram_timing_leaf lost its SETQ/WRLONG register save")
+    if timing_words[3] & ~0x1FF != 0xF607BE00:
+        fail("p2_psram_timing_leaf does not load its wire descriptor into r15")
+    if decode_augmented_source(timing_words[2], timing_words[3]) != \
+            symbols["g_p2_psram_wire"]:
+        fail("p2_psram_timing_leaf AUGS/MOV target does not match its wire data")
+
+
 def symbol_values(elf: ELFFile) -> tuple[dict[str, int], list[str]]:
     symbols: dict[str, int] = {}
     unresolved: list[str] = []
@@ -471,6 +575,7 @@ def verify(path: pathlib.Path) -> None:
         symbols = verify_symbols(elf)
         verify_startup(sections, symbols)
         verify_context_trigger(sections, symbols)
+        verify_psram_service(sections, symbols)
         load_count = verify_segments(elf, sections)
 
         print(

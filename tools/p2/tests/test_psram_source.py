@@ -59,6 +59,7 @@ class PsramSourceTests(unittest.TestCase):
     def test_timing_leaf_has_fixed_board_protocol_and_refresh_measurement(self):
         source = (BOARD / "src/p2_ec32mb_psram_service.S").read_text()
         wire = (BOARD / "src/p2_ec32mb_psram_wire.h").read_text()
+        verifier = (ROOT / "tools/p2/verify-elf.py").read_text()
         for token in (
             "P2_PSRAM_DATA_FIRST_PIN          40",
             "P2_PSRAM_DATA_LAST_PIN           55",
@@ -73,6 +74,8 @@ class PsramSourceTests(unittest.TestCase):
         self.assertIn("P2_PSRAM_WIRE_CE_CYCLES_OFFSET", source)
         self.assertIn("mov     r0, #0x30", source)
         self.assertIn("g_p2_psram_service_stack", source)
+        self.assertIn("def verify_psram_service(", verifier)
+        self.assertIn("verify_psram_service(sections, symbols)", verifier)
 
     def test_target_app_covers_required_fault_and_integrity_stages(self):
         source = (APPS / "testing/p2psram/p2psram_main.c").read_text()
@@ -139,6 +142,12 @@ class PsramSourceTests(unittest.TestCase):
 
         self.assertIn("coginit r0, r1                  wc", assembly)
         self.assertIn("mov     r31, r0", assembly)
+        for augmented in (
+            "augs    #0\n        mov     r1, ##p2_psram_cog_entry",
+            "augs    #0\n        mov     ptra, ##g_p2_psram_service_stack",
+            "augs    #0\n        mov     r15, ##g_p2_psram_wire",
+        ):
+            self.assertIn(augmented, assembly)
         cog_start = assembly[
             assembly.index("p2_psram_cog_start:") :
             assembly.index(".size p2_psram_cog_start")
