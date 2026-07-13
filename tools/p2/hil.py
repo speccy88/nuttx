@@ -1255,8 +1255,10 @@ def preserve_hil_inputs(config: HilConfig) -> Tuple[str, ...]:
             (
                 REPO_ROOT / ".config",
                 REPO_ROOT / "System.map",
+                REPO_ROOT / "tools" / "p2" / "bringup_protocol.py",
                 REPO_ROOT / "tools" / "p2" / "hil.py",
                 REPO_ROOT / "tools" / "p2" / "test-boot.py",
+                REPO_ROOT / "tools" / "p2" / "test-bringup.py",
                 REPO_ROOT / "tools" / "p2" / "test-nsh.py",
                 REPO_ROOT / "tools" / "p2" / "test-ostest.py",
                 REPO_ROOT / "tools" / "p2" / "test-smartpins.py",
