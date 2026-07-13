@@ -36,6 +36,49 @@ config P2_EC32MB_FLASHBOOT
 		intentionally incompatible with destructive p2storage handlers and
 		filesystem-formatting utilities.
 
+config P2_EC32MB_PSRAM
+	bool "Register the onboard 32-MiB PSRAM service"
+	default n
+	depends on P2_SMARTPIN && BOARD_LATE_INITIALIZE
+	help
+		Start one non-scheduler cog as a bounded QPI transfer engine and
+		register the four interleaved APS6404L chips as /dev/psram0.  This is
+		an explicit character-device bulk store, not native address space;
+		applications must use read, write, seek, or the board transfer API.
+
+config P2_EC32MB_PSRAM_COG_STACKSIZE
+	int "PSRAM service-cog stack size"
+	default 3072
+	range 2048 8192
+	depends on P2_EC32MB_PSRAM
+	help
+		Reserve this many long-aligned Hub RAM bytes for the dedicated
+		service cog.  Guard words are checked around the stack.
+
+config P2_EC32MB_PSRAM_MAX_REQUEST
+	int "Maximum PSRAM service request size"
+	default 65536
+	range 4096 65536
+	depends on P2_EC32MB_PSRAM
+	help
+		Split larger character-device transfers into requests no larger than
+		this many bytes so cancellation and recovery remain bounded.
+
+config P2_EC32MB_PSRAM_TIMEOUT_TICKS
+	int "Default PSRAM request timeout in ticks"
+	default 500
+	range 1 2147483647
+	depends on P2_EC32MB_PSRAM
+
+config P2_EC32MB_PSRAM_CANCEL_GRACE_TICKS
+	int "PSRAM cancellation grace period in ticks"
+	default 100
+	range 1 2147483647
+	depends on P2_EC32MB_PSRAM
+	help
+		Wait this long for cooperative cancellation before stopping the
+		service cog, floating P40-P57, and permanently failing the device.
+
 config P2_EC32MB_GPIO
 	bool "Register the P2 Smart Pin GPIO loopback pair"
 	default n

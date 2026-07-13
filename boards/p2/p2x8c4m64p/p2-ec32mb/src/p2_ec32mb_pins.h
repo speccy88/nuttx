@@ -34,6 +34,7 @@
  ****************************************************************************/
 
 #define P2_PIN_COUNT                 64
+#define P2_PIN_COG_COUNT             8
 #define P2_PIN_COG_NONE              UINT8_MAX
 
 /* WRPIN smart mode occupies bits 1..5.  Electrical controls are tracked
@@ -132,6 +133,8 @@ struct p2_pin_state_s
   uint32_t smartpin_mode;
 };
 
+typedef void (*p2_pin_safe_callback_t)(void);
+
 /****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
@@ -142,6 +145,21 @@ int p2_pin_claim(unsigned int pin, enum p2_pin_owner_e owner);
 int p2_pin_configure(unsigned int pin, enum p2_pin_owner_e owner,
                      const struct p2_pin_config_s *config);
 int p2_pin_release(unsigned int pin, enum p2_pin_owner_e owner);
+int p2_pin_transfer_claims(enum p2_pin_owner_e owner,
+                           unsigned int destination_cog,
+                           unsigned int expected_claims);
+
+/* Stop a cog, invoke a bounded non-pin-manager electrical safety callback,
+ * and forget that cog's matching claims while the pin-manager lock remains
+ * held.  The callback may use only bounded local hardware operations and
+ * must not call any pin-manager function.  The caller must ensure the target
+ * cog cannot own the pin-manager lock.  This prevents cog-ID reuse from
+ * racing stale claim cleanup.  Returns the number of claim records cleared.
+ */
+
+int p2_pin_stop_and_forget_cog(unsigned int cog,
+                               enum p2_pin_owner_e owner,
+                               p2_pin_safe_callback_t make_safe);
 int p2_pin_get_state(unsigned int pin, struct p2_pin_state_s *state);
 int p2_gpio_initialize(void);
 void p2_gpio_poll(void);
@@ -157,6 +175,7 @@ int p2_spi_initialize(void);
 void p2_pin_test_reset(void);
 void p2_pin_test_set_cog(unsigned int cog);
 unsigned int p2_pin_test_safe_apply_count(void);
+unsigned int p2_pin_test_cog_stop_count(void);
 #endif
 
 #endif /* __BOARDS_P2_P2X8C4M64P_P2_EC32MB_SRC_P2_EC32MB_PINS_H */

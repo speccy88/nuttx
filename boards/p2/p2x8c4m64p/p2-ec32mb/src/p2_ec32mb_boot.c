@@ -42,6 +42,10 @@
 
 #include "p2_ec32mb_pins.h"
 
+#ifdef CONFIG_P2_EC32MB_PSRAM
+#  include <arch/board/p2_ec32mb_psram.h>
+#endif
+
 #ifdef CONFIG_P2_EC32MB_FLASHBOOT
 #  if defined(CONFIG_TESTING_P2STORAGE_DESTRUCTIVE) || \
       defined(CONFIG_FSUTILS_MKSMARTFS) || defined(CONFIG_FSUTILS_MKFATFS)
@@ -170,6 +174,17 @@ void board_late_initialize(void)
       syslog(LOG_ERR, "ERROR: Failed to initialize P2 pins: %d\n",
              pin_ret);
       return;
+    }
+#endif
+
+#ifdef CONFIG_P2_EC32MB_PSRAM
+  int psram_ret;
+
+  psram_ret = p2_psram_initialize();
+  if (psram_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: Failed to initialize P2 PSRAM: %d\n",
+             psram_ret);
     }
 #endif
 

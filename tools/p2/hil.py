@@ -36,6 +36,14 @@ from smartpins_protocol import (
     parse_smartpins,
     stages_from_kconfig as smartpins_stages_from_kconfig,
 )
+from psram_protocol import (
+    FAILURE_PATTERNS as PSRAM_FAILURE_PATTERNS,
+    command_bytes as psram_command_bytes,
+    expected_fnv1a as psram_expected_fnv1a,
+    marker_patterns as psram_marker_patterns,
+    normalize_sequence as normalize_psram_sequence,
+    parse_psram,
+)
 from storage_protocol import (
     ALTERNATE_TRANSACTIONS as STORAGE_ALTERNATE_TRANSACTIONS,
     BOARD_MARKER_PATTERNS as STORAGE_BOARD_MARKER_PATTERNS,
@@ -167,6 +175,21 @@ STORAGE_ACTION_REQUIRED_CONFIG = (
     ("CONFIG_TESTING_P2STORAGE_BUS_ALTERNATE_COUNT", "1000"),
     ("CONFIG_TESTING_P2STORAGE_FLASH_FULL_MAX_BYTES", "20971520"),
     ("CONFIG_TESTING_P2STORAGE_INTERRUPT_HOLD_MSEC", "10000"),
+)
+
+PSRAM_REQUIRED_CONFIG = (
+    ("CONFIG_BOARD_LATE_INITIALIZE", "y"),
+    ("CONFIG_USEC_PER_TICK", "10000"),
+    ("CONFIG_P2_SMARTPIN", "y"),
+    ("CONFIG_P2_EC32MB_PSRAM", "y"),
+    ("CONFIG_P2_EC32MB_PSRAM_COG_STACKSIZE", "3072"),
+    ("CONFIG_P2_EC32MB_PSRAM_MAX_REQUEST", "65536"),
+    ("CONFIG_P2_EC32MB_PSRAM_TIMEOUT_TICKS", "500"),
+    ("CONFIG_P2_EC32MB_PSRAM_CANCEL_GRACE_TICKS", "100"),
+    ("CONFIG_TESTING_P2PSRAM", "y"),
+    ("CONFIG_TESTING_P2PSRAM_STACKSIZE", "4096"),
+    ("CONFIG_TESTING_P2PSRAM_WORKER_STACKSIZE", "2048"),
+    ("CONFIG_TESTING_P2PSRAM_RANDOM_COUNT", "1024"),
 )
 
 PANIC_PATTERNS = (
@@ -595,6 +618,22 @@ def validate_storage_action_config(values: Mapping[str, str]) -> None:
         )
 
 
+def validate_psram_config(values: Mapping[str, str]) -> None:
+    """Require the exact bounded external-PSRAM service profile."""
+
+    mismatches = [
+        "{}={} (required {})".format(name, values.get(name, "<unset>"), expected)
+        for name, expected in PSRAM_REQUIRED_CONFIG
+        if values.get(name) != expected
+    ]
+    if mismatches:
+        raise SafetyError(
+            "psram image does not match the locked service profile: {}".format(
+                ", ".join(mismatches)
+            )
+        )
+
+
 def ostest_profile_path(profile: str) -> pathlib.Path:
     if profile not in OSTEST_PROFILES:
         raise SafetyError("unknown ostest profile: {}".format(profile))
@@ -934,6 +973,9 @@ class HilConfig:
     storage_action: str
     storage_sequence: str
     storage_alternate_count: int
+    psram_config_sha256: str
+    psram_sequence: str
+    psram_expected_fnv1a: str
     image_sha256: str
     loadp2_sha256: str
 
@@ -1323,6 +1365,7 @@ def preserve_hil_inputs(config: HilConfig) -> Tuple[str, ...]:
         "ostest",
         "smartpins",
         "storage",
+        "psram",
     ):
         candidates.extend(
             (
@@ -1341,6 +1384,8 @@ def preserve_hil_inputs(config: HilConfig) -> Tuple[str, ...]:
                 REPO_ROOT / "tools" / "p2" / "storage_protocol.py",
                 REPO_ROOT / "tools" / "p2" / "test-flashfs.py",
                 REPO_ROOT / "tools" / "p2" / "test-sd.py",
+                REPO_ROOT / "tools" / "p2" / "test-psram.py",
+                REPO_ROOT / "tools" / "p2" / "psram_protocol.py",
                 REPO_ROOT / "tools" / "p2" / "verify-elf.py",
             )
         )
@@ -1353,6 +1398,32 @@ def preserve_hil_inputs(config: HilConfig) -> Tuple[str, ...]:
         candidates.extend(
             p2storage_dir / name
             for name in ("Kconfig", "Make.defs", "Makefile", "p2storage_main.c")
+        )
+
+    if config.protocol == "psram":
+        p2psram_dir = REPO_ROOT.parent / "apps" / "testing" / "p2psram"
+        candidates.extend(
+            p2psram_dir / name
+            for name in ("Kconfig", "Make.defs", "Makefile", "p2psram_main.c")
+        )
+        board_dir = (
+            REPO_ROOT / "boards" / "p2" / "p2x8c4m64p" / "p2-ec32mb"
+        )
+        candidates.extend(
+            (
+                board_dir / "Kconfig",
+                board_dir / "configs" / "psram" / "defconfig",
+                board_dir / "include" / "board.h",
+                board_dir / "include" / "p2_ec32mb_psram.h",
+                board_dir / "src" / "Makefile",
+                board_dir / "src" / "p2_ec32mb_boot.c",
+                board_dir / "src" / "p2_ec32mb_pins.c",
+                board_dir / "src" / "p2_ec32mb_pins.h",
+                board_dir / "src" / "p2_ec32mb_psram.c",
+                board_dir / "src" / "p2_ec32mb_psram_logic.h",
+                board_dir / "src" / "p2_ec32mb_psram_service.S",
+                board_dir / "src" / "p2_ec32mb_psram_wire.h",
+            )
         )
 
     used_names = set()
@@ -1488,6 +1559,13 @@ def default_build_runner(protocol: str = "hello") -> int:
             check=False,
         ).returncode
 
+    if protocol == "psram":
+        return subprocess.run(
+            [str(REPO_ROOT / "tools" / "p2" / "build.sh"), "psram"],
+            cwd=str(REPO_ROOT),
+            check=False,
+        ).returncode
+
     if protocol in OSTEST_PROFILES:
         return subprocess.run(
             [str(REPO_ROOT / "tools" / "p2" / "build.sh"), protocol],
@@ -1525,6 +1603,7 @@ def exact_protocol_markers(
     storage_action: str = "",
     storage_sequence: str = "",
     storage_alternate_count: int = STORAGE_ALTERNATE_TRANSACTIONS,
+    psram_sequence: str = "",
 ) -> Tuple[MarkerSpec, ...]:
     if protocol == "hello":
         markers = list(HELLO_MARKERS)
@@ -1558,6 +1637,19 @@ def exact_protocol_markers(
             )
         else:
             markers = list(STORAGE_MARKERS)
+    elif protocol == "psram":
+        markers = list(BOOT_MARKERS)
+        markers.append(
+            MarkerSpec(
+                "nsh> prompt",
+                re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE),
+                repeatable=True,
+            )
+        )
+        markers.extend(
+            MarkerSpec(label, pattern)
+            for label, pattern in psram_marker_patterns(psram_sequence)
+        )
     else:
         raise SafetyError("unsupported HIL protocol: {}".format(protocol))
 
@@ -1641,8 +1733,27 @@ class HilRunner:
                 raise SafetyError(
                     "storage .config changed after protocol derivation; refusing to load"
                 )
+        if config.protocol == "psram":
+            config_path = REPO_ROOT / ".config"
+            if sha256_file(config_path) != config.psram_config_sha256:
+                raise SafetyError(
+                    "psram .config changed after protocol derivation; refusing to load"
+                )
         config.artifact_dir.mkdir(parents=True, exist_ok=False)
         preserved_inputs = preserve_hil_inputs(config)
+        preserved_input_sha256 = {
+            path: sha256_file(config.artifact_dir / path)
+            for path in preserved_inputs
+        }
+        if config.protocol == "psram":
+            copied_config = config.artifact_dir / "inputs" / ".config"
+            if (
+                not copied_config.is_file()
+                or sha256_file(copied_config) != config.psram_config_sha256
+            ):
+                raise SafetyError(
+                    "preserved psram .config does not match the validated profile"
+                )
         started = self.utc_now()
         overall = {
             "status": "RUNNING",
@@ -1663,6 +1774,7 @@ class HilRunner:
             "reset_flag": config.reset_flag,
             "timeout_seconds_per_cycle": config.timeout,
             "preserved_inputs": preserved_inputs,
+            "preserved_input_sha256": preserved_input_sha256,
         }
         if config.protocol == "nsh":
             overall.update(
@@ -1725,6 +1837,18 @@ class HilRunner:
                     ),
                 }
             )
+        elif config.protocol == "psram":
+            overall.update(
+                {
+                    "psram_config_sha256": config.psram_config_sha256,
+                    "psram_sequence": config.psram_sequence,
+                    "psram_expected_fnv1a": config.psram_expected_fnv1a,
+                    "device": "/dev/psram0",
+                    "external_bytes": 33554432,
+                    "destructive": True,
+                    "native_memory": False,
+                }
+            )
         write_json(config.artifact_dir / "metadata.json", overall)
         passed = 0
         try:
@@ -1769,6 +1893,14 @@ class HilRunner:
                         raise SafetyError(
                             "storage .config changed during the run; refusing to load"
                         )
+                    if (
+                        config.protocol == "psram"
+                        and sha256_file(REPO_ROOT / ".config")
+                        != config.psram_config_sha256
+                    ):
+                        raise SafetyError(
+                            "psram .config changed during the run; refusing to load"
+                        )
                     result = self._run_cycle(cycle)
                     for label, count in result.warning_counts.items():
                         warning_counts = overall.setdefault("warning_counts", {})
@@ -1777,6 +1909,9 @@ class HilRunner:
                         overall["failure_reason"] = result.reason
                         break
                     passed += 1
+        except (SafetyError, monitor.ConfigurationError) as exc:
+            overall["failure_reason"] = monitor.safe_error(exc)
+            raise
         finally:
             overall["cycles_passed"] = passed
             overall["ended_utc"] = utc_timestamp(self.utc_now())
@@ -1803,6 +1938,7 @@ class HilRunner:
         protocol_text: List[str] = []
         smartpins_result = None
         storage_result = None
+        psram_result = None
         raw_bytes = 0
         returncode = None
         intentionally_terminated = False
@@ -1826,7 +1962,7 @@ class HilRunner:
                 if config.protocol == "nsh"
                 else (
                     [config.send_payload.decode("ascii").rstrip("\r")]
-                    if config.storage_action
+                    if config.storage_action or config.protocol == "psram"
                     else None
                 )
             ),
@@ -1860,6 +1996,15 @@ class HilRunner:
                     "storage_action": config.storage_action,
                     "storage_sequence": config.storage_sequence or None,
                     "automatic_format": False,
+                }
+            )
+        elif config.protocol == "psram":
+            metadata.update(
+                {
+                    "psram_sequence": config.psram_sequence,
+                    "psram_expected_fnv1a": config.psram_expected_fnv1a,
+                    "device": "/dev/psram0",
+                    "external_bytes": 33554432,
                 }
             )
         write_json(cycle_dir / "metadata.json", metadata)
@@ -1899,7 +2044,8 @@ class HilRunner:
                             raw_log.flush()
                             raw_bytes += len(data)
                             decoded = normalizer.feed(data)
-                            if config.protocol == "smartpins" or config.storage_action:
+                            if (config.protocol in ("smartpins", "psram") or
+                                    config.storage_action):
                                 protocol_text.append(decoded)
                             previously_found = set(parser.found)
                             parser.feed(decoded)
@@ -1921,6 +2067,8 @@ class HilRunner:
                                 for label in config.require_after_send:
                                     parser.found.pop(label, None)
                                     marker_elapsed.pop(label, None)
+                                if config.protocol == "psram":
+                                    protocol_text.clear()
                                 session.write(config.send_payload)
                                 interactive_send_completed = True
                             if (
@@ -1980,6 +2128,16 @@ class HilRunner:
                                             "storage protocol validation failed: {}"
                                         ).format(storage_first_error(storage_result))
                                         break
+                                if config.protocol == "psram":
+                                    psram_result = parse_psram(
+                                        "".join(protocol_text),
+                                        config.psram_sequence,
+                                    )
+                                    if not psram_result["complete"]:
+                                        reason = (
+                                            "PSRAM protocol validation failed: {}"
+                                        ).format("; ".join(psram_result["errors"]))
+                                        break
                                 returncode = session.poll()
                                 if returncode is not None:
                                     if returncode != 0:
@@ -2018,7 +2176,8 @@ class HilRunner:
                     trailing = normalizer.finish()
                     if trailing:
                         parser.feed(trailing)
-                        if config.protocol == "smartpins" or config.storage_action:
+                        if (config.protocol in ("smartpins", "psram") or
+                                config.storage_action):
                             protocol_text.append(trailing)
         finally:
             if session is not None:
@@ -2041,6 +2200,12 @@ class HilRunner:
                     config.storage_alternate_count,
                 )
             marker_status["storage_protocol"] = storage_result
+        if config.protocol == "psram":
+            if psram_result is None:
+                psram_result = parse_psram(
+                    "".join(protocol_text), config.psram_sequence
+                )
+            marker_status["psram_protocol"] = psram_result
         marker_status["observed_after_start_seconds"] = {
             label: round(value, 6) for label, value in marker_elapsed.items()
         }
@@ -2118,6 +2283,7 @@ def build_parser() -> argparse.ArgumentParser:
             "ostest",
             "smartpins",
             "storage",
+            "psram",
         ),
         default="hello",
     )
@@ -2179,6 +2345,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--storage-sequence",
         help="exact 8-uppercase-hex nonce for a sequenced storage action",
     )
+    parser.add_argument(
+        "--psram-sequence",
+        help="exact 8-uppercase-hex nonce for the destructive PSRAM protocol",
+    )
     return parser
 
 
@@ -2196,6 +2366,9 @@ def config_from_args(
     storage_config_sha = ""
     storage_action = args.storage_action or ""
     storage_sequence = ""
+    psram_config_sha = ""
+    psram_sequence = ""
+    psram_expected_hash = ""
     if args.protocol == "ostest":
         if args.ostest_profile is None:
             raise SafetyError("ostest requires an explicit --ostest-profile")
@@ -2274,6 +2447,24 @@ def config_from_args(
             "--storage-action and --storage-sequence are valid only for storage"
         )
 
+    if args.protocol == "psram":
+        if env.get("P2_ALLOW_PSRAM_WRITE", "0") != "1":
+            raise SafetyError("psram requires P2_ALLOW_PSRAM_WRITE=1")
+        if args.cycles != 1:
+            raise SafetyError("the destructive PSRAM protocol requires one cycle")
+        if args.psram_sequence is None:
+            raise SafetyError("psram requires --psram-sequence")
+        try:
+            psram_sequence = normalize_psram_sequence(args.psram_sequence)
+        except ValueError as exc:
+            raise SafetyError(str(exc)) from exc
+        psram_config_path = REPO_ROOT / ".config"
+        psram_config = read_kconfig(psram_config_path)
+        validate_psram_config(psram_config)
+        psram_config_sha = sha256_file(psram_config_path)
+    elif args.psram_sequence is not None:
+        raise SafetyError("--psram-sequence is valid only for psram")
+
     env_port = env.get("P2_PORT", "")
     if not env_port:
         raise SafetyError("P2_PORT must name the exact serial device")
@@ -2320,6 +2511,7 @@ def config_from_args(
         "ostest",
         "smartpins",
         "storage",
+        "psram",
     ):
         image_text = str(DEFAULT_NUTTX_IMAGE)
     else:
@@ -2338,6 +2530,10 @@ def config_from_args(
     if image == loadp2:
         raise SafetyError("P2 image cannot be the LOADP2 executable")
     image_sha = sha256_file(image)
+    if args.protocol == "psram":
+        psram_expected_hash = "{:08X}".format(
+            psram_expected_fnv1a(psram_sequence)
+        )
 
     loader_baud = args.loader_baud or int(env.get("P2_LOADER_BAUD", "2000000"))
     console_baud = args.console_baud or int(env.get("P2_CONSOLE_BAUD", "230400"))
@@ -2348,7 +2544,11 @@ def config_from_args(
     maximum_timeout = (
         3600
         if args.protocol == "storage"
-        else (3600 if args.protocol == "ostest" else 600)
+        else (
+            3600
+            if args.protocol == "ostest"
+            else (1800 if args.protocol == "psram" else 600)
+        )
     )
     if args.timeout <= 0 or args.timeout > maximum_timeout:
         raise SafetyError(
@@ -2406,6 +2606,7 @@ def config_from_args(
             smartpins_stages=smartpins_stages,
             storage_action=storage_action,
             storage_sequence=storage_sequence,
+            psram_sequence=psram_sequence,
         ),
         reset_pattern=(
             CONTEXT_MARKERS[0].pattern
@@ -2418,6 +2619,7 @@ def config_from_args(
                     "nsh",
                     "ostest",
                     "storage",
+                    "psram",
                 )
                 else (
                     smartpins_marker_patterns(smartpins_stages)[0][1]
@@ -2445,9 +2647,13 @@ def config_from_args(
                                 STORAGE_FAILURE_PATTERNS
                                 if args.protocol == "storage"
                                 else (
-                                    SMARTPINS_FAILURE_PATTERNS
-                                    if args.protocol == "smartpins"
-                                    else PROTOCOL_FAILURE_PATTERNS
+                                    BOOT_FAILURE_PATTERNS + PSRAM_FAILURE_PATTERNS
+                                    if args.protocol == "psram"
+                                    else (
+                                        SMARTPINS_FAILURE_PATTERNS
+                                        if args.protocol == "smartpins"
+                                        else PROTOCOL_FAILURE_PATTERNS
+                                    )
                                 )
                             )
                         )
@@ -2461,7 +2667,8 @@ def config_from_args(
         loadp2_script=LOADP2_SCRIPT if args.protocol == "hello" else "",
         send_after_label=(
             "nsh> prompt"
-            if args.protocol == "nsh" or storage_action
+            if (args.protocol == "nsh" or storage_action or
+                args.protocol == "psram")
             else ""
         ),
         send_payload=(
@@ -2472,7 +2679,11 @@ def config_from_args(
                     storage_action, storage_sequence or None
                 )
                 if storage_action
-                else b""
+                else (
+                    psram_command_bytes(psram_sequence)
+                    if args.protocol == "psram"
+                    else b""
+                )
             )
         ),
         require_after_send=(
@@ -2488,13 +2699,19 @@ def config_from_args(
                     )
                 )
                 if storage_action
-                else ()
+                else (
+                    tuple(label for label, _pattern in
+                          psram_marker_patterns(psram_sequence))
+                    if args.protocol == "psram"
+                    else ()
+                )
             )
         ),
         reject_duplicate_markers=args.protocol in (
             "ostest",
             "smartpins",
             "storage",
+            "psram",
         ),
         ostest_profile=args.ostest_profile or "",
         ostest_config_sha256=ostest_config_sha,
@@ -2505,6 +2722,9 @@ def config_from_args(
         storage_action=storage_action,
         storage_sequence=storage_sequence,
         storage_alternate_count=STORAGE_ALTERNATE_TRANSACTIONS,
+        psram_config_sha256=psram_config_sha,
+        psram_sequence=psram_sequence,
+        psram_expected_fnv1a=psram_expected_hash,
         image_sha256=image_sha,
         loadp2_sha256=loadp2_sha,
     )

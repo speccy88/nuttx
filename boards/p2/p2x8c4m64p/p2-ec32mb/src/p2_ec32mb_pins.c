@@ -60,6 +60,7 @@ static int g_lockid = P2_PIN_LOCK_NONE;
 #ifdef P2_PIN_MANAGER_HOST_TEST
 static unsigned int g_test_cog;
 static unsigned int g_test_safe_apply_count;
+static unsigned int g_test_cog_stop_count;
 #endif
 
 /****************************************************************************
@@ -473,6 +474,119 @@ int p2_pin_release(unsigned int pin, enum p2_pin_owner_e owner)
   return ret;
 }
 
+int p2_pin_transfer_claims(enum p2_pin_owner_e owner,
+                           unsigned int destination_cog,
+                           unsigned int expected_claims)
+{
+  p2_pin_irqstate_t flags;
+  unsigned int source_cog;
+  unsigned int pin;
+  unsigned int matching = 0;
+
+  if (destination_cog >= P2_PIN_COG_COUNT ||
+      !p2_pin_owner_valid(owner) || expected_claims == 0 ||
+      expected_claims > P2_PIN_COUNT)
+    {
+      return -EINVAL;
+    }
+
+  if (!g_initialized)
+    {
+      return -EAGAIN;
+    }
+
+  source_cog = p2_pin_cogid();
+  if (destination_cog == source_cog)
+    {
+      return -EINVAL;
+    }
+
+  flags = p2_pin_lock();
+  for (pin = 0; pin < P2_PIN_COUNT; pin++)
+    {
+      struct p2_pin_state_s *state = &g_pins[pin];
+
+      if (state->refs != 0 && state->owner == owner &&
+          state->owning_cog == source_cog)
+        {
+          matching++;
+        }
+    }
+
+  if (matching != expected_claims)
+    {
+      p2_pin_unlock(flags);
+      return -ENOENT;
+    }
+
+  for (pin = 0; pin < P2_PIN_COUNT; pin++)
+    {
+      struct p2_pin_state_s *state = &g_pins[pin];
+
+      if (state->refs != 0 && state->owner == owner &&
+          state->owning_cog == source_cog)
+        {
+          state->owning_cog = destination_cog;
+        }
+    }
+
+  p2_pin_unlock(flags);
+  return (int)matching;
+}
+
+int p2_pin_stop_and_forget_cog(unsigned int cog,
+                               enum p2_pin_owner_e owner,
+                               p2_pin_safe_callback_t make_safe)
+{
+  p2_pin_irqstate_t flags;
+  unsigned int pin;
+  int released = 0;
+
+  if (cog >= P2_PIN_COG_COUNT || !p2_pin_owner_valid(owner) ||
+      make_safe == NULL)
+    {
+      return -EINVAL;
+    }
+
+  if (!g_initialized)
+    {
+      return -EAGAIN;
+    }
+
+  if (cog == p2_pin_cogid())
+    {
+      return -EINVAL;
+    }
+
+  /* Keep allocation, electrical safety, and metadata cleanup inside one pin
+   * transaction.  A new cog may reuse the ID immediately after COGSTOP, but
+   * it cannot claim these pins until their stale records have been cleared.
+   */
+
+  flags = p2_pin_lock();
+#ifdef P2_PIN_MANAGER_HOST_TEST
+  g_test_cog_stop_count++;
+#else
+  __asm__ __volatile__("cogstop %0" : : "r" (cog));
+#endif
+  make_safe();
+
+  for (pin = 0; pin < P2_PIN_COUNT; pin++)
+    {
+      struct p2_pin_state_s *state = &g_pins[pin];
+
+      if (state->refs != 0 && state->owner == owner &&
+          state->owning_cog == cog)
+        {
+          p2_pin_clear_claim(state);
+          released++;
+        }
+    }
+
+  p2_pin_unlock(flags);
+  return released;
+}
+
 int p2_pin_get_state(unsigned int pin, struct p2_pin_state_s *state)
 {
   p2_pin_irqstate_t flags;
@@ -500,6 +614,7 @@ void p2_pin_test_reset(void)
   g_lockid = P2_PIN_LOCK_NONE;
   g_test_cog = 0;
   g_test_safe_apply_count = 0;
+  g_test_cog_stop_count = 0;
 }
 
 void p2_pin_test_set_cog(unsigned int cog)
@@ -510,5 +625,10 @@ void p2_pin_test_set_cog(unsigned int cog)
 unsigned int p2_pin_test_safe_apply_count(void)
 {
   return g_test_safe_apply_count;
+}
+
+unsigned int p2_pin_test_cog_stop_count(void)
+{
+  return g_test_cog_stop_count;
 }
 #endif

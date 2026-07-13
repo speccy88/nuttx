@@ -127,6 +127,19 @@ class TargetPinManagerTests(unittest.TestCase):
         cls.library.p2_pin_configure.restype = ctypes.c_int
         cls.library.p2_pin_release.argtypes = [ctypes.c_uint, ctypes.c_int]
         cls.library.p2_pin_release.restype = ctypes.c_int
+        cls.library.p2_pin_transfer_claims.argtypes = [
+            ctypes.c_int,
+            ctypes.c_uint,
+            ctypes.c_uint,
+        ]
+        cls.library.p2_pin_transfer_claims.restype = ctypes.c_int
+        cls.safe_callback_type = ctypes.CFUNCTYPE(None)
+        cls.library.p2_pin_stop_and_forget_cog.argtypes = [
+            ctypes.c_uint,
+            ctypes.c_int,
+            cls.safe_callback_type,
+        ]
+        cls.library.p2_pin_stop_and_forget_cog.restype = ctypes.c_int
         cls.library.p2_pin_get_state.argtypes = [
             ctypes.c_uint,
             ctypes.POINTER(PinState),
@@ -136,6 +149,7 @@ class TargetPinManagerTests(unittest.TestCase):
         cls.library.p2_pin_test_set_cog.argtypes = [ctypes.c_uint]
         cls.library.p2_pin_test_set_cog.restype = None
         cls.library.p2_pin_test_safe_apply_count.restype = ctypes.c_uint
+        cls.library.p2_pin_test_cog_stop_count.restype = ctypes.c_uint
 
     @classmethod
     def tearDownClass(cls):
@@ -257,6 +271,71 @@ class TargetPinManagerTests(unittest.TestCase):
         self.assertEqual(
             self.library.p2_pin_configure(2, OWNER_UART, ctypes.byref(conflict)),
             0,
+        )
+
+    def test_claims_transfer_then_stop_and_forget_as_one_transaction(self):
+        self.initialize()
+        self.assertEqual(self.library.p2_pin_claim(40, OWNER_PSRAM), 0)
+        self.assertEqual(self.library.p2_pin_claim(41, OWNER_PSRAM), 0)
+        self.assertEqual(
+            self.library.p2_pin_transfer_claims(OWNER_PSRAM, 1, 3),
+            -errno.ENOENT,
+        )
+        self.assertEqual(self.state(40).owning_cog, 0)
+        self.assertEqual(self.state(41).owning_cog, 0)
+        self.assertEqual(
+            self.library.p2_pin_transfer_claims(OWNER_PSRAM, 1, 2), 2
+        )
+        self.assertEqual(self.state(40).owning_cog, 1)
+        self.assertEqual(self.state(41).owning_cog, 1)
+
+        callbacks = []
+
+        @self.safe_callback_type
+        def make_safe():
+            callbacks.append("safe")
+
+        self.assertEqual(
+            self.library.p2_pin_stop_and_forget_cog(
+                1, OWNER_PSRAM, make_safe
+            ),
+            2,
+        )
+        self.assertEqual(callbacks, ["safe"])
+        self.assertEqual(self.library.p2_pin_test_cog_stop_count(), 1)
+        self.assertEqual(self.library.p2_pin_test_safe_apply_count(), 0)
+        self.assertEqual(self.state(40).owner, OWNER_NONE)
+        self.assertEqual(self.state(41).owner, OWNER_NONE)
+        self.assertEqual(self.library.p2_pin_claim(40, OWNER_PSRAM), 0)
+
+    def test_cog_transfer_and_stop_reject_live_or_invalid_identity(self):
+        self.initialize()
+        callback = self.safe_callback_type(lambda: None)
+        self.assertEqual(
+            self.library.p2_pin_transfer_claims(OWNER_PSRAM, 0, 1),
+            -errno.EINVAL,
+        )
+        self.assertEqual(
+            self.library.p2_pin_transfer_claims(OWNER_PSRAM, 8, 1),
+            -errno.EINVAL,
+        )
+        self.assertEqual(
+            self.library.p2_pin_stop_and_forget_cog(
+                0, OWNER_PSRAM, callback
+            ),
+            -errno.EINVAL,
+        )
+        self.assertEqual(
+            self.library.p2_pin_stop_and_forget_cog(
+                8, OWNER_PSRAM, callback
+            ),
+            -errno.EINVAL,
+        )
+        self.assertEqual(
+            self.library.p2_pin_stop_and_forget_cog(
+                1, OWNER_NONE, callback
+            ),
+            -errno.EINVAL,
         )
 
     def test_invalid_requests_fail_closed(self):

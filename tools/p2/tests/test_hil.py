@@ -12,6 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
 
 import hil
+import psram_protocol
 import storage_protocol
 
 
@@ -173,6 +174,43 @@ GOOD_BOOT_OUTPUT = (
     b"loader output\nP2BOOT:ENTRY\r\n"
     b"P2BOOT:DATA=OK\r\nP2BOOT:BSS=OK\r\nP2BOOT:NX_START\r\n"
 )
+
+
+def good_psram_response(sequence="A55A0713"):
+    lines = [
+        "p2psram {}".format(sequence),
+        "P2PSRAM:BEGIN:SEQUENCE={}".format(sequence),
+        "P2PSRAM:GEOMETRY:SIZE=33554432:CHIPS=4:CHIP_SIZE=8388608:"
+        "WORD=4:MAX_REQUEST=65536:COG=2",
+        "P2PSRAM:PROFILE:MAX_REQUEST=65536:QPI_HZ=5000000:"
+        "TICK_USEC=10000:TIMEOUT_TICKS=500:CANCEL_GRACE_TICKS=100",
+        "P2PSRAM:WALKING:PASS:BITS=32",
+        "P2PSRAM:ADDRESS:PASS:LINES=23",
+        "P2PSRAM:BOUNDARY:PASS:COUNT=5",
+        "P2PSRAM:RANDOM:PASS:COUNT=1024",
+    ]
+    for value in range(4 * 1024 * 1024, 32 * 1024 * 1024 + 1, 4 * 1024 * 1024):
+        lines.append(
+            "P2PSRAM:PROGRESS:SEQUENCE={}:WRITE={}".format(sequence, value)
+        )
+    for value in range(4 * 1024 * 1024, 32 * 1024 * 1024 + 1, 4 * 1024 * 1024):
+        lines.append(
+            "P2PSRAM:PROGRESS:SEQUENCE={}:READ={}".format(sequence, value)
+        )
+    lines.extend(
+        (
+            "P2PSRAM:FULL:PASS:BYTES=33554432:FNV1A=634C9DC5",
+            "P2PSRAM:THROUGHPUT:WRITE_BPS=900000:READ_BPS=1100000",
+            "P2PSRAM:CONCURRENT:PASS:WORK=32768:ELAPSED_TICKS=4:"
+            "CPU_AVAILABLE_PERMILLE=930:CPU_OCCUPANCY_PERMILLE=70",
+            "P2PSRAM:TIMEOUT:PASS:RESULT=110:BYTES=32768:"
+            "DEADLINE_TICKS=1:MIN_WIRE_USEC=26214:TICK_USEC=10000",
+            "P2PSRAM:RECOVERY:PASS",
+            "P2PSRAM:CE_TIMING:PASS:MAX_CYCLES=711:LIMIT_CYCLES=1440",
+            "P2PSRAM:PASS:SEQUENCE={}".format(sequence),
+        )
+    )
+    return ("\r\n".join(lines) + "\r\n").encode("ascii")
 
 GOOD_BRINGUP_OUTPUT = GOOD_BOOT_OUTPUT + b"".join(
     (marker.label + "\r\n").encode("ascii") for marker in hil.BRINGUP_APP_MARKERS
@@ -355,6 +393,15 @@ class HilTests(unittest.TestCase):
             "\n".join(values) + "\n", encoding="utf-8"
         )
 
+    def write_psram_config(self):
+        values = [
+            "{}={}".format(name, value)
+            for name, value in hil.PSRAM_REQUIRED_CONFIG
+        ]
+        (self.directory / ".config").write_text(
+            "\n".join(values) + "\n", encoding="utf-8"
+        )
+
     def storage_boot_output(self):
         return GOOD_BOOT_OUTPUT + (
             b"P2STORAGE:W25=PRIVATE JEDEC=EF7018\r\n"
@@ -497,6 +544,36 @@ class HilTests(unittest.TestCase):
             ],
         )
 
+    def test_psram_wrapper_locks_destructive_full_coverage_run_and_build(self):
+        wrapper_path = pathlib.Path(__file__).parents[1] / "test-psram.py"
+        spec = importlib.util.spec_from_file_location("p2_test_psram", wrapper_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        wrapper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(wrapper)
+
+        with mock.patch.object(wrapper.hil, "main", return_value=41) as main:
+            rc = wrapper.main(
+                ["--execute", "--sequence", "A55A0713", "--timeout", "1"]
+            )
+
+        self.assertEqual(rc, 41)
+        self.assertEqual(
+            main.call_args.args[0],
+            [
+                "--execute",
+                "--protocol",
+                "psram",
+                "--cycles",
+                "1",
+                "--timeout",
+                "1800",
+                "--psram-sequence",
+                "A55A0713",
+                "--build-standalone",
+            ],
+        )
+
     def test_ostest_wrapper_supports_one_prebuilt_assertion_run(self):
         wrapper_path = pathlib.Path(__file__).parents[1] / "test-ostest.py"
         spec = importlib.util.spec_from_file_location(
@@ -602,6 +679,23 @@ class HilTests(unittest.TestCase):
             [
                 str(hil.REPO_ROOT / "tools" / "p2" / "build.sh"),
                 "smartpins",
+            ],
+            cwd=str(hil.REPO_ROOT),
+            check=False,
+        )
+
+    def test_psram_build_runner_selects_board_profile(self):
+        completed = mock.Mock(returncode=0)
+        with mock.patch.object(
+            hil.subprocess, "run", return_value=completed
+        ) as run:
+            rc = hil.default_build_runner("psram")
+
+        self.assertEqual(rc, 0)
+        run.assert_called_once_with(
+            [
+                str(hil.REPO_ROOT / "tools" / "p2" / "build.sh"),
+                "psram",
             ],
             cwd=str(hil.REPO_ROOT),
             check=False,
@@ -873,6 +967,269 @@ class HilTests(unittest.TestCase):
         self.assertEqual(
             marker_status["storage_protocol"]["expected_checksum"], checksum
         )
+
+    def test_psram_sends_nonce_after_prompt_and_validates_full_32mib_run(self):
+        self.write_psram_config()
+        sequence = "A55A0713"
+        session = FakeSession(
+            self.clock,
+            [GOOD_BOOT_OUTPUT + b"nsh> ", good_psram_response(sequence)],
+        )
+        factory = SessionFactory([session])
+        lock = RecordingLock()
+        environment = self.env()
+        environment["P2_ALLOW_PSRAM_WRITE"] = "1"
+        argv = self.argv("psram") + [
+            "--protocol",
+            "psram",
+            "--psram-sequence",
+            sequence,
+        ]
+
+        with mock.patch.object(hil, "REPO_ROOT", self.directory):
+            rc = self.invoke(argv, environment, factory, lock)
+
+        self.assertEqual(rc, hil.EXIT_OK)
+        self.assertEqual(session.writes, [psram_protocol.command_bytes(sequence)])
+        markers = json.loads(
+            (
+                self.directory / "psram" / "cycle-001" / "markers.json"
+            ).read_text()
+        )
+        self.assertTrue(markers["complete"])
+        self.assertTrue(markers["psram_protocol"]["complete"])
+        self.assertEqual(
+            markers["psram_protocol"]["values"]["full_bytes"],
+            32 * 1024 * 1024,
+        )
+        metadata = json.loads(
+            (self.directory / "psram" / "metadata.json").read_text()
+        )
+        self.assertEqual(metadata["external_bytes"], 32 * 1024 * 1024)
+        self.assertEqual(metadata["psram_expected_fnv1a"], "634C9DC5")
+        self.assertTrue(metadata["destructive"])
+        self.assertFalse(metadata["native_memory"])
+        copied_config = self.directory / "psram" / "inputs" / ".config"
+        self.assertEqual(
+            metadata["preserved_input_sha256"]["inputs/.config"],
+            hil.sha256_file(copied_config),
+        )
+
+    def test_psram_config_drift_after_preservation_refuses_before_load(self):
+        self.write_psram_config()
+        sequence = "A55A0713"
+        factory = SessionFactory([])
+        lock = RecordingLock()
+        environment = self.env()
+        environment["P2_ALLOW_PSRAM_WRITE"] = "1"
+        argv = self.argv("psram-config-drift") + [
+            "--protocol",
+            "psram",
+            "--psram-sequence",
+            sequence,
+        ]
+
+        def drift_config(_port):
+            config = self.directory / ".config"
+            config.write_text(
+                config.read_text(encoding="utf-8") + "# drift\n",
+                encoding="utf-8",
+            )
+            return ()
+
+        with mock.patch.object(hil, "REPO_ROOT", self.directory):
+            rc = hil.main(
+                argv,
+                env=environment,
+                process_factory=factory,
+                monotonic=self.clock.monotonic,
+                utc_now=self.clock.utc_now,
+                lock_factory=lock.factory,
+                owner_probe=drift_config,
+                port_validator=lambda port: port == "/dev/fake-p2",
+            )
+
+        self.assertEqual(rc, hil.EXIT_SAFETY)
+        self.assertEqual(factory.commands, [])
+        self.assertEqual(lock.entered, 1)
+        status = json.loads(
+            (self.directory / "psram-config-drift" / "status.json").read_text()
+        )
+        self.assertEqual(status["status"], "FAIL")
+        self.assertIn("changed during the run", status["failure_reason"])
+
+    def test_psram_gate_config_nonce_and_single_cycle_are_mandatory(self):
+        self.write_psram_config()
+        factory = SessionFactory([])
+        lock = RecordingLock()
+        base = self.argv("psram-safety") + ["--protocol", "psram"]
+
+        with mock.patch.object(hil, "REPO_ROOT", self.directory):
+            rc = self.invoke(
+                base + ["--psram-sequence", "A55A0713"],
+                self.env(),
+                factory,
+                lock,
+            )
+        self.assertEqual(rc, hil.EXIT_SAFETY)
+        self.assertEqual(lock.entered, 0)
+
+        environment = self.env()
+        environment["P2_ALLOW_PSRAM_WRITE"] = "1"
+        with mock.patch.object(hil, "REPO_ROOT", self.directory):
+            rc = self.invoke(base, environment, factory, lock)
+        self.assertEqual(rc, hil.EXIT_SAFETY)
+        self.assertEqual(lock.entered, 0)
+
+        with mock.patch.object(hil, "REPO_ROOT", self.directory):
+            rc = self.invoke(
+                base + ["--psram-sequence", "a55a0713"],
+                environment,
+                factory,
+                lock,
+            )
+        self.assertEqual(rc, hil.EXIT_SAFETY)
+        self.assertEqual(lock.entered, 0)
+
+        with mock.patch.object(hil, "REPO_ROOT", self.directory):
+            rc = self.invoke(
+                base
+                + [
+                    "--psram-sequence",
+                    "A55A0713",
+                    "--cycles",
+                    "2",
+                ],
+                environment,
+                factory,
+                lock,
+            )
+        self.assertEqual(rc, hil.EXIT_SAFETY)
+        self.assertEqual(lock.entered, 0)
+
+    def test_psram_preserves_board_service_app_profile_and_pin_sources(self):
+        environment = self.env()
+        environment["P2_ALLOW_PSRAM_WRITE"] = "1"
+        args = hil.build_parser().parse_args(
+            self.argv("psram-preserve")
+            + [
+                "--protocol",
+                "psram",
+                "--psram-sequence",
+                "A55A0713",
+            ]
+        )
+        values = dict(hil.PSRAM_REQUIRED_CONFIG)
+
+        with mock.patch.object(hil, "read_kconfig", return_value=values):
+            config = hil.config_from_args(
+                args,
+                environment,
+                self.clock.utc_now,
+                lambda port: port == "/dev/fake-p2",
+            )
+
+        config.artifact_dir.mkdir()
+        preserved = set(hil.preserve_hil_inputs(config))
+        for expected in (
+            "inputs/p2psram_main.c",
+            "inputs/p2_ec32mb_psram.h",
+            "inputs/p2_ec32mb_psram.c",
+            "inputs/p2_ec32mb_psram_logic.h",
+            "inputs/p2_ec32mb_psram_service.S",
+            "inputs/p2_ec32mb_psram_wire.h",
+            "inputs/p2_ec32mb_pins.c",
+            "inputs/p2_ec32mb_pins.h",
+            "inputs/p2_ec32mb_boot.c",
+            "inputs/defconfig",
+            "inputs/p2-ec32mb-Kconfig",
+            "inputs/src-Makefile",
+        ):
+            self.assertIn(expected, preserved)
+
+    def test_psram_full_validator_rejects_missing_progress(self):
+        self.write_psram_config()
+        sequence = "A55A0713"
+        response = good_psram_response(sequence).replace(
+            b"P2PSRAM:PROGRESS:SEQUENCE=A55A0713:READ=33554432\r\n", b""
+        )
+        session = FakeSession(
+            self.clock,
+            [GOOD_BOOT_OUTPUT + b"nsh> ", response],
+        )
+        factory = SessionFactory([session])
+        lock = RecordingLock()
+        environment = self.env()
+        environment["P2_ALLOW_PSRAM_WRITE"] = "1"
+        argv = self.argv("psram-missing-progress") + [
+            "--protocol",
+            "psram",
+            "--psram-sequence",
+            sequence,
+        ]
+
+        with mock.patch.object(hil, "REPO_ROOT", self.directory):
+            rc = self.invoke(argv, environment, factory, lock)
+
+        self.assertEqual(rc, hil.EXIT_HIL_FAILURE)
+        status = json.loads(
+            (
+                self.directory
+                / "psram-missing-progress"
+                / "cycle-001"
+                / "status.json"
+            ).read_text()
+        )
+        self.assertIn("read progress", status["reason"])
+
+    def test_psram_does_not_reuse_stale_progress_received_before_command(self):
+        self.write_psram_config()
+        sequence = "A55A0713"
+        response = good_psram_response(sequence)
+        stale_lines = []
+        for direction in ("WRITE", "READ"):
+            for value in range(
+                4 * 1024 * 1024,
+                32 * 1024 * 1024 + 1,
+                4 * 1024 * 1024,
+            ):
+                line = (
+                    "P2PSRAM:PROGRESS:SEQUENCE={}:{}={}\r\n".format(
+                        sequence, direction, value
+                    ).encode("ascii")
+                )
+                stale_lines.append(line)
+                response = response.replace(line, b"")
+
+        session = FakeSession(
+            self.clock,
+            [GOOD_BOOT_OUTPUT + b"".join(stale_lines) + b"nsh> ", response],
+        )
+        factory = SessionFactory([session])
+        lock = RecordingLock()
+        environment = self.env()
+        environment["P2_ALLOW_PSRAM_WRITE"] = "1"
+        argv = self.argv("psram-stale-progress") + [
+            "--protocol",
+            "psram",
+            "--psram-sequence",
+            sequence,
+        ]
+
+        with mock.patch.object(hil, "REPO_ROOT", self.directory):
+            rc = self.invoke(argv, environment, factory, lock)
+
+        self.assertEqual(rc, hil.EXIT_HIL_FAILURE)
+        self.assertEqual(session.writes, [psram_protocol.command_bytes(sequence)])
+        status = json.loads(
+            (
+                self.directory
+                / "psram-stale-progress"
+                / "cycle-001"
+                / "status.json"
+            ).read_text()
+        )
+        self.assertIn("progress", status["reason"])
 
     def test_boot_protocol_ram_loads_nuttx_and_requires_ordered_startup_markers(self):
         session = FakeSession(self.clock, [GOOD_BOOT_OUTPUT])
