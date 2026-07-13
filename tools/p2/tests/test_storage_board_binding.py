@@ -33,6 +33,7 @@ class StorageBoardBindingTests(unittest.TestCase):
     def test_storage_profile_enables_partitioned_smart_and_block_bindings(self):
         profile = (BOARD / "configs/storage/defconfig").read_text()
         for setting in (
+            "CONFIG_BCH=y",
             "CONFIG_BOARD_LATE_INITIALIZE=y",
             "CONFIG_P2_STORAGE=y",
             "CONFIG_P2_EC32MB_STORAGE_BINDINGS=y",
@@ -47,6 +48,9 @@ class StorageBoardBindingTests(unittest.TestCase):
             "CONFIG_MMCSD_SPICLOCK=2000000",
         ):
             self.assertIn(setting, profile)
+
+        kconfig = (ROOT.parent / "apps/testing/p2storage/Kconfig").read_text()
+        self.assertIn("depends on BCH && !DISABLE_PSEUDOFS_OPERATIONS", kconfig)
 
     def test_late_init_binds_flash_before_sd_and_reports_exact_exposure(self):
         source = (BOARD / "src/p2_ec32mb_boot.c").read_text()

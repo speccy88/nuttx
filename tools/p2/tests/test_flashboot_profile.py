@@ -14,6 +14,7 @@ class FlashBootProfileTests(unittest.TestCase):
     def test_profile_has_reset_romfs_and_non_destructive_verifier(self):
         profile = (BOARD / "configs/flashboot/defconfig").read_text()
         for setting in (
+            "CONFIG_BCH=y",
             "CONFIG_BOARDCTL_RESET=y",
             "CONFIG_ETC_ROMFS=y",
             "CONFIG_FS_ROMFS=y",
