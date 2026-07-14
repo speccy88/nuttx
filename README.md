@@ -21,9 +21,9 @@ path needs no source build and writes neither SPI flash nor the microSD card.
 
 Release: [`p2-edge-flat-up-v0.1.0`](https://github.com/speccy88/nuttx/releases/tag/p2-edge-flat-up-v0.1.0)
 
-The supplied installer and `loadp2` binary are qualified on Apple-silicon
-macOS. Connect a PropPlug to P62/P63, power the board, and close every serial
-terminal before continuing. Only one process can own the PropPlug at a time.
+The supplied installer and `loadp2` binary target Apple-silicon macOS. Connect
+a PropPlug to P62/P63, power the board, and close every serial terminal before
+continuing. Only one process can own the PropPlug at a time.
 
 Download the complete bundle and verify its outer checksum:
 
@@ -92,8 +92,8 @@ nsh> free
 nsh> ls /dev
 ```
 
-`p2help` is the release's on-board tour of the module, registered devices,
-fixtures, and useful demonstration commands.
+`p2help` is the showcase image's on-board tour of the module, registered
+devices, fixtures, and useful demonstration commands.
 
 ## Release files and board selection
 
@@ -105,24 +105,25 @@ silently choose the wrong image.
 | P2-EC32MB Rev B | `p2-ec32mb` | `p2-edge-flat-up-v0.1.0-p2-ec32mb-revb-ram.elf` | `p2-edge-flat-up-v0.1.0-p2-ec32mb-revb-flash.bin` | `p2-edge-flat-up-v0.1.0-p2-ec32mb-revb-_BOOT_P2.BIX` |
 | P2-EC Rev D | `p2-ec` | `p2-edge-flat-up-v0.1.0-p2-ec-revd-ram.elf` | `p2-edge-flat-up-v0.1.0-p2-ec-revd-flash.bin` | `p2-edge-flat-up-v0.1.0-p2-ec-revd-_BOOT_P2.BIX` |
 
-The release-root `_BOOT_P2.BIX` is a convenience alias for **P2-EC32MB Rev B
-only**. Do not copy that alias to a Rev D card. The bundle also places an exact
+The release-root `_BOOT_P2.BIX` is a convenience alias for
+**P2-EC32MB Rev B only**. Do not copy that alias to a Rev D card. The bundle
+also places an exact
 `_BOOT_P2.BIX` under each `boards/p2-ec32mb-revb/` and
 `boards/p2-ec-revd/` directory, and the installer selects the right one from
 `--board`.
 
-Each flash binary has a neighboring `.json` layout manifest. The bundle also
-contains both build configurations, `release-manifest.json`, an evidence
+Each flash binary has a neighboring `.json` layout manifest. The bundle
+also contains both build configurations, `release-manifest.json`, an evidence
 archive, `SHA256SUMS.txt`, the pinned microSD writer, and the separately
-licensed `loadp2-0.078-macos-arm64`. `./install-p2.sh verify` checks the entire
-set before any install command is printed or executed.
+licensed `loadp2-0.078-macos-arm64`. `./install-p2.sh verify` checks the
+entire set before any install command is printed or executed.
 
 ## Install in RAM, SPI flash, or microSD
 
 All installer actions are dry-runs unless `--execute` and their named
 authorization variables are present. A dry-run verifies the whole release and
-prints the exact command without opening serial, resetting the P2, erasing
-flash, or writing the card.
+prints the planned command and payload metadata without opening serial,
+resetting the P2, erasing flash, or writing the card.
 
 ### RAM: temporary and safest
 
@@ -161,11 +162,59 @@ recovery setting and is the setting used during this release campaign.
 
 ### microSD: persistent `_BOOT_P2.BIX`
 
-The P2 ROM looks for the exact filename `_BOOT_P2.BIX` in the root of a FAT32
-microSD card. The bundled in-situ writer deletes and recreates that one root
-file from the board-specific image; it does not format the card.
+The P2 ROM file-boot path requires an MBR (DOS) partition map at sector zero.
+Its first entry must be FAT32 type `0x0b` or `0x0c`, with status `0x00` or
+`0x80`, and must point to a valid FAT32 volume. GPT, exFAT, and a whole-device
+FAT32 “superfloppy” are not equivalent. In the partition root,
+`_BOOT_P2.BIX` must use that exact uppercase 8.3 name, be no larger than
+496 KiB, and be unfragmented. The release verifier checks the selected image
+against that limit; the exact byte count and SHA-256 are in
+`release-manifest.json` and `SHA256SUMS.txt`.
+These requirements come from the
+[P2 boot documentation](https://p2docs.github.io/boot.html#sd-card-boot) and
+the authoritative
+[ROM booter source](https://github.com/parallaxinc/propeller/blob/master/resources/FPGA%20Examples/ROM_Booter_v33k.spin2#L1187-L1339).
 
-Insert a FAT32 card, choose the serial-loader setting, and run:
+The bundled in-situ writer deletes and recreates only the root
+`_BOOT_P2.BIX` from the selected board image. It does not create or repair the
+MBR or FAT32 volume. Start with an empty, freshly formatted card so the first
+file allocation is contiguous.
+
+On macOS, identify the **whole removable disk**, replace `/dev/diskN`, and
+type that exact path at the guard. This destroys every volume on that disk:
+
+```sh
+DISK=/dev/diskN
+diskutil list "$DISK"
+printf 'DESTROY ALL DATA on %s? Type the exact path: ' "$DISK"
+IFS= read -r CONFIRM
+[ "$CONFIRM" = "$DISK" ] || exit 2
+diskutil partitionDisk "$DISK" 1 MBRFormat FAT32 P2BOOT R
+diskutil eject "$DISK"
+```
+
+On Linux, replace `/dev/sdX` with the whole removable disk. This guarded
+recipe requires `sfdisk` and `mkfs.fat` and also destroys the entire disk:
+
+```sh
+DISK=/dev/sdX
+PART="${DISK}1"
+lsblk -o NAME,PATH,SIZE,MODEL,TRAN,RM,MOUNTPOINTS "$DISK"
+printf 'DESTROY ALL DATA on %s? Type the exact path: ' "$DISK"
+IFS= read -r CONFIRM
+[ "$CONFIRM" = "$DISK" ] || exit 2
+lsblk -lnpo NAME "$DISK" | tail -n +2 | xargs -r sudo umount
+printf 'label: dos\nunit: sectors\n\nstart=2048, type=c, bootable\n' |
+  sudo sfdisk --wipe always "$DISK"
+sudo blockdev --rereadpt "$DISK"
+command -v udevadm >/dev/null && sudo udevadm settle
+sudo mkfs.fat -F 32 -n P2BOOT "$PART"
+sudo sfdisk --dump "$DISK"
+```
+
+For devices such as `/dev/mmcblk0` whose partition is named with `p1`, set
+`PART=/dev/mmcblk0p1` before `mkfs.fat`. Reinsert the prepared card in the P2,
+choose the serial-loader setting, and run:
 
 ```sh
 ./install-p2.sh sd --board "$BOARD" --port "$PORT"
@@ -175,13 +224,24 @@ P2_ALLOW_SD_DESTRUCTIVE=1 \
   ./install-p2.sh sd --board "$BOARD" --port "$PORT" --execute
 ```
 
-The writer's success proves that it recreated `_BOOT_P2.BIX`; it does not by
-itself prove a ROM boot. Power off, select SD-only `(OFF, OFF, ON)` for the
-strongest test, power on, and attach without loading another image. The
+The writer's success proves the exact source image, byte count, and close
+operation; it does not by itself prove contiguity or a ROM boot. Before moving
+the switches, boot the showcase from RAM or flash with FLASH ON and run the
+read-only card inspector:
+
+```text
+nsh> p2storage sd-rom-verify
+```
+
+It checks the MBR/FAT32 geometry, FSInfo sector, root entry, contiguous FAT
+chain and EOC, byte count, and raw image FNV-1a without changing the card.
+Then power off, select SD-only `(OFF, OFF, ON)` for the strongest test, power
+on, and attach without loading another image. The
 [goal status table](Documentation/platforms/p2/goal-status-table.md) separates
-an actual reset-only SD boot from a file-write result. At this documentation
-update, exact packaged-image SD-only HIL is still pending on P2-EC32MB and the
-Rev D image remains HIL-required.
+an actual reset-only SD boot from a file-write result. The exact Rev B
+candidate passed the write, complete raw-card inspection, and an independent
+SD-only reset with zero serial TX and no loader download. Rev D remains
+HIL-required until the same proof is run on that module.
 
 You may instead copy a board-specific release file to a FAT32 card on a host,
 but it must be renamed exactly `_BOOT_P2.BIX`, placed in the root, and stored
@@ -223,6 +283,11 @@ and makes the `nsh>` display stair-step or gain blank lines.
 For a RAM-only run, remain in the `install-p2.sh ram --execute` terminal. The
 commands below are best for an image booted from flash or SD. Close the current
 terminal first and ensure only one process owns the port.
+
+The examples use the macOS PropPlug path assigned earlier. On Linux, set
+`PORT=/dev/ttyUSB0` (or the actual `/dev/ttyACM0` path). The tio, minicom, and
+picocom commands are otherwise portable; the strict Screen precommand shown
+below is macOS/BSD syntax, while Linux uses `stty -F "$PORT" ...`.
 
 ### `loadp2` terminal
 
@@ -304,9 +369,13 @@ The final uppercase `N` selects no flow control. In PuTTY's Terminal panel set
 local echo and local line editing to **Force off**. Leave both “Implicit CR in
 every LF” and “Implicit LF in every CR” off. The
 [PuTTY serial command-line documentation](https://the.earth.li/~sgtatham/putty/0.84/htmldoc/Chapter3.html#using-cmdline-sercfg)
-describes `-sercfg`. Close the PuTTY window to exit. For the Ctrl-C acceptance
-test, prefer the PuTTY GUI: Windows Plink may consume Ctrl-C as a local console
-interrupt and terminate itself instead of sending byte `0x03` to NuttX.
+describes `-sercfg`. That option sets framing and flow control, but not the
+Terminal-panel settings. If your defaults were changed, save all of the above
+as a `P2-NuttX` PuTTY session and use `plink.exe -load "P2-NuttX"`; otherwise
+Plink inherits its current defaults. Close the PuTTY window to exit. For the
+Ctrl-C acceptance test, prefer the PuTTY GUI: Windows Plink may consume Ctrl-C
+as a local console interrupt and terminate itself instead of sending byte
+`0x03` to NuttX.
 
 ### Parallax Serial Terminal
 
@@ -342,8 +411,8 @@ nsh> ls -l /dev
 nsh> mount
 ```
 
-The release enables eight-entry command history and completion. Type the first
-four letters below, press Tab, then type ` -a` and Enter:
+The showcase configuration enables eight-entry command history and completion.
+Type the first four letters below, press Tab, then type ` -a` and Enter:
 
 ```text
 nsh> unam<Tab> -a
@@ -358,13 +427,12 @@ nsh> echo P2HISTORY:PASS
 
 The shell is configured so Ctrl-C interrupts the foreground command and
 returns the prompt. A safe manual check is to run `sleep 30`, press Ctrl-C, and
-confirm that `nsh>` returns before 30 seconds. A clean-at-build Rev B
-development candidate passed both checks under the automated showcase runner.
-That candidate used interim NuttX commit
-`6a77317aceeaa772cf3d9636153a0817fd797773`; the runner newline-capture fix and
-this documentation were not yet committed, so it is not the final release
-hash. Repeat both checks against the final hash-bound ELF before publication;
-consult the status table for that result.
+confirm that `nsh>` returns before 30 seconds. The clean Rev B candidate RAM
+HIL passed this for both `sleep 30` and the external
+`pwm -f 1000 -d 50 -t 30` command, in addition to Tab completion and Up-arrow
+history. Its preserved evidence binds those checks to candidate ELF SHA-256
+`1409460f5399e267516e6ea394d99cf2b30e638ac55cbc82318175712c01dd3c`;
+the verified local package archives that evidence unchanged.
 
 Useful low-footprint commands include `cat`, `cp`, `echo`, `hexdump`, `kill`,
 `ls`, `mkdir`, `mount`, `mv`, `ps`, `rm`, `rmdir`, `sleep`, `umount`, and the
@@ -376,7 +444,8 @@ in this image; use normal file commands and `hexdump` instead.
 
 The same showcase image exposes normal NuttX devices and focused commands. Run
 `p2help` on the board before using the examples; it prints the module identity
-and only the devices actually present in that build.
+and the interfaces enabled in that build. Use `ls /dev` and the startup markers
+to distinguish devices that are physically available at runtime.
 
 | Capability | NuttX interface | First useful command |
 | --- | --- | --- |
@@ -390,6 +459,7 @@ and only the devices actually present in that build.
 | I2C and BMP180 | `/dev/i2c0` P24/P25, `/dev/press0` | `p2i2c` |
 | Onboard SPI flash | protected `/dev/smart0` data partition | `p2storage probe` |
 | Onboard microSD | `/dev/mmcsd0` | `p2storage probe` |
+| P2 ROM SD layout | read-only MBR/FAT32/root/chain/image check | `p2storage sd-rom-verify` |
 | EC32MB PSRAM | explicit `/dev/psram0` bulk store | `p2psram 12345678` |
 
 The two active-high buffered LEDs are P38/P39 on P2-EC32MB Rev B and P56/P57
@@ -420,7 +490,7 @@ prove monotonic behavior and device plumbing, not metrology-grade voltage.
 
 ### Use onboard filesystems
 
-At startup the image mounts an existing SmartFS volume as `/mnt/flash`. It
+With FLASH ON, startup mounts an existing SmartFS volume as `/mnt/flash`. It
 never automatically formats a blank or damaged volume. When the boot log says
 the mount succeeded:
 
@@ -444,6 +514,11 @@ There is no invented card-detect GPIO and no automatic formatter. A missing,
 unformatted, or unsupported card reports an error. Flash and microSD share
 P58–P61, so one storage arbiter owns the pin-mode transition.
 
+With FLASH OFF for ROM SD boot, the module disconnects the W25 chip select.
+`/dev/smart0` is then intentionally absent, startup reports
+`P2FLASHBOOT:SMARTFS=UNAVAILABLE:CHECK_FLASH_SWITCH`, and NuttX continues with
+`/dev/mmcsd0` instead of waiting forever for an inaccessible flash device.
+
 ## What is physically verified
 
 The P2-EC32MB Rev B flat-UP baseline has preserved HIL evidence for startup,
@@ -451,20 +526,45 @@ the scheduler and applicable OSTest set, NSH, GPIO/edge, UART1, PWM/capture,
 DAC/ADC with the RC fixture, SPI loopback, P24/P25 BMP180 I2C, flash/SmartFS,
 runtime microSD/FAT, flash ROM boot, and explicit 32 MiB PSRAM service.
 
-The final release adds a single dual-board `showcase` configuration. The latest
-clean-at-build P2-EC32MB development candidate used apps commit
-`f77074ac4715fad525239a464fb0d1d4a8c3b279` and interim NuttX commit
-`6a77317aceeaa772cf3d9636153a0817fd797773`. Its RAM HIL run reached every
-enabled target marker: ordered boot/readiness, `p2help`, the LED device/daemon
-path, Tab, history, both Ctrl-C checks, GPIO, edge, UART, DAC/ADC, safe PWM,
-SPI, BMP180, flash/SD runtime probes, and the full 32 MiB PSRAM final
-`P2PSRAM:PASS`. The saved host status is still FAIL because the runner sliced
-away the newline after that final PSRAM marker before strict parsing; the
-target did not fail, and the newline-slice bug now has a regression-tested
-fix. The final NuttX SHA and final hash-bound HIL, packaged flash boot, and
-packaged `_BOOT_P2.BIX` SD-only boot remain pending. P2-EC Rev D is build- and
-static-verification qualified only because no Rev D module is attached; its
-runtime claims remain **HIL-REQUIRED**. See the
+The release candidate adds one dual-board `showcase` configuration at NuttX
+commit `14cadad3a6794e10cbc9f0dfb20f352e4844d35f` and companion apps commit
+`a333035462f545056e7a2fb859a9fbdc6d4ef831`. The clean P2-EC32MB Rev B raw
+candidate is 402,452 bytes with SHA-256
+`6ff205df0f724eab91eb0619b53cffc579819cdcb99049578a9f01cb4ba519e2`;
+its 494,808-byte ELF has SHA-256
+`1409460f5399e267516e6ea394d99cf2b30e638ac55cbc82318175712c01dd3c`.
+Its hash-bound RAM run covers ordered
+boot/readiness, `p2help`, the LED device/daemon path, Tab, history, both Ctrl-C
+checks, GPIO, edge, UART, DAC/ADC, safe PWM, SPI, BMP180, flash/SD runtime
+probes, and the full 32 MiB PSRAM proof. All 16 required stages passed in
+379.246116 seconds. Guarded programming of the same raw candidate also passed,
+covering `[0x00000000,0x00062500)` after erasing
+`[0x00000000,0x00063000)`. The exact-candidate 20-cycle reset-only flash
+campaign was intentionally stopped after ten completed, redundant PASS
+cycles to keep testing proportional. Each accepted cycle booted with CRC
+`B31D0271`, transmitted zero bytes before the prompt, and verified persistent
+sequence `F23A0713` over one MiB with FNV-1a `693C9DC5`. Cycle 11 and the
+top-level wrapper manifest report interruption/`FAIL`; they are not presented
+as PASS artifacts. The ten completed per-cycle results provide the accepted
+reset-only flash-boot proof. The exact candidate's final SD-card write and
+raw-layout inspection are also PASS. The card now has an MBR type `0C`
+partition at LBA 2048 with 61,130,752 sectors. `_BOOT_P2.BIX` is a contiguous
+25-cluster file ending at FAT EOC `0FFFFFFF`; the inspector reproduced all
+402,452 bytes with FNV-1a `D0D0F215`. The exact candidate then passed one
+independent SD-only ROM reset in 16.688852 seconds at `(OFF, OFF, ON)`. The
+verifier downloaded no loader, transmitted zero serial bytes, and observed in
+order the P2 entry/data/BSS/NuttX markers, expected W25 and SmartFS
+unavailability, the 400 kHz/2 MHz microSD frequencies, `/dev/mmcsd0`, the
+`p2-ec32mb` showcase marker, and the first NSH prompt. The release evidence
+archive preserves the run under
+`evidence/p2-ec32mb-revb/additional/ec32mb-sdboot-hil/`; its `status.json` has
+SHA-256 `61534212bd8bcf9f4ca996d36731c0e612951d7d9554c96ff360aaf607a3e758`.
+A separate 402,060-byte development-only image, SHA-256
+`e1226636846386e5538e731b0fa568ca99fffeb6f992bc6e271f5b5c86e5b3cf`,
+previously passed both raw inspection and SD-only boot; it remains historical
+fix evidence rather than the clean candidate to package. P2-EC Rev D is
+build- and static-verification qualified only because no Rev D module is
+attached, so its runtime claims remain **HIL-REQUIRED**. See the
 [goal status table](Documentation/platforms/p2/goal-status-table.md) for the
 line-by-line distinction between the proven baseline and final release work.
 
@@ -504,6 +604,11 @@ The accepted toolchain and release host are currently arm64 macOS. Before
 bootstrapping, provide `git`, `make`, `cmake`, Python 3, `shasum`, `flock`,
 `lsof`, and `timeout` or `gtimeout`. The bootstrap builds pinned p2llvm and
 FlexProp components and checks out the exact companion NuttX-apps revision.
+
+This clone command reproduces the tagged source. The final binaries were built
+and verified from NuttX `14cadad3a6794e10cbc9f0dfb20f352e4844d35f` with sibling
+apps at `a333035462f545056e7a2fb859a9fbdc6d4ef831`; the later NuttX changes in
+the tag update documentation only.
 
 ```sh
 mkdir p2-nuttx-v0.1.0
@@ -564,9 +669,16 @@ silently open serial, reset, erase flash, or write SD.
   separately obtained compatible loader and are not release-qualified here.
 - P2-EC Rev D compiles and passes static checks, but remains HIL-required until
   run on actual Rev D hardware.
-- Exact final-hash showcase HIL, packaged flash boot, and SD-only
-  `_BOOT_P2.BIX` boot remain pending until preserved PASS evidence binds them
-  to the final release hashes.
+- The exact clean P2-EC32MB candidate passes RAM HIL, guarded flash
+  programming, and ten completed hash-bound reset-only flash boots. The
+  originally requested 20-cycle wrapper was intentionally interrupted after
+  those redundant PASS results; its top-level `FAIL` is interruption status,
+  not a claimed PASS artifact or a boot failure. Final-candidate SD write and
+  raw-card layout inspection pass, as does one exact-candidate no-loader
+  SD-only reset with zero serial TX. The 20-file release package and a clean
+  extracted-bundle verification also pass; the release supplies both outer
+  checksums and an in-bundle verifier. No runtime claim extends to P2-EC Rev D
+  without a Rev D module.
 
 ## Port documentation and evidence
 

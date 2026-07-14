@@ -38,10 +38,17 @@ Claims have these fail-closed rules:
 Board reservations
 ------------------
 
-P40-P57 are reserved for PSRAM, P58-P61 for storage, and P62-P63 for the
-console.  P38-P39 are reserved for the buffered board LEDs only when
-``CONFIG_ARCH_LEDS`` is enabled.  P0-P37 remain dynamically claimable; see
-:doc:`pin-map` for the installed HIL allocations.
+On P2-EC32MB Rev B, P40-P57 are reserved for PSRAM, P58-P61 for storage, and
+P62-P63 for the console.  P38-P39 are reserved for the buffered board LEDs
+when either ``CONFIG_ARCH_LEDS`` or ``CONFIG_USERLED`` is enabled.  P0-P37
+remain dynamically claimable.
+
+P2-EC Rev D has no PSRAM, so P40-P55 remain available for configured lower
+halves.  P56-P57 are instead its active-high LEDs and are reserved when either
+LED option is enabled; storage and console retain P58-P61 and P62-P63.  That
+mapping is compiled and statically verified, while Rev D runtime behavior
+remains **HIL-REQUIRED**.  See :doc:`pin-map` for the installed Rev B HIL
+allocations and the complete board distinction.
 
 Standard device interfaces
 --------------------------
@@ -93,6 +100,10 @@ dynamically: PWM conflicts with DAC and capture conflicts with ADC.  The
 original P4/P5 direct jumper was used only for the verified one-source digital
 PWM/capture test.  It has now been replaced with the requested series resistor
 and P5-to-ground capacitor.  The separate analog profile passed 20/20 cycles.
+The current candidate also passed a bounded ``/dev/pwm0`` open/start/stop
+smoke while driving that RC load.  This is an RC-safe device-control check,
+not digital waveform or capture qualification; the latter remains historical
+evidence from the direct-jumper fixture.
 
 The board I2C implementation claims P24 as SDA and P25 as SCL through the
 central pin manager and exposes the NuttX bit-bang bus as ``/dev/i2c0``.  Both
@@ -108,13 +119,25 @@ HIL evidence
 ------------
 
 ``artifacts/hil/20260713T063221.439668Z-smartpins`` completed 50/50 reset/load
-cycles.  Every cycle verified the GPIO pattern, six sampled edges, a 16-byte
-UART record, 1-kHz PWM at 25/50/75 percent duty, and a 16-byte SPI loopback;
-each stage emitted its safe-float marker.  DAC/ADC and I2C were not part of
-that campaign.  A subsequent 20-cycle analog campaign at
+cycles on the historical direct-jumper fixture.  Every cycle verified the
+GPIO pattern, six sampled edges, a 16-byte UART record, 1-kHz PWM at
+25/50/75 percent duty, and a 16-byte SPI loopback; each stage emitted its
+safe-float marker.  DAC/ADC and I2C were not part of that campaign.  A
+subsequent 20-cycle analog campaign at
 ``artifacts/hil/20260713T110743.191438Z-smartpins`` produced strictly
 increasing ADC values at all three DAC codes and floated both pins after every
 cycle.  The separate I2C campaign
 ``artifacts/hil/20260713T111043.745628Z-i2c`` passed 20/20 cycles, including
 true repeated starts, 640 pressure readings from 100000 through 100019 Pa, and
 zero recovery pulses.
+
+The current NuttX ``14cadad3a6794e10cbc9f0dfb20f352e4844d35f`` / apps
+``a333035462f545056e7a2fb859a9fbdc6d4ef831`` Rev-B RAM showcase is **PASS**
+at ``/tmp/p2-release-final.14cadad-r1/ec32mb-showcase-hil``.  It reran GPIO,
+edge, UART, ADC/DAC, SPI, BMP180 I2C, and the RC-safe PWM smoke without
+claiming a digital P4/P5 waveform.  All 16 required showcase stages passed in
+379.246116 seconds; the status SHA-256 is
+``2ce85939d560a2e727b845d1e87f758939dd6028ce6b6afaba1bcc1c031e8250``.
+This ``/tmp`` evidence is provisional and must be preserved in or linked from
+the release package.  P2-EC Rev D has no PSRAM, uses P56/P57 for LEDs, and
+remains **HIL-REQUIRED** for runtime Smart Pin claims.

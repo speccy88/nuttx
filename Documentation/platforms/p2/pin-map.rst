@@ -1,5 +1,5 @@
-P2-EC32MB pin map
-=================
+P2 Edge module pin maps
+=======================
 
 Status: board reservations are **STATICALLY-VERIFIED** against the production
 pin manager.  The installed digital fixture is **HIL-VERIFIED**; the BMP180
@@ -16,7 +16,7 @@ and analog fixtures are also **HIL-VERIFIED**.
      - Free until claimed by a configured lower half
    * - P38-P39
      - Buffered onboard LEDs
-     - Reserved only with ``CONFIG_ARCH_LEDS``
+     - Reserved with ``CONFIG_ARCH_LEDS`` or ``CONFIG_USERLED``
    * - P40-P55
      - Four PSRAM QPI data banks
      - Always reserved for PSRAM
@@ -41,6 +41,13 @@ assignments below are deliberately not compiled in as permanent board
 reservations, so a configuration must still claim them through the central
 manager.
 
+P2-EC Rev D differs deliberately: it has no PSRAM, so P40-P55 are not reserved
+for PSRAM.  P56/P57 are its active-high board LEDs and are reserved only when
+``CONFIG_ARCH_LEDS`` or ``CONFIG_USERLED`` is enabled.  P58-P61 remain storage
+and P62/P63 remain the console.  The Rev D policy is compiled and statically
+verified, but runtime behavior is **HIL-REQUIRED** until a Rev D module is
+available.
+
 .. list-table:: Installed and reported HIL fixture
    :header-rows: 1
 
@@ -55,7 +62,8 @@ manager.
      - 50/50 HIL cycles passed
    * - P4/P5
      - Current resistive/capacitive DAC-to-ADC fixture
-     - Digital PWM/capture and 20/20 analog HIL cycles passed
+     - Current fixture: DAC/ADC and RC-safe PWM smoke passed; no digital
+       waveform/capture qualification
    * - P6/P7
      - Direct SPI MOSI-to-MISO loopback
      - 50/50 HIL cycles passed
@@ -74,3 +82,11 @@ registers ``/dev/press0``.  The live artifact
 cycles, including true repeated-start transfers and 640 pressure reads.  The
 fixture still depends on effective external 3.3-V pull-ups.  Detailed
 drive-order and direct-jumper constraints are in :doc:`hil-wiring`.
+
+The older 50/50 Smart Pin campaign used a direct P4--P5 jumper and qualified
+digital PWM/capture waveforms for that historical fixture.  The installed
+fixture is now the series resistor from P4 to P5 plus the P5-to-ground
+capacitor.  It passed the 20/20 DAC/ADC campaign and the current candidate's
+bounded ``/dev/pwm0`` open/start/stop smoke.  That RC-safe smoke proves device
+open/control/stop behavior only; it is not a current digital waveform or
+capture measurement.

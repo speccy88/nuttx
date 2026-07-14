@@ -3,7 +3,11 @@ P2-EC32MB final hardware-in-the-loop report
 
 Report snapshot: 2026-07-13.  This report distinguishes physical hardware
 results from compilation and host verification.  A path under
-``artifacts/hil`` is required for every hardware claim.
+``artifacts/hil`` or evidence preserved in and linked from the release package
+is required for a final release hardware claim.  The required candidate
+evidence is now preserved in the local release evidence archive; its ``/tmp``
+location remains provisional until the exact asset is uploaded and verified
+from a fresh GitHub download.
 
 Overall result
 --------------
@@ -13,26 +17,33 @@ Native startup, the 180 MHz clock including a host-referenced raw GETCT
 calibration, polled early console, CT1 preemption,
 detached 37+1-long contexts, upward-growing stacks, the NuttX scheduler,
 bring-up, NSH, SmartFS on the protected flash data partition, FAT32 on
-microSD, independent ROM flash boot, GPIO/UART/PWM/capture/general SPI Smart
-Pin devices, DAC/ADC, BMP180 I2C, and the explicit 32 MiB PSRAM service have
-hardware evidence.  The dedicated flat-UP scheduler campaign also passed
+microSD, independent ROM flash boot, a historically development-qualified ROM
+microSD boot, GPIO/UART/PWM/capture/general SPI Smart Pin devices, DAC/ADC,
+BMP180 I2C, and
+the explicit 32 MiB PSRAM service have hardware evidence.  The dedicated
+flat-UP scheduler campaign also passed
 1,004,078 counted events across priorities, round robin, semaphores,
 priority-inheritance mutexes, condition variables, message queues, signals,
 timers, pthread lifecycle/cancellation, and task recreation.
 
-The scoped flat-UP hardware acceptance is complete.  All 45 applicable
-``ostest`` rows and 57/57 strict parser groups per cycle passed one assertion
-cycle and five production cycles in both the priority-inheritance and real
+The historical scoped flat-UP hardware acceptance is complete.  All 45
+applicable ``ostest`` rows and 57/57 strict parser groups per cycle passed one
+assertion cycle and five production cycles in both the priority-inheritance
+and real
 condition-variable profiles: 12/12 physical RAM-load/reset cycles.  The two
 fixture-conditional groups remain blocked and six architecture-inapplicable
 groups remain N/A.  The raw-clock
 and dedicated scheduler-stress gates are independently accepted; neither is
 used as a substitute for ``ostest``.  Card-absent behavior and true
 power-cycle testing remain explicit fixture-dependent evidence gaps.  SMP is
-**DEFERRED / OUT OF SCOPE** and does not gate this flat-UP result.  Final
-source/toolchain evidence closure is complete: the post-freeze ABI matrix,
-host/static checks, artifact index, and committed implementation baselines are
-recorded below.
+**DEFERRED / OUT OF SCOPE** and does not gate this flat-UP result.  The
+current release candidate has clean dual-board builds, a fresh ABI PASS, Rev-B
+RAM showcase HIL, flash-programming HIL, and ten completed hash-bound
+reset-only flash boots.  Its exact SD write and read-only ROM-layout inspection
+plus its final no-loader SD-only ROM reset are also PASS.  The 20-file local
+package, all six installer dry-runs, and extracted-bundle verification are
+also PASS.  GitHub upload, fresh-download verification, and publication are
+still **PENDING** at this snapshot.
 
 1. Hardware setup
 -----------------
@@ -53,12 +64,15 @@ recorded below.
 * Console/programming: P62/P63 through a Parallax PropPlug.
 * Fixture: direct jumpers remain on P0--P1, P2--P3, and P6--P7.  Every digital
   test configures the receiving end as an input before enabling one source.
-  The accepted PWM/capture campaign used the former direct P4--P5 jumper.
+  The historical 50/50 PWM/capture waveform campaign used the former direct
+  P4--P5 jumper.
   That jumper has now been replaced by the requested analog fixture: a
   1 kOhm series resistor from P4 to P5 and a 100 nF capacitor from P5 to GND.
-  That fixture passed 20/20 DAC/ADC cycles.  P8 (SPI clock) and P9 (SPI chip
-  select) were controller outputs with no external connection.  A BMP180 is
-  installed with P24 SDA and P25 SCL and passed 20/20 I2C cycles.
+  That fixture passed 20/20 DAC/ADC cycles and the current candidate's bounded
+  RC-safe ``/dev/pwm0`` open/start/stop smoke.  The smoke is not digital
+  waveform/capture qualification.  P8 (SPI clock) and P9 (SPI chip select)
+  were controller outputs with no external connection.  A BMP180 is installed
+  with P24 SDA and P25 SCL and passed 20/20 I2C cycles.
 * Host-controlled power switching is unavailable because
   ``P2_POWER_CYCLE_COMMAND`` is empty.
 
@@ -87,8 +101,8 @@ and kconfig-frontends parser 4.11.0.  ``kconfig-conf`` is
 target compiler is P2 clang 14.0.0 and the linker is LLD 14.0.0.  p2llvm libc
 was deliberately neither built nor linked.
 
-The latest complete host run executed 262 tests successfully in 13.974
-seconds.  Python byte compilation, ``git diff --check``, Kconfig checks,
+The authoritative paired-tree host run executed 316 tests successfully in
+19.629 seconds.  Python byte compilation, ``git diff --check``, Kconfig checks,
 linked-ELF verification, and ``nxstyle`` on changed C/header files also
 passed.  These are host/static results, not substitutes for the HIL results
 below.
@@ -112,17 +126,75 @@ already-owned serial device.
 4. Boot-switch settings
 -----------------------
 
-The board's current physical switch position accepts PropPlug DTR reset and
-the P2 ROM serial loader.  The printed label on that position has not been
-visually confirmed, so this report does not invent a switch name.
+The qualified Rev-B settings, written as ``(FLASH,up,down)``, are now known:
 
-At that switch position, the sealed program artifact
+* ``(ON,OFF,OFF)`` selects serial/flash operation and accepts PropPlug DTR
+  reset plus the P2 ROM serial loader.
+* ``(OFF,OFF,ON)`` selects ROM microSD boot.  ``FLASH=OFF`` also disconnects
+  the W25 chip-select path, so W25 and SmartFS unavailability is expected in
+  this mode rather than a boot failure.
+
+At the serial/flash setting, the historical sealed program artifact
 ``artifacts/hil/20260713T102521Z-flash-program`` passed 20/20 independent ROM
 flash boots in ``artifacts/hil/20260713T103452Z-flashboot``.  One persistent
 serial connection observed zero bytes before each NSH prompt.  Every cycle
 reproduced boot CRC ``23FCF91E`` and mounted the existing SmartFS image without
 formatting, preserving its 1 MiB FNV-1a hash ``693C9DC5``.  These were PropPlug
 DTR resets; they do not satisfy the separate true removal-of-power gate.
+
+At the user-confirmed SD-only setting, the development qualification in
+``/private/tmp/p2-release-final.oBc9V4/ec32mb-sd-rom-boot-w25-guard`` passed a
+reset-only boot in 16.742169 seconds.  The verifier invoked no loader and
+transmitted zero serial bytes.  It received, in order, the four ``P2BOOT``
+markers, ``P2STORAGE:W25=UNAVAILABLE:CHECK_FLASH_SWITCH``, the 400 kHz/2 MHz
+MMC/SD frequency marker, ``P2STORAGE:MMCSD=/dev/mmcsd0``,
+``P2FLASHBOOT:SMARTFS=UNAVAILABLE:CHECK_FLASH_SWITCH``, the selected-board
+showcase marker, and the first NSH prompt.  The qualified development image
+was 402,060 bytes with SHA-256
+``e1226636846386e5538e731b0fa568ca99fffeb6f992bc6e271f5b5c86e5b3cf``.
+Those facts prove the fix and SD-only path, but are not presented as the
+identity of the later clean release assets.
+
+For the current 402,452-byte Rev-B candidate, programming serial flash is
+**PASS** at ``/tmp/p2-release-final.14cadad-r1/ec32mb-flash-program``.  It
+programmed ``[0x00000000,0x00062500)`` after erasing
+``[0x00000000,0x00063000)``.  That operation is not itself an independent boot
+proof.  The independent proof is **PASS** from
+``/tmp/p2-release-final.14cadad-r1/ec32mb-flashboot-hil/cycle-001`` through
+``cycle-010``.  Each completed reset-only cycle took about 94 seconds, opened
+no loader, transmitted zero bytes before the prompt, reproduced boot CRC
+``B31D0271``, and verified persistent sequence ``F23A0713`` across one MiB
+with FNV-1a ``693C9DC5``.  The originally requested 20-cycle wrapper was
+intentionally stopped after ten redundant PASS results to keep testing
+proportional.  Cycle 11 and the top-level ``status.json`` report manual
+interruption/``FAIL`` and are not presented as PASS artifacts or a hardware
+failure; acceptance rests on the ten completed per-cycle PASS files.
+The exact candidate was then written and independently inspected successfully.
+The initial write diagnostic
+``/tmp/p2-release-final.14cadad-r1/ec32mb-sd-write`` timed out; read-only
+``ec32mb-sd-inspect`` then correctly rejected the card with
+``P2STORAGE:SD:ROM-FAIL:STAGE=MBR:REASON=FIELDS``.  Corrective format
+``ec32mb-sd-format-final`` passed in 302.761617 seconds and created MBR type
+``0C``, start LBA 2048, and 61,130,752 sectors.  Exact-image write
+``ec32mb-sd-write-final`` passed, and read-only
+``ec32mb-sd-inspect-final`` passed in 38.236762 seconds with valid
+MBR/VBR/FSInfo/root metadata, a contiguous 25-cluster chain, EOC
+``0FFFFFFF``, exact 402,452 bytes, and FNV-1a ``D0D0F215``.  The independent
+no-loader reset proof is **PASS** at
+``/tmp/p2-release-final.14cadad-r1/ec32mb-sdboot-hil``.  At the
+user-confirmed ``(FLASH,up,down)=(OFF,OFF,ON)`` setting, it booted in
+16.688852 seconds, downloaded no loader, transmitted zero serial bytes, and
+received in order the four ``P2BOOT`` markers, the W25-unavailable marker,
+400 kHz/2 MHz MMC/SD frequency marker, ``/dev/mmcsd0``, the
+SmartFS-unavailable marker, the ``p2-ec32mb`` showcase marker, and the first
+NSH prompt.  Fragmentation verification was true and the recorded boot source
+was ``SD_ONLY_USER_CONFIRMED``.  The status, marker, and raw-console SHA-256
+values are respectively
+``61534212bd8bcf9f4ca996d36731c0e612951d7d9554c96ff360aaf607a3e758``,
+``ba6cd3da3cd1f0c9217295c7341c39708dfb03dc7f3ecce9dac09c40be1d0368``,
+and ``ea404e55c42ae0d9ba2bab8e6e5c6132acaf44fb94e7ea5cf8404df89eab42f2``.
+The historical 402,060-byte SD-only boot above remains useful fix evidence
+but is not substituted for this current-candidate proof.
 
 5. Exact Git commits
 --------------------
@@ -140,8 +212,8 @@ heads:
 * apps branch ``codex/p2-hil-finish-apps`` was at
   ``ba8b8c09013efb1bef684d414a97b297b57952d5``.
 
-All implementation and test-source changes are now committed.  The final
-source/tool freeze used by the ABI and host validation is:
+The pre-SD-boot-fix source/tool freeze used by the recorded ABI and host
+validation baseline is:
 
 * NuttX ``cfaf600a55f41d8ea538b83b1c8c1ce459c9996a``;
 * apps ``67673a8074c4bc07a161816150ed3b64350f4b59``.
@@ -149,11 +221,68 @@ source/tool freeze used by the ABI and host validation is:
 ``tools/p2/toolchain.lock`` records implementation baseline
 ``689ebdb6b831bc3d151c10c8e26379f55dc56b38`` and that same apps commit.  The
 lock update itself is committed in NuttX ``cfaf600a55...``; this one-commit
-lag is the intentional non-self-referential lock sequence.  The final report
-is a later documentation-only commit and does not alter the source or tools
-covered by the ABI run.
+lag is the intentional non-self-referential lock sequence.  The baseline ABI
+artifact independently records the actual source commit and tool hashes used
+for that run.
 
-The exact commits sealed into representative accepted build artifacts are:
+The ABI files tied to those commits remain useful architecture/compiler
+evidence, but they are not final release evidence after the later storage
+changes.  A clean candidate-bound rerun is recorded below.  The exact commits
+sealed into representative accepted build artifacts are:
+
+.. list-table:: Current clean release-candidate provenance
+   :header-rows: 1
+
+   * - Board
+     - Source commits
+     - Raw image
+     - ELF
+   * - P2-EC32MB Rev B
+     - NuttX ``14cadad3a6794e10cbc9f0dfb20f352e4844d35f``;
+       apps ``a333035462f545056e7a2fb859a9fbdc6d4ef831``
+     - 402,452 bytes; SHA-256
+       ``6ff205df0f724eab91eb0619b53cffc579819cdcb99049578a9f01cb4ba519e2``
+     - 494,808 bytes; SHA-256
+       ``1409460f5399e267516e6ea394d99cf2b30e638ac55cbc82318175712c01dd3c``
+   * - P2-EC Rev D, no PSRAM
+     - NuttX ``14cadad3a6794e10cbc9f0dfb20f352e4844d35f``;
+       apps ``a333035462f545056e7a2fb859a9fbdc6d4ef831``
+     - 386,752 bytes; SHA-256
+       ``596b0f022c28fa4462a6e13692ad54ecab095f17d6532d441e60e0dee481c230``
+     - 476,768 bytes; SHA-256
+       ``2d1e4f2d84455b6cd15edc31571796d9cc1505fae49de7f65245856b70f5bea7``
+
+The Rev-B build passed RAM showcase HIL at
+``/tmp/p2-release-final.14cadad-r1/ec32mb-showcase-hil`` and flash programming
+at ``/tmp/p2-release-final.14cadad-r1/ec32mb-flash-program``.  All 16 required
+showcase stages passed in 379.246116 seconds; ``status.json`` has SHA-256
+``2ce85939d560a2e727b845d1e87f758939dd6028ce6b6afaba1bcc1c031e8250``.
+The Rev-B build status/config SHA-256 values are
+``518e6dc825e0501d54c208e869af97a8ed820af0bccca123ba1aab96896edede`` and
+``28fcde788eddbf82c100426015b7331b37ccc747ee8973e5d7d457256f70f252``.
+The Rev-D build status/config SHA-256 values are
+``0f27ae1662c18ab051372d157ac030aa3f66bebb104a68ef3597462878737608`` and
+``ce66616aa712d9834372ef0bb7810f50262e55cfc2991aea22c43ea940c6a1ff``.
+Both builds carry toolchain-lock SHA-256
+``66871ac6bb8a96fbea5b5fc405e6a1a3743fa6c441775737cab80066678250aa``.
+Exact-candidate reset-only flash boot is accepted from the ten completed PASS
+cycles under ``/tmp/p2-release-final.14cadad-r1/ec32mb-flashboot-hil``.  The
+stable boot CRC is ``B31D0271`` and every cycle verified persistent sequence
+``F23A0713`` / one-MiB FNV-1a ``693C9DC5`` with zero pre-prompt TX.  The
+20-cycle wrapper's top-level status remains interruption/FAIL because it was
+intentionally stopped after cycle 10; it is not itself a PASS artifact.
+P2-EC Rev D is
+build- and static-verification qualified only; because no Rev-D module was
+attached, all runtime behavior remains **HIL-REQUIRED**.  Its lack of PSRAM is
+intentional board scope, not a missing test profile.
+
+Both candidate builds are flat UP; SMP is deliberately not enabled.
+Their provisional build directories are
+``/tmp/p2-release-final.14cadad-r1/ec32mb-build`` and
+``/tmp/p2-release-final.14cadad-r1/ec-revd-build`` respectively.
+
+The table below records historical milestone provenance and is not the
+current candidate identity:
 
 .. list-table:: HIL build provenance
    :header-rows: 1
@@ -268,17 +397,24 @@ Offline ABI evidence is generated with:
 
   ./tools/p2/run-abi-probes.sh
 
-The accepted post-freeze matrix is
-``artifacts/hil/abi/20260713T155112Z``.  It ran from a clean detached worktree
-at NuttX source/tool commit
-``cfaf600a55f41d8ea538b83b1c8c1ce459c9996a`` with clang SHA-256
+The fresh release-candidate ABI run is **PASS** at
+``/tmp/p2-release-final.14cadad-r1/abi/20260713T231547Z``.  It is bound to
+NuttX source commit ``14cadad3a6794e10cbc9f0dfb20f352e4844d35f`` and clang
+SHA-256
 ``cc89d3c27b75c9e059093d1e5c6cc7a392b74d977e30d90ca9994f97001224f7``.
-All nine capability status files are ``SUPPORTED`` across ``-O0``, ``-Os``,
-and ``-O2``.  The matrix emitted sources, commands, objects, relocations,
-disassembly, maps, symbols, and linked ELFs; its ``summary.txt`` SHA-256 is
-``1e295203780fcf387eeeffca1fd7601735c004be85f4e133e40c1e08ac8f7b25``.
-The independent 64-bit comparison verifier also passed all 41,472 functional
-boundary pairs.
+All nine capability probes are ``SUPPORTED`` across ``-O0``, ``-Os``, and
+``-O2``; the ``summary.txt`` SHA-256 is
+``ba91f6134733cfd5d0e02725d4ed64af1786f4b30e11ebe18a548dc4160e95a0``.
+The copied ``toolchain.lock`` has SHA-256
+``66871ac6bb8a96fbea5b5fc405e6a1a3743fa6c441775737cab80066678250aa``.
+This candidate ABI evidence is preserved in the local release evidence
+archive.
+
+``artifacts/hil/abi/20260713T155112Z`` remains the historical pre-SD-fix
+architecture/compiler baseline at NuttX
+``cfaf600a55f41d8ea538b83b1c8c1ce459c9996a``.  Its independent 64-bit
+comparison verifier passed all 41,472 functional boundary pairs.  It remains
+useful historical evidence but is not the current candidate identity.
 
 8. Build commands
 -----------------
@@ -394,10 +530,9 @@ If the flash image itself must be replaced, rerun the manifest-producing
 green clean build artifact.  Do not erase outside the printed range.
 
 The only physically qualified reset is the PropPlug DTR sequence.  There is
-no automated power-control command.  If the current switch position ever
-stops accepting the serial loader, recovery requires visually identifying
-and selecting the module's serial-boot position; that label is still an
-explicit documentation blocker.
+no automated power-control command.  If SD-only mode is selected, restore
+``(FLASH,up,down)=(ON,OFF,OFF)`` before using the serial loader or programming
+flash.
 
 12. P2 memory map
 -----------------
@@ -701,8 +836,9 @@ are serialized by a P2 hardware lock and conflicting owner/cog claims fail.
    * - P4/P5
      - ``/dev/pwm0`` output and ``/dev/cap0`` input; alternatively
        ``/dev/dac0`` and ``/dev/adc0``
-     - PWM/capture PASS with the former direct jumper; DAC/ADC PASS 20/20 with
-       the 1 kOhm series P4--P5 plus 100 nF P5-to-GND fixture
+     - Historical PWM/capture waveform PASS with the former direct jumper;
+       current RC fixture has DAC/ADC PASS 20/20 plus a bounded RC-safe PWM
+       control smoke, with no current waveform/capture claim
    * - P6/P7/P8/P9
      - ``/dev/spi0`` MOSI/MISO/SCK/CS
      - PASS at 100 kHz mode 0; P6--P7 is the direct data loopback
@@ -828,13 +964,84 @@ test formatted/mounted FAT32 at ``/mnt/sd``.  All seven stages passed in
 * One thousand alternating flash-plus-SD transactions passed.
 * Flash boot-reservation CRC stayed ``EE5B9C97`` throughout.
 
+Separate development qualification then proved both the ROM-facing raw card
+layout and an independent SD-only boot:
+
+* The read-only target check in
+  ``/private/tmp/p2-release-final.oBc9V4/ec32mb-sd-rom-inspect-w25-guard``
+  found an MBR type-``0x0c`` partition at LBA 2048, a 512-byte-sector FAT32
+  volume with 32 sectors per cluster, valid FSInfo, and a root
+  ``_BOOT_P2.BIX`` entry at cluster 32.  Its 25-cluster chain was contiguous,
+  ended with ``0x0fffffff``, and described exactly 402,060 bytes.  The raw
+  payload FNV-1a was ``E74F35AC``, matching the staged development image.
+* With ``(FLASH,up,down)=(OFF,OFF,ON)``, the reset-only verifier in
+  ``/private/tmp/p2-release-final.oBc9V4/ec32mb-sd-rom-boot-w25-guard``
+  invoked no loader and transmitted zero serial bytes.  It reached the exact
+  ordered startup, W25-unavailable, MMC/SD, SmartFS-unavailable, selected-board
+  showcase, and NSH-prompt markers.
+* The W25-off result is intentional hardware behavior: disabling ``FLASH``
+  disconnects the W25 chip-select path.  The board now rejects the invalid
+  pre-probe before entering the generic W25 busy loop, reports the switch
+  condition without a false failure, and continues booting from microSD.
+
+This pair proves the ROM layout and the SD-only/W25-off fix for the qualified
+development image.  It remains historical evidence and this report does not
+reuse its hash as a final release identity.
+
+For the current 402,452-byte candidate, the first write diagnostic
+``/tmp/p2-release-final.14cadad-r1/ec32mb-sd-write`` timed out.  The next
+read-only run, ``ec32mb-sd-inspect``, failed specifically with
+``P2STORAGE:SD:ROM-FAIL:STAGE=MBR:REASON=FIELDS``.  This diagnostic proved the
+inspector rejected the pre-existing invalid MBR layout; neither failed result
+is represented as a PASS.
+
+The guarded corrective format at
+``/tmp/p2-release-final.14cadad-r1/ec32mb-sd-format-final`` is **PASS**.  It
+took 302.761617 seconds and produced a type-``0x0c`` partition at LBA 2048
+covering 61,130,752 sectors.  Its top-level ``status.json`` SHA-256 is
+``df72f9b37775b00545edee943ad3054ba7a1233a8657f3a957e5e217a4a1126c``.
+The final write at
+``/tmp/p2-release-final.14cadad-r1/ec32mb-sd-write-final`` is **PASS** for the
+exact 402,452-byte image with SHA-256
+``6ff205df0f724eab91eb0619b53cffc579819cdcb99049578a9f01cb4ba519e2``.
+Its 402,456-byte staged payload has SHA-256
+``f7ee30fde6ce7a69b63a5c837d9c28e380df75af7ce6e76bd3ded2336c1e5bbf``;
+the write ``status.json`` SHA-256 is
+``622f56c19d3455f895a3fd5623d8f866740d94f47c68379df91bec51c546a21a``.
+
+The final independent read-only target inspection at
+``/tmp/p2-release-final.14cadad-r1/ec32mb-sd-inspect-final`` is **PASS** in
+38.236762 seconds.  It proved the MBR, FAT32 VBR, FSInfo, and root entry; a
+contiguous 25-cluster chain ending with ``0x0fffffff``; and exactly 402,452
+image bytes with FNV-1a ``D0D0F215``.  Its ``status.json`` SHA-256 is
+``f5345c72e956425c894549b09148180774368c102986a0bfa3305cd23e01c1e0``.
+The independent ROM execution proof at
+``/tmp/p2-release-final.14cadad-r1/ec32mb-sdboot-hil`` is **PASS**.  The user
+confirmed ``(FLASH,up,down)=(OFF,OFF,ON)``; the verifier issued one DTR reset,
+downloaded no loader, and transmitted zero serial bytes.  In 16.688852 seconds
+the exact 402,452-byte image reached, in order, ``P2BOOT:ENTRY``, data and BSS
+checks, ``P2BOOT:NX_START``, expected W25 unavailability, the 400 kHz/2 MHz
+MMC/SD marker, ``/dev/mmcsd0``, expected SmartFS unavailability, the
+``p2-ec32mb`` showcase marker, and the first NSH prompt.  The verifier also
+recorded ``fragmentation_verified=true`` and bound the write-status SHA-256
+``622f56c19d3455f895a3fd5623d8f866740d94f47c68379df91bec51c546a21a``.
+Its boot ``status.json`` SHA-256 is
+``61534212bd8bcf9f4ca996d36731c0e612951d7d9554c96ff360aaf607a3e758``;
+``markers.json`` is
+``ba6cd3da3cd1f0c9217295c7341c39708dfb03dc7f3ecce9dac09c40be1d0368``;
+and the raw console is
+``ea404e55c42ae0d9ba2bab8e6e5c6132acaf44fb94e7ea5cf8404df89eab42f2``.
+Together, the final write, raw-card inspection, and no-loader reset close the
+exact-candidate Rev-B ROM microSD gate.
+
 No invented card-detect GPIO is used.  Removal/card-absent behavior was not
 tested during the installed-card campaign and remains open.
 
 25. Smart Pin device results
 ----------------------------
 
-The installed digital fixture passed 50/50 complete RAM-load/reset cycles in
+The historical direct-jumper digital fixture passed 50/50 complete
+RAM-load/reset cycles in
 ``artifacts/hil/20260713T063221.439668Z-smartpins``.  Every cycle exercised
 the standard NuttX device paths and required a final safe-floating state.
 
@@ -850,8 +1057,8 @@ the standard NuttX device paths and required a final safe-floating state.
    * - UART P2 -> P3
      - 16 bytes, FNV-1a ``504B8F7B``; ``UART:PASS``
    * - PWM P4 -> capture P5
-     - 1 kHz at 25%, 50%, and 75% requested duty; capture counts advanced;
-       ``PWM_CAPTURE:PASS``
+     - Historical direct-jumper result: 1 kHz at 25%, 50%, and 75% requested
+       duty; capture counts advanced; ``PWM_CAPTURE:PASS``
    * - SPI P6 -> P7, P8 clock, P9 select
      - 16 bytes at 100 kHz mode 0; TX and RX FNV-1a ``504B8F7B``;
        ``SPI:PASS``
@@ -873,6 +1080,13 @@ hook because CT1 is the only fully implemented interrupt channel.  They are
 not claimed as hardware-rate event paths.  The I2C result qualifies the
 installed externally pulled-up BMP180 fixture; it is not a claim about every
 I2C peripheral or bus topology.
+
+The current RC fixture was rerun by the release-candidate RAM showcase at
+``/tmp/p2-release-final.14cadad-r1/ec32mb-showcase-hil``.  ADC/DAC and the
+bounded ``/dev/pwm0`` open/start/stop smoke passed.  The showcase deliberately
+omitted the direct-link digital PWM/capture waveform stage, because the RC
+network is not that fixture.  Its PWM smoke proves device open/control/stop
+and safe return to NSH only.
 
 26. PSRAM results
 ------------------
@@ -1259,11 +1473,29 @@ dedicated scheduler-stress gate.  It neither replaces nor weakens the four
    * - microSD destructive stages
      - 7/7, each with a fresh RAM load/reset
      - ``20260713T083209.592794Z-sd``
+   * - Development ROM microSD raw-layout check
+     - 1/1 read-only raw-card verification
+     - ``/private/tmp/p2-release-final.oBc9V4/ec32mb-sd-rom-inspect-w25-guard``
+   * - Development independent ROM microSD boot
+     - 1/1 reset-only boot; no loader invocation and zero serial TX
+     - ``/private/tmp/p2-release-final.oBc9V4/ec32mb-sd-rom-boot-w25-guard``
+   * - Exact-candidate SD corrective format
+     - 1/1; MBR type ``0C``, LBA 2048, 61,130,752 sectors
+     - ``/tmp/p2-release-final.14cadad-r1/ec32mb-sd-format-final``
+   * - Exact-candidate ``_BOOT_P2.BIX`` write
+     - 1/1; exact 402,452-byte candidate
+     - ``/tmp/p2-release-final.14cadad-r1/ec32mb-sd-write-final``
+   * - Exact-candidate ROM microSD raw-layout check
+     - 1/1 read-only; contiguous 25-cluster chain, FNV-1a ``D0D0F215``
+     - ``/tmp/p2-release-final.14cadad-r1/ec32mb-sd-inspect-final``
+   * - Exact-candidate independent ROM microSD boot
+     - 1/1 reset-only; 16.688852 seconds, no loader, zero serial TX
+     - ``/tmp/p2-release-final.14cadad-r1/ec32mb-sdboot-hil``
    * - Full PSRAM campaign
      - 2/2 consecutive complete 32 MiB starts
      - ``20260713T100106.997809Z-psram`` and
        ``20260713T100735.645104Z-psram``
-   * - Independent flash boot
+   * - Historical independent flash boot
      - 20/20 consecutive DTR resets with zero pre-prompt bytes
      - ``20260713T103452Z-flashboot``
    * - Dedicated scheduler stress
@@ -1306,7 +1538,30 @@ boot or power-cycle counts.
 
    * - Evidence
      - Directory
-   * - ABI matrix (accepted post-freeze offline run)
+   * - Current candidate ABI PASS (provisional; preserve/package-link)
+     - ``/tmp/p2-release-final.14cadad-r1/abi/20260713T231547Z``
+   * - Current candidate Rev-B RAM showcase PASS (provisional;
+       preserve/package-link)
+     - ``/tmp/p2-release-final.14cadad-r1/ec32mb-showcase-hil``
+   * - Current candidate Rev-B flash programming PASS (provisional;
+       preserve/package-link)
+     - ``/tmp/p2-release-final.14cadad-r1/ec32mb-flash-program``
+   * - Current candidate Rev-B reset-only flash-boot evidence: ten completed
+       per-cycle PASS files; 20-cycle wrapper intentionally interrupted
+     - ``/tmp/p2-release-final.14cadad-r1/ec32mb-flashboot-hil``
+   * - Current candidate Rev-B SD diagnostic failures (preserve honestly;
+       superseded by the following PASS results)
+     - ``/tmp/p2-release-final.14cadad-r1/ec32mb-sd-write``;
+       ``/tmp/p2-release-final.14cadad-r1/ec32mb-sd-inspect``
+   * - Current candidate Rev-B corrective SD format PASS
+     - ``/tmp/p2-release-final.14cadad-r1/ec32mb-sd-format-final``
+   * - Current candidate Rev-B ``_BOOT_P2.BIX`` write PASS
+     - ``/tmp/p2-release-final.14cadad-r1/ec32mb-sd-write-final``
+   * - Current candidate Rev-B read-only ROM-layout inspection PASS
+     - ``/tmp/p2-release-final.14cadad-r1/ec32mb-sd-inspect-final``
+   * - Current candidate Rev-B no-loader SD-only ROM boot PASS
+     - ``/tmp/p2-release-final.14cadad-r1/ec32mb-sdboot-hil``
+   * - Historical ABI matrix (architecture/compiler baseline)
      - ``artifacts/hil/abi/20260713T155112Z``
    * - Standalone hello 10/10
      - ``artifacts/hil/20260712T211034.259011Z-hello``
@@ -1338,6 +1593,10 @@ boot or power-cycle counts.
    * - Storage build and microSD
      - ``artifacts/hil/20260713T083107Z-build-storage``;
        ``artifacts/hil/20260713T083209.592794Z-sd``
+   * - Development ROM microSD layout and SD-only boot (provisional;
+       preserve/package-link)
+     - ``/private/tmp/p2-release-final.oBc9V4/ec32mb-sd-rom-inspect-w25-guard``;
+       ``/private/tmp/p2-release-final.oBc9V4/ec32mb-sd-rom-boot-w25-guard``
    * - PSRAM linked build
      - ``artifacts/hil/20260713T095943Z-build-psram``
    * - Two accepted PSRAM starts
@@ -1346,7 +1605,7 @@ boot or power-cycle counts.
    * - flashboot build
      - ``artifacts/hil/20260713T102521Z-build-flashboot``;
        ``artifacts/hil/20260713T102521Z-flash-program``
-   * - independent flashboot HIL
+   * - Historical independent flashboot HIL
      - ``artifacts/hil/20260713T103452Z-flashboot`` (20/20 PASS)
    * - Dedicated scheduler-stress build and HIL
      - ``artifacts/hil/20260713T112709Z-build-schedstress``;
@@ -1372,7 +1631,10 @@ boot or power-cycle counts.
 Each campaign directory retains raw and normalized serial, commands, status,
 markers/parser data, elapsed time, image hashes, and preserved inputs.  Build
 artifacts also retain full maps, symbols, sections, disassembly, and source
-cleanliness evidence.
+cleanliness evidence.  This retention statement describes the artifact
+contents.  The required candidate evidence is in the local release evidence
+archive; the ``/tmp`` package is not durable until GitHub upload and
+fresh-download verification pass.
 
 31. Known limitations
 ----------------------
@@ -1380,6 +1642,9 @@ cleanliness evidence.
 * Only flat, uniprocessor NuttX is supported.  Protected/kernel builds and SMP
   are compile-time excluded.  SMP is **DEFERRED / OUT OF SCOPE** and does not
   gate flat-UP completion.
+* P2-EC Rev D (``p2-ec``) remains build- and static-verification qualified
+  only.  No Rev-D module was attached, so every Rev-D runtime claim, including
+  flash and ROM microSD boot, remains **HIL-REQUIRED**.
 * CT1/INT1 is the only complete interrupt routing path.  GPIO edge and UART1
   RX service are 100 Hz tick-sampled.
 * Tickless operation is absent.  The raw-clock result brackets serial commands
@@ -1407,11 +1672,14 @@ cleanliness evidence.
   evidence.
 * Asynchronous I/O and multi-user identity remain conditional on filesystem
   and credential fixtures which the direct-entry image does not provide.
-* The exact boot-switch label is unconfirmed and automated power cycling is
+* The Rev-B switch settings are qualified as serial/flash
+  ``(ON,OFF,OFF)`` and SD-only ``(OFF,OFF,ON)``.  Automated power cycling is
   unavailable.
-* The post-freeze ABI matrix is complete at
-  ``artifacts/hil/abi/20260713T155112Z``.  A later documentation-only commit
-  does not change its source/tool contract.
+* The ABI matrix at ``artifacts/hil/abi/20260713T155112Z`` is retained as a
+  historical architecture/compiler baseline.  The current candidate-bound
+  ABI PASS is provisional at
+  ``/tmp/p2-release-final.14cadad-r1/abi/20260713T231547Z`` and must be
+  preserved with the release.
 * ``collect-artifacts.sh`` was refreshed after the final campaigns and indexed
   136 top-level status bundles.  It remains less authoritative than the
   per-test sealed artifact writers; do not use it to infer a missing HIL PASS.
@@ -1440,10 +1708,10 @@ acceptance blockers.
      - reset-only interrupted-write test
      - Add controlled power removal during a bounded data-partition write and
        verify recovery plus unchanged boot CRC
-   * - Boot-switch documentation
-     - current behavior known, printed label unknown
-     - Visually record the exact Rev-B switch setting used for serial recovery
-       and independent flash boot
+   * - GitHub publication
+     - **PENDING**; the local package is verified but not yet a durable release
+     - Upload the exact assets, verify them from a fresh download, then publish
+       and verify the GitHub release
    * - Conditional AIO and multi-user groups
      - BLOCKED on writable-filesystem and credential fixtures; neither feature
        is enabled by the direct-entry OSTest profiles
@@ -1455,7 +1723,11 @@ acceptance blockers.
      - No closure is required for this goal.  Treat an SMP implementation and
        qualification campaign as a separate future project
 
-The applicable flat-UP hardware matrix and local evidence-packaging gate are
-accepted.  The rows above are explicit fixture-dependent follow-up or deferred
-scope, not incomplete work for this goal; SMP in particular requires no
-closure for flat-UP completion.
+The applicable historical flat-UP hardware matrix is accepted, and the exact
+candidate has passed clean builds, fresh ABI, Rev-B RAM showcase, and flash
+programming plus ten completed reset-only flash boots.  Its exact SD write and
+read-only raw-card verification plus no-loader SD-only ROM reset also pass.
+The local package and extracted-bundle checks pass.  Release closure is still
+incomplete until the GitHub publication row above passes.
+SMP remains a separate future project and requires no closure for this
+flat-UP goal.

@@ -52,7 +52,21 @@ currently hashes clang but only checks the other LLVM tools for executability,
 so final provenance must also retain ``toolchain.lock`` and the normal build
 artifact.
 
-The accepted release run is
+The release-candidate probe is
+``/tmp/p2-release-final.14cadad-r1/abi/20260713T231547Z``.  Its
+``toolchain.txt`` binds the run to source commit
+``14cadad3a6794e10cbc9f0dfb20f352e4844d35f`` and clang SHA-256
+``cc89d3c27b75c9e059093d1e5c6cc7a392b74d977e30d90ca9994f97001224f7``.
+All nine optimization/capability status files are ``SUPPORTED``; the run
+summary reports ``STATICALLY-VERIFIED`` and has SHA-256
+``ba91f6134733cfd5d0e02725d4ed64af1786f4b30e11ebe18a548dc4160e95a0``.
+The copied ``toolchain.lock`` has SHA-256
+``66871ac6bb8a96fbea5b5fc405e6a1a3743fa6c441775737cab80066678250aa``.
+This is a **PASS** for candidate ABI provenance.  Because the current path is
+temporary, packaging must copy the complete run into the release evidence
+archive before publication.
+
+The older architecture/compiler baseline is
 ``artifacts/hil/abi/20260713T155112Z``.  It was generated from a clean detached
 worktree at source/tool commit
 ``cfaf600a55f41d8ea538b83b1c8c1ce459c9996a`` with clang SHA-256
@@ -61,9 +75,10 @@ All nine optimization/capability status files are ``SUPPORTED`` and the
 preserved ``summary.txt`` SHA-256 is
 ``1e295203780fcf387eeeffca1fd7601735c004be85f4e133e40c1e08ac8f7b25``.
 The independent ``compare64_codegen.py`` verification passed 41,472 functional
-boundary pairs.  A later documentation-only commit does not invalidate this
-source/tool result.  To regenerate the evidence after any future source or
-tool change::
+boundary pairs.  This remains valid historical evidence for that
+architecture/compiler baseline, but it is not release-candidate evidence
+after subsequent source changes, including the SD-boot/W25-off fix.  To
+regenerate the evidence after any future source or tool change::
 
   ./tools/p2/run-abi-probes.sh
 
