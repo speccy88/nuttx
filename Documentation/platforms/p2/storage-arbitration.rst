@@ -145,10 +145,10 @@ The SD-write ``status.json`` SHA-256 bound into this proof is
 the SD-boot ``status.json`` SHA-256 is
 ``61534212bd8bcf9f4ca996d36731c0e612951d7d9554c96ff360aaf607a3e758``.
 The evidence is included in the host-verified package and public
-``p2-edge-flat-up-v0.1.0`` prerelease.  All 20 draft-release assets were
-downloaded once to a fresh directory, matched the local package byte for byte,
-passed all 19 recorded checksums, and passed the bundled verifier after the
-standalone-download executable mode bits were restored.
+``p2-edge-flat-up-v0.1.0`` release.  All 20 assets were downloaded once from
+the pre-publication draft to a fresh directory, matched the local package byte
+for byte, passed all 19 recorded checksums, and passed the bundled verifier
+after the standalone-download executable mode bits were restored.
 
 The P2-EC Rev D build has no PSRAM.  Its 386,752-byte raw image has SHA-256
 ``596b0f022c28fa4462a6e13692ad54ecab095f17d6532d441e60e0dee481c230``

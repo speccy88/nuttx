@@ -1,6 +1,6 @@
 # Apache NuttX on the Parallax Propeller 2
 
-This branch is a hardware-oriented **draft** NuttX port for the Parallax
+This tree contains a hardware-oriented **draft** NuttX port for the Parallax
 P2X8C4M64P Propeller 2. The installable showcase supports two official P2 Edge
 modules:
 

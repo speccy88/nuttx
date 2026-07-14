@@ -1,9 +1,10 @@
 # Propeller 2 flat-UP goal status
 
 Snapshot: 2026-07-13. The release scope is flat, uniprocessor NuttX; SMP is
-explicitly deferred. Local packaging, fresh-download verification, GitHub
-publication, and the draft PR are complete. Exact package identities are
-recorded in `release-manifest.json` and `SHA256SUMS.txt`.
+explicitly deferred. Local packaging, fresh-download verification, the normal
+GitHub release, and direct integration into both fork `master` branches are
+complete. Exact package identities are recorded in `release-manifest.json`
+and `SHA256SUMS.txt`.
 
 Status meanings:
 
@@ -47,7 +48,7 @@ SDA and P25 SCL. The LED power switch must be ON for visible light.
 | `_BOOT_P2.BIX` write and raw layout | **PASS for the exact Rev B candidate.** | The first write diagnostic timed out and the read-only inspector then correctly rejected the pre-existing layout with `ROM-FAIL:STAGE=MBR:REASON=FIELDS`. Corrective target format PASS at `/tmp/p2-release-final.14cadad-r1/ec32mb-sd-format-final` created MBR type `0C`, start LBA 2048, 61,130,752 sectors in 302.761617 seconds; status SHA-256 `df72f9b37775b00545edee943ad3054ba7a1233a8657f3a957e5e217a4a1126c`. Final write PASS at `/tmp/p2-release-final.14cadad-r1/ec32mb-sd-write-final`: exact 402,452-byte image SHA-256 `6ff205df0f724eab91eb0619b53cffc579819cdcb99049578a9f01cb4ba519e2`; 402,456-byte staged payload SHA-256 `f7ee30fde6ce7a69b63a5c837d9c28e380df75af7ce6e76bd3ded2336c1e5bbf`; status SHA-256 `622f56c19d3455f895a3fd5623d8f866740d94f47c68379df91bec51c546a21a`. Final read-only inspection PASS at `/tmp/p2-release-final.14cadad-r1/ec32mb-sd-inspect-final` in 38.236762 seconds: valid MBR/VBR/FSInfo/root, contiguous 25-cluster chain, EOC `0FFFFFFF`, exact 402,452 bytes, FNV-1a `D0D0F215`; status SHA-256 `f5345c72e956425c894549b09148180774368c102986a0bfa3305cd23e01c1e0`. | Archive the final format, write, and inspection evidence; retain the superseded diagnostics locally rather than enlarging the release bundle. |
 | ROM boot from microSD | **PASS for the exact Rev B candidate.** | `/tmp/p2-release-final.14cadad-r1/ec32mb-sdboot-hil` passed one independent reset in 16.688852 seconds with user-confirmed `(FLASH,up,down)=(OFF,OFF,ON)`. It bound the 402,452-byte image SHA-256 `6ff205df0f724eab91eb0619b53cffc579819cdcb99049578a9f01cb4ba519e2` and writer-status SHA-256 `622f56c19d3455f895a3fd5623d8f866740d94f47c68379df91bec51c546a21a`, verified an unfragmented card, downloaded no loader, transmitted zero serial bytes, and observed entry/data/BSS/NuttX, W25 unavailable, microSD frequencies and `/dev/mmcsd0`, SmartFS unavailable, the `p2-ec32mb` showcase, and NSH in order. Boot status SHA-256: `61534212bd8bcf9f4ca996d36731c0e612951d7d9554c96ff360aaf607a3e758`. | Included in the local evidence archive; Rev D remains HIL-required. |
 | Release installer and package | **PASS / HOST-VERIFIED.** Mandatory board selection, dry-run default, destructive gates, exact bundle verification, flash bounds, and SD output checking are present. | `/tmp/p2-release-final.14cadad-r1/p2-edge-flat-up-v0.1.0-release` contains exactly 20 release files. All six installer dry-runs passed (two boards by RAM/flash/SD), then extracted bundle `/tmp/p2-release-extract.3Tgm16/p2-edge-flat-up-v0.1.0` passed installer verification and board-alias comparisons. Bundle SHA-256: `07604e5f5977570c9ea1c2fd9c7696a62be03035fb69496aefabee84c3f03358`; evidence archive: `be8550353b06fea07500cbff22b627b6edc8e91124ed6b0fe2f3e624eaa8a9ab`; manifest: `318edc7e2123f35237ae24cf1ebd574bd597518a1630cb3cf99b4ab7320de916`; checksum file: `b253c774e49397fb8d8854df7f8de2e0311449db026cc5ff9a3f2e84160aba13`. | Nothing for this release goal. |
-| GitHub publication | **PASS.** | [Prerelease `p2-edge-flat-up-v0.1.0`](https://github.com/speccy88/nuttx/releases/tag/p2-edge-flat-up-v0.1.0) is public with exactly 20 assets. One draft-release download to `/tmp/p2-release-draft-download.FHOZQC` matched every local file byte-for-byte, passed all 19 checksum entries, and passed `verify-release.py` after restoring the three executable mode bits not preserved by standalone GitHub asset downloads. Downloaded `SHA256SUMS.txt` SHA-256: `b253c774e49397fb8d8854df7f8de2e0311449db026cc5ff9a3f2e84160aba13`. [Draft PR #3](https://github.com/speccy88/nuttx/pull/3) targets the continuation branch. | Nothing for this release goal. |
+| GitHub publication and master integration | **PASS.** | [Release `p2-edge-flat-up-v0.1.0`](https://github.com/speccy88/nuttx/releases/tag/p2-edge-flat-up-v0.1.0) is public, non-prerelease, and Latest with exactly 20 assets. One pre-publication draft download to `/tmp/p2-release-draft-download.FHOZQC` matched every local file byte-for-byte, passed all 19 checksum entries, and passed `verify-release.py` after restoring the three executable mode bits not preserved by standalone GitHub asset downloads. Downloaded `SHA256SUMS.txt` SHA-256: `b253c774e49397fb8d8854df7f8de2e0311449db026cc5ff9a3f2e84160aba13`. The completed NuttX and apps branches were fast-forwarded into `speccy88/nuttx:master` and `speccy88/nuttx-apps:master`; [draft PR #3](https://github.com/speccy88/nuttx/pull/3) was closed as superseded. | Nothing for this release goal. |
 
 ## Finish sequence
 
@@ -58,7 +59,7 @@ SDA and P25 SCL. The LED power switch must be ON for visible light.
 | 3 | Final Rev B flash program plus reset-only boot | **PASS.** Ten completed exact-candidate reset-only cycles passed; the redundant 20-cycle wrapper was intentionally stopped. |
 | 4 | Final Rev B SD write, raw inspection, and SD-only reset | **PASS.** |
 | 5 | Package and independently verify release assets | **PASS.** Twenty output files, six dry-runs, and extracted-bundle verification passed. |
-| 6 | Push/tag/prerelease, fresh-download verification, publication, and draft PR | **PASS.** Release and PR links are recorded above. |
+| 6 | Push/tag/release, fresh-download verification, both fork-master fast-forwards, and PR cleanup | **PASS.** Release and master-integration details are recorded above. |
 
 The detailed baseline and SD-fix evidence are preserved in
 [`final-hil-report.rst`](final-hil-report.rst). Rev D remains useful as a

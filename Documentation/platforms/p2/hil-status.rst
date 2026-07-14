@@ -241,9 +241,9 @@ entry/data/BSS/NuttX, W25-off, microSD, SmartFS-unavailable, showcase, and NSH
 markers.  The boot status SHA-256 is
 ``61534212bd8bcf9f4ca996d36731c0e612951d7d9554c96ff360aaf607a3e758``.
 The release package, extracted-bundle verification, one fresh GitHub
-draft-release download, and publication are **PASS**.  The public
-``p2-edge-flat-up-v0.1.0`` prerelease contains all 20 byte-matched assets; all
-19 recorded checksums and the bundled verifier passed after restoring the
+pre-publication draft download, and publication are **PASS**.  The public,
+normal ``p2-edge-flat-up-v0.1.0`` release contains all 20 byte-matched assets;
+all 19 recorded checksums and the bundled verifier passed after restoring the
 standalone-download executable mode bits.
 
 The fresh ABI run is **PASS** at
@@ -301,7 +301,8 @@ host/static checks, clean dual-board builds, flash programming, and ten-cycle
 reset-only flash-boot proof are complete.  Exact-candidate SD writing and
 raw-card inspection plus its no-loader SD-only ROM reset are also complete.
 The local 20-file package, all six installer dry-runs, extracted-bundle
-verification, one fresh GitHub draft download, publication, and draft PR are
-complete.  The flat-UP release closure is complete.
+verification, one fresh GitHub pre-publication draft download, normal release,
+and both fork-master fast-forwards are complete.  The superseded draft PR is
+closed.  The flat-UP release closure is complete.
 Fixture-dependent gaps remain named rather than being converted into support
 claims; the explicitly deferred SMP work is not part of this finish gate.

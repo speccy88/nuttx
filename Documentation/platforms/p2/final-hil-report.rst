@@ -42,9 +42,10 @@ RAM showcase HIL, flash-programming HIL, and ten completed hash-bound
 reset-only flash boots.  Its exact SD write and read-only ROM-layout inspection
 plus its final no-loader SD-only ROM reset are also PASS.  The 20-file local
 package, all six installer dry-runs, extracted-bundle verification, one fresh
-GitHub draft-release download, and publication are also PASS.  The public
-``p2-edge-flat-up-v0.1.0`` prerelease contains all 20 assets and the draft PR
-is open.
+GitHub pre-publication draft download, and publication are also PASS.  The
+public, normal ``p2-edge-flat-up-v0.1.0`` release contains all 20 assets.  Both
+fork masters contain the completed paired work, and the superseded draft PR is
+closed.
 
 1. Hardware setup
 -----------------
@@ -1710,9 +1711,10 @@ acceptance blockers.
      - Add controlled power removal during a bounded data-partition write and
        verify recovery plus unchanged boot CRC
    * - GitHub publication
-     - **PASS**; the public ``p2-edge-flat-up-v0.1.0`` prerelease has exactly
-       20 assets, and one fresh draft-release download passed byte comparison,
-       all 19 checksums, and the verifier after executable modes were restored
+     - **PASS**; the public, normal ``p2-edge-flat-up-v0.1.0`` release has
+       exactly 20 assets, and one fresh pre-publication draft download passed
+       byte comparison, all 19 checksums, and the verifier after executable
+       modes were restored
      - No further closure is required for this release goal
    * - Conditional AIO and multi-user groups
      - BLOCKED on writable-filesystem and credential fixtures; neither feature
@@ -1730,5 +1732,6 @@ candidate has passed clean builds, fresh ABI, Rev-B RAM showcase, and flash
 programming plus ten completed reset-only flash boots.  Its exact SD write and
 read-only raw-card verification plus no-loader SD-only ROM reset also pass.
 The local package, extracted-bundle checks, fresh GitHub download, public
-prerelease, and draft PR pass.  Release closure is complete.  SMP remains a
-separate future project and requires no closure for this flat-UP goal.
+normal release, and both fork-master integrations pass; the superseded draft
+PR is closed.  Release closure is complete.  SMP remains a separate future
+project and requires no closure for this flat-UP goal.
