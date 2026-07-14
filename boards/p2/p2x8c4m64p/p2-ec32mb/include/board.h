@@ -30,6 +30,7 @@
 #include <nuttx/config.h>
 
 #ifndef __ASSEMBLY__
+#  include <stdbool.h>
 #  include <stdint.h>
 #  include <nuttx/compiler.h>
 #endif
@@ -80,6 +81,30 @@
  ****************************************************************************/
 
 struct spi_dev_s;
+
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+struct p2_touch_diag_s
+{
+  uint32_t polls;
+  uint32_t dispatches;
+  bool attached;
+  bool enabled;
+  bool down;
+};
+
+struct p2_touch_raw_s
+{
+  uint16_t x;
+  uint16_t y;
+  uint16_t z1;
+  uint16_t z2;
+  bool pen_down;
+};
+
+int p2_touch_get_diag(FAR struct p2_touch_diag_s *diag);
+int p2_touch_read_pen_level(FAR bool *high);
+int p2_touch_read_raw(FAR struct p2_touch_raw_s *sample);
+#endif
 
 #ifdef CONFIG_MTD_W25
 struct p2_w25_info_s

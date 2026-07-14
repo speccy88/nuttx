@@ -20,6 +20,8 @@
  *
  ****************************************************************************/
 
+#include <nuttx/config.h>
+
 #ifdef __CYGWIN__
 #  define SYMBOL(s) _##s
 #  define GLOBAL .global
@@ -89,7 +91,11 @@ SYMBOL(globalNames):
 	.align	ALIGN
 	GLOBAL	nglobals
 SYMBOL(nglobals):	
+#ifdef CONFIG_ARCH_P2
+	.long	0
+#else
 	.word	0
+#endif
 	SIZE	nglobals
 
 	.align	ALIGN

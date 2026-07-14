@@ -1,0 +1,12 @@
+############################################################################
+# libs/libc/machine/p2/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+############################################################################
+
+ifeq ($(CONFIG_LIBC_ARCH_ELF),y)
+CSRCS += arch_elf.c
+endif
+
+DEPPATH += --dep-path machine/p2
+VPATH += :machine/p2

@@ -31,6 +31,7 @@ BOOT_CRC_PATTERN = re.compile(
 ACTIONS = (
     "probe",
     "sd-rom-verify",
+    "sd-mbr-repair",
     "flash-format",
     "flash-write",
     "flash-verify",
@@ -68,6 +69,7 @@ TARGET_DESTRUCTIVE_ACTIONS = frozenset(
         "flash-full",
         "flash-interrupt-arm",
         "sd-format",
+        "sd-mbr-repair",
         "sd-write",
         "sd-rename-delete",
         "sd-stress",
@@ -85,7 +87,14 @@ FLASH_WRITABLE_ACTIONS = frozenset(
     )
 )
 SD_DESTRUCTIVE_ACTIONS = frozenset(
-    ("sd-format", "sd-write", "sd-rename-delete", "sd-stress", "alternate")
+    (
+        "sd-format",
+        "sd-mbr-repair",
+        "sd-write",
+        "sd-rename-delete",
+        "sd-stress",
+        "alternate",
+    )
 )
 
 BOARD_MARKER_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
@@ -409,6 +418,29 @@ def response_marker_patterns(
                 ),
             )
         )
+    elif action == "sd-mbr-repair":
+        markers.extend(
+            (
+                (
+                    "P2STORAGE:SD:ROM-MBR",
+                    re.compile(
+                        r"^P2STORAGE:SD:ROM-MBR:TYPE=0C:START=2048:"
+                        r"SECTORS=(?P<sd_repair_partition_sectors>"
+                        r"[1-9][0-9]*):PASS\r?$",
+                        re.MULTILINE,
+                    ),
+                ),
+                (
+                    "P2STORAGE:SD:MBR-REPAIR",
+                    re.compile(
+                        r"^P2STORAGE:SD:MBR-REPAIR:START=2048:"
+                        r"SECTORS=(?P<sd_repair_confirm_sectors>"
+                        r"[1-9][0-9]*):PASS\r?$",
+                        re.MULTILINE,
+                    ),
+                ),
+            )
+        )
     elif action == "flash-format":
         literal("P2STORAGE:FLASH:FORMAT:PASS")
     elif action in ("flash-write", "flash-verify"):
@@ -621,6 +653,18 @@ def parse_storage_response(
             ) // cluster_bytes
             if int(captures["sd_rom_chain_clusters"]) != expected_clusters:
                 errors.append("SD ROM FAT chain length does not match bytes")
+    if action == "sd-mbr-repair" and all(
+        name in captures
+        for name in (
+            "sd_repair_partition_sectors",
+            "sd_repair_confirm_sectors",
+        )
+    ):
+        if (
+            captures["sd_repair_partition_sectors"]
+            != captures["sd_repair_confirm_sectors"]
+        ):
+            errors.append("SD MBR repair sector counts must match")
 
     sequence_text = (
         normalize_sequence(sequence) if action in SEQUENCE_ACTIONS else None

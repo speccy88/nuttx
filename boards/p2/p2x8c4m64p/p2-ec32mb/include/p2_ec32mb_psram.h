@@ -54,7 +54,8 @@ enum p2_psram_operation_e
 {
   P2_PSRAM_OPERATION_READ = 1,
   P2_PSRAM_OPERATION_WRITE,
-  P2_PSRAM_OPERATION_STOP
+  P2_PSRAM_OPERATION_STOP,
+  P2_PSRAM_OPERATION_BOOT_BANK
 };
 
 enum p2_psram_completion_e
@@ -107,5 +108,22 @@ int p2_psram_get_geometry(FAR struct p2_psram_geometry_s *geometry);
 ssize_t p2_psram_transfer(enum p2_psram_operation_e operation,
                           uint32_t external_address, FAR void *hub_buffer,
                           size_t length, uint32_t timeout_ticks);
+
+/* Reserve the PSRAM service for one bank-staging task.  While reserved, all
+ * nonempty transfer and bank-boot requests from other tasks fail with
+ * -EBUSY.  The owner must release the reservation on every path which remains
+ * in the manager; a successful bank boot does not return.
+ */
+
+int p2_psram_bank_reserve(void);
+int p2_psram_bank_release(void);
+
+/* Destructively replace Hub [0, image_size) from an aligned PSRAM source and
+ * warm-start cog 0 at Hub address zero.  A successful call does not return.
+ * The caller must own a bank reservation and validate the staged bytes before
+ * invoking this operation.
+ */
+
+int p2_psram_boot_bank(uint32_t external_address, size_t image_size);
 
 #endif /* __BOARDS_P2_P2X8C4M64P_P2_EC32MB_INCLUDE_P2_EC32MB_PSRAM_H */

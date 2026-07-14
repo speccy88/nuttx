@@ -81,6 +81,20 @@ selected-board showcase marker, and reached the first NSH prompt.  This is
 physical Rev-B development evidence for the layout and W25-off fix; it is not
 the identity of the current release candidate.
 
+The 2026-07-14 Berry-manager bring-up exposed a separate loader-side hazard:
+programming W25 with the microSD installed changed sector zero on the card.
+The FAT32 VBR, FSInfo, backup sectors, and existing files remained intact.  The
+single-sector repair at
+``artifacts/hil/20260714T170100Z-storage-sd-mbr-repair-after-raw-flash`` is
+**HIL-VERIFIED**, and the independent read-only verification at
+``artifacts/hil/20260714T170200Z-storage-sd-rom-verify-after-repair`` is
+**HIL-VERIFIED**.  ``p2storage sd-mbr-repair`` accepts the exact destructive
+authorization string, validates the NuttX-produced FAT32 geometry and backup
+structures, writes only sector zero, and verifies the readback.  It refuses
+other layouts and is not a generic partition or FAT recovery tool.  Remove the
+card before future W25 programming; ``P2_ALLOW_SD_WRITE=1`` authorizes the
+known shared-pin risk but cannot protect the installed media.
+
 Current release candidate
 -------------------------
 

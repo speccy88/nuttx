@@ -45,6 +45,17 @@ class FlashBootProfileTests(unittest.TestCase):
         self.assertNotIn("mksmartfs", script)
         self.assertNotIn("mkfatfs", script)
 
+    def test_startup_does_not_abort_on_persistent_directories(self):
+        script = (BOARD / "src/etc/init.d/rcS").read_text()
+        for path in (
+            "/mnt/flash/berry",
+            "/mnt/flash/banks",
+            "/mnt/sd/berry-p2",
+        ):
+            self.assertIn(f"if [ ! -d {path} ]", script)
+            self.assertIn(f"mkdir {path}", script)
+            self.assertNotIn(f"mkdir -p {path}", script)
+
     def test_clang_cpp_treats_extensionless_init_scripts_as_c(self):
         make_defs = (BOARD / "scripts/Make.defs").read_text()
         self.assertIn("CPP = $(P2_CLANG) -E -P -x c", make_defs)
