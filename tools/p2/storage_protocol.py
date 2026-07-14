@@ -10,8 +10,7 @@ record, its checksum markers, and the reset-persistence verification.
 
 import functools
 import re
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
-
+from typing import Dict, List, Optional, Tuple
 
 ACKNOWLEDGEMENT = "P2STORAGE-I-ACCEPT-DATA-LOSS-V1"
 FLASH_DEVICE = "/dev/smart0"
@@ -101,8 +100,7 @@ BOARD_MARKER_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
     (
         "P2STORAGE:W25=PRIVATE JEDEC=SUPPORTED",
         re.compile(
-            r"^P2STORAGE:W25=PRIVATE JEDEC="
-            r"(?P<w25_jedec>EF(?:40|50|60|70)18)\r?$",
+            r"^P2STORAGE:W25=PRIVATE JEDEC=" r"(?P<w25_jedec>EF(?:40|50|60|70)18)\r?$",
             re.MULTILINE,
         ),
     ),
@@ -159,22 +157,17 @@ FAILURE_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
     (
         "P2 SD ROM layout failure",
         re.compile(
-            r"^P2STORAGE:SD:ROM-FAIL:STAGE=[A-Z0-9_-]+:"
-            r"REASON=[A-Z0-9_-]+\r?$",
+            r"^P2STORAGE:SD:ROM-FAIL:STAGE=[A-Z0-9_-]+:" r"REASON=[A-Z0-9_-]+\r?$",
             re.MULTILINE,
         ),
     ),
     (
         "P2 storage action failure",
-        re.compile(
-            r"^P2STORAGE:FAIL:[A-Z0-9_-]+:[1-9][0-9]*\r?$", re.MULTILINE
-        ),
+        re.compile(r"^P2STORAGE:FAIL:[A-Z0-9_-]+:[1-9][0-9]*\r?$", re.MULTILINE),
     ),
     (
         "P2 storage binding failure",
-        re.compile(
-            r"^P2STORAGE:[A-Z0-9_]+=FAIL:-?[0-9]+\r?$", re.MULTILINE
-        ),
+        re.compile(r"^P2STORAGE:[A-Z0-9_]+=FAIL:-?[0-9]+\r?$", re.MULTILINE),
     ),
 )
 
@@ -452,15 +445,11 @@ def response_marker_patterns(
             )
         )
         if action == "flash-write":
-            literal(
-                "P2STORAGE:READY:RESET=FLASH:SEQUENCE={}".format(sequence_text)
-            )
+            literal("P2STORAGE:READY:RESET=FLASH:SEQUENCE={}".format(sequence_text))
     elif action == "flash-cycle":
         base = int(sequence_text, 16)
         for iteration in range(1, FLASH_CYCLE_COUNT + 1):
-            iteration_sequence = normalize_sequence(
-                (base + iteration - 1) & 0xFFFFFFFF
-            )
+            iteration_sequence = normalize_sequence((base + iteration - 1) & 0xFFFFFFFF)
             literal(
                 "P2STORAGE:FLASH:CYCLE:ITERATION={}:SEQUENCE={}:"
                 "FNV1A={}:PASS".format(
@@ -469,9 +458,7 @@ def response_marker_patterns(
                     record_checksum("flash", iteration_sequence),
                 )
             )
-        literal(
-            "P2STORAGE:FLASH:CYCLE:COUNT={}:PASS".format(FLASH_CYCLE_COUNT)
-        )
+        literal("P2STORAGE:FLASH:CYCLE:COUNT={}:PASS".format(FLASH_CYCLE_COUNT))
     elif action == "flash-full":
         markers.append(
             (
@@ -492,11 +479,7 @@ def response_marker_patterns(
             "P2STORAGE:FLASH:INTERRUPT:ARMED:BASE_SEQUENCE={}:"
             "PENDING_SEQUENCE={}:WRITTEN=128".format(sequence_text, pending)
         )
-        literal(
-            "P2STORAGE:READY:POWER-CUT=FLASH:SEQUENCE={}".format(
-                sequence_text
-            )
-        )
+        literal("P2STORAGE:READY:POWER-CUT=FLASH:SEQUENCE={}".format(sequence_text))
     elif action == "flash-interrupt-verify":
         markers.append(
             (
@@ -510,9 +493,7 @@ def response_marker_patterns(
             )
         )
         literal(
-            "P2STORAGE:FLASH:INTERRUPT:RECOVERY:SEQUENCE={}:PASS".format(
-                sequence_text
-            )
+            "P2STORAGE:FLASH:INTERRUPT:RECOVERY:SEQUENCE={}:PASS".format(sequence_text)
         )
     elif action == "sd-format":
         literal("P2STORAGE:SD:FORMAT:PASS")
@@ -533,9 +514,7 @@ def response_marker_patterns(
     elif action == "sd-stress":
         base = int(sequence_text, 16)
         for iteration in range(1, SD_STRESS_COUNT + 1):
-            iteration_sequence = normalize_sequence(
-                (base + iteration - 1) & 0xFFFFFFFF
-            )
+            iteration_sequence = normalize_sequence((base + iteration - 1) & 0xFFFFFFFF)
             literal(
                 "P2STORAGE:SD:STRESS:ITERATION={}:SEQUENCE={}:"
                 "FNV1A={}:PASS".format(
@@ -550,23 +529,19 @@ def response_marker_patterns(
             (
                 "P2STORAGE:BUS:ITERATION={}".format(iteration),
                 _line_pattern(
-                    "P2STORAGE:BUS:ITERATION={}:FLASH=PASS:SD=PASS".format(
-                        iteration
-                    )
+                    "P2STORAGE:BUS:ITERATION={}:FLASH=PASS:SD=PASS".format(iteration)
                 ),
             )
             for iteration in range(1, alternate_count + 1)
         )
-        literal(
-            "P2STORAGE:BUS:ALTERNATE:COUNT={}:PASS".format(alternate_count)
-        )
+        literal("P2STORAGE:BUS:ALTERNATE:COUNT={}:PASS".format(alternate_count))
 
     if action != "flash-interrupt-arm":
         literal("P2STORAGE:PASS:{}".format(action.upper()))
     return tuple(markers)
 
 
-def parse_storage_response(
+def parse_storage_response(  # noqa: C901
     text: str,
     action: str,
     sequence: Optional[object] = None,
@@ -666,9 +641,7 @@ def parse_storage_response(
         ):
             errors.append("SD MBR repair sector counts must match")
 
-    sequence_text = (
-        normalize_sequence(sequence) if action in SEQUENCE_ACTIONS else None
-    )
+    sequence_text = normalize_sequence(sequence) if action in SEQUENCE_ACTIONS else None
     complete = not missing and not duplicates and not failures and not errors
     return {
         "complete": complete,
@@ -684,7 +657,8 @@ def parse_storage_response(
         "order_valid": order_valid,
         "expected_checksum": (
             stream_checksum("flash", sequence_text)
-            if action in (
+            if action
+            in (
                 "flash-write",
                 "flash-verify",
                 "flash-interrupt-verify",
@@ -717,10 +691,6 @@ def first_error(result: Dict[str, object]) -> str:
     details: List[str] = []
     details.extend(str(item) for item in result.get("errors", ()))
     details.extend("missing {}".format(item) for item in result.get("missing", ()))
-    details.extend(
-        "duplicate {}".format(item) for item in result.get("duplicates", ())
-    )
-    details.extend(
-        str(item.get("line", item)) for item in result.get("failures", ())
-    )
+    details.extend("duplicate {}".format(item) for item in result.get("duplicates", ()))
+    details.extend(str(item.get("line", item)) for item in result.get("failures", ()))
     return "; ".join(details) or "incomplete storage response"

@@ -12,7 +12,6 @@ import tarfile
 import tempfile
 import unittest
 
-
 TOOLS = pathlib.Path(__file__).resolve().parents[1]
 ROOT = TOOLS.parents[1]
 sys.path.insert(0, str(TOOLS))
@@ -34,7 +33,8 @@ def make_build(root: pathlib.Path, board: str, marker: bytes) -> pathlib.Path:
             path.write_bytes(marker * 4)
         elif name == "config":
             path.write_text(
-                'CONFIG_ARCH="p2"\n' 'CONFIG_ARCH_BOARD="{}"\n'.format(board)
+                'CONFIG_ARCH="p2"\n'
+                'CONFIG_ARCH_BOARD="{}"\n'.format(board)
                 + "CONFIG_BUILD_FLAT=y\n"
                 + "CONFIG_P2_SYSCLK_HZ=180000000\n",
                 encoding="utf-8",
@@ -191,9 +191,7 @@ class ReleaseFixture:
                         {"name": name, "status": "PASS"}
                         for name in (
                             release_bundle.REQUIRED_SHOWCASE_HIL_STAGES
-                            + release_bundle.BOARD_SHOWCASE_HIL_STAGES[
-                                "p2-ec32mb"
-                            ]
+                            + release_bundle.BOARD_SHOWCASE_HIL_STAGES["p2-ec32mb"]
                         )
                     ],
                     "raw_serial_bytes": len(hil_logs["console.raw"]),
@@ -238,9 +236,7 @@ class ReleaseFixture:
         for stage in revd_status["stages"]:
             if stage["name"] == "optional p2psram volatile write/read proof":
                 stage["name"] = "Rev D no-PSRAM runtime contract"
-        revd_status_path.write_text(
-            json.dumps(revd_status) + "\n", encoding="utf-8"
-        )
+        revd_status_path.write_text(json.dumps(revd_status) + "\n", encoding="utf-8")
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -252,33 +248,33 @@ class ReleaseFixture:
         ec32mb_verified: bool = True,
     ) -> subprocess.CompletedProcess:
         command = [
-                sys.executable,
-                str(TOOLS / "release_bundle.py"),
-                "package",
-                "--ec32mb-build-artifact",
-                str(self.ec32mb),
-                "--ec-revd-build-artifact",
-                str(self.ec_revd),
-                "--loadp2",
-                str(self.loader),
-                "--loadp2-license",
-                str(self.license),
-                "--sd-writer",
-                str(self.sd_writer),
-                "--sd-writer-sha256",
-                self.sd_writer_sha256,
-                "--output",
-                str(output),
-            ]
+            sys.executable,
+            str(TOOLS / "release_bundle.py"),
+            "package",
+            "--ec32mb-build-artifact",
+            str(self.ec32mb),
+            "--ec-revd-build-artifact",
+            str(self.ec_revd),
+            "--loadp2",
+            str(self.loader),
+            "--loadp2-license",
+            str(self.license),
+            "--sd-writer",
+            str(self.sd_writer),
+            "--sd-writer-sha256",
+            self.sd_writer_sha256,
+            "--output",
+            str(output),
+        ]
         if ec32mb_verified:
-            command[command.index("--output"):command.index("--output")] = [
+            command[command.index("--output") : command.index("--output")] = [
                 "--ec32mb-evidence",
                 str(self.hil),
                 "--ec32mb-hardware-status",
                 "HIL-VERIFIED",
             ]
         if revd_verified:
-            command[command.index("--output"):command.index("--output")] = [
+            command[command.index("--output") : command.index("--output")] = [
                 "--ec-revd-evidence",
                 str(self.revd_hil),
                 "--ec-revd-hardware-status",
@@ -331,12 +327,8 @@ class ReleaseBundleTests(ReleaseFixture, unittest.TestCase):
         result = self.package(output, revd_verified=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         manifest = json.loads((output / "release-manifest.json").read_text())
-        self.assertEqual(
-            manifest["boards"]["p2-ec"]["hardware_status"], "HIL-VERIFIED"
-        )
-        self.assertTrue(
-            manifest["boards"]["p2-ec"]["hardware_evidence_included"]
-        )
+        self.assertEqual(manifest["boards"]["p2-ec"]["hardware_status"], "HIL-VERIFIED")
+        self.assertTrue(manifest["boards"]["p2-ec"]["hardware_evidence_included"])
 
     def test_package_rejects_loader_without_explicit_address_filespec(self):
         data = self.loader.read_bytes().replace(b"@ADDR=file", b"@ADDR+file")
@@ -637,7 +629,7 @@ class ReleaseInstallerTests(ReleaseFixture, unittest.TestCase):
             "#!/bin/sh\n"
             'if [ "$2" = run ]; then\n'
             "  for last do :; done\n"
-            '  staged=${{last#*,@8000=}}\n'
+            "  staged=${{last#*,@8000=}}\n"
             '  if [ "$staged" = "$last" ]; then\n'
             "    echo 'ERROR: missing @8000= staged payload'\n"
             "    exit 3\n"

@@ -12,10 +12,9 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "lib"))
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
 
-import build_artifact
-import flashboot_protocol
-import flash_layout
-
+import build_artifact  # noqa: E402
+import flash_layout  # noqa: E402
+import flashboot_protocol  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 
@@ -120,9 +119,7 @@ class FlashLayoutTests(unittest.TestCase):
                 json.dumps(flash_layout.image_manifest(image.read_bytes())),
                 encoding="utf-8",
             )
-            build = make_build_artifact(
-                temp / "build", image.read_bytes(), clean=False
-            )
+            build = make_build_artifact(temp / "build", image.read_bytes(), clean=False)
             digest = hashlib.sha256(loader.read_bytes()).hexdigest()
             lock = temp / "toolchain.lock"
             lock.write_text(f"sha256={digest}  {loader}\n", encoding="utf-8")

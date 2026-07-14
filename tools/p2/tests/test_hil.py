@@ -12,9 +12,9 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
 
-import hil
-import psram_protocol
-import storage_protocol
+import hil  # noqa: E402
+import psram_protocol  # noqa: E402
+import storage_protocol  # noqa: E402
 
 
 class ManualClock:
@@ -228,13 +228,9 @@ def good_psram_response(sequence="A55A0713"):
         "P2PSRAM:RANDOM:PASS:COUNT=1024",
     ]
     for value in range(4 * 1024 * 1024, 32 * 1024 * 1024 + 1, 4 * 1024 * 1024):
-        lines.append(
-            "P2PSRAM:PROGRESS:SEQUENCE={}:WRITE={}".format(sequence, value)
-        )
+        lines.append("P2PSRAM:PROGRESS:SEQUENCE={}:WRITE={}".format(sequence, value))
     for value in range(4 * 1024 * 1024, 32 * 1024 * 1024 + 1, 4 * 1024 * 1024):
-        lines.append(
-            "P2PSRAM:PROGRESS:SEQUENCE={}:READ={}".format(sequence, value)
-        )
+        lines.append("P2PSRAM:PROGRESS:SEQUENCE={}:READ={}".format(sequence, value))
     lines.extend(
         (
             "P2PSRAM:FULL:PASS:BYTES=33554432:FNV1A=634C9DC5",
@@ -249,6 +245,7 @@ def good_psram_response(sequence="A55A0713"):
         )
     )
     return ("\r\n".join(lines) + "\r\n").encode("ascii")
+
 
 GOOD_BRINGUP_OUTPUT = GOOD_BOOT_OUTPUT + b"".join(
     (marker.label + "\r\n").encode("ascii") for marker in hil.BRINGUP_APP_MARKERS
@@ -420,8 +417,7 @@ class HilTests(unittest.TestCase):
 
     def write_analog_config(self):
         values = [
-            "{}={}".format(name, value)
-            for name, value in hil.SMARTPINS_ANALOG_CONFIG
+            "{}={}".format(name, value) for name, value in hil.SMARTPINS_ANALOG_CONFIG
         ]
         (self.directory / ".config").write_text(
             "\n".join(values) + "\n", encoding="utf-8"
@@ -429,8 +425,7 @@ class HilTests(unittest.TestCase):
 
     def write_storage_config(self):
         values = [
-            "{}={}".format(name, value)
-            for name, value in hil.STORAGE_REQUIRED_CONFIG
+            "{}={}".format(name, value) for name, value in hil.STORAGE_REQUIRED_CONFIG
         ]
         values.extend(
             "{}={}".format(name, value)
@@ -442,8 +437,7 @@ class HilTests(unittest.TestCase):
 
     def write_i2c_config(self):
         values = [
-            "{}={}".format(name, value)
-            for name, value in hil.I2C_REQUIRED_CONFIG
+            "{}={}".format(name, value) for name, value in hil.I2C_REQUIRED_CONFIG
         ]
         (self.directory / ".config").write_text(
             "\n".join(values) + "\n", encoding="utf-8"
@@ -451,8 +445,7 @@ class HilTests(unittest.TestCase):
 
     def write_psram_config(self):
         values = [
-            "{}={}".format(name, value)
-            for name, value in hil.PSRAM_REQUIRED_CONFIG
+            "{}={}".format(name, value) for name, value in hil.PSRAM_REQUIRED_CONFIG
         ]
         (self.directory / ".config").write_text(
             "\n".join(values) + "\n", encoding="utf-8"
@@ -572,9 +565,7 @@ class HilTests(unittest.TestCase):
 
     def test_smartpins_wrapper_locks_direct_loopback_run_and_build(self):
         wrapper_path = pathlib.Path(__file__).parents[1] / "test-smartpins.py"
-        spec = importlib.util.spec_from_file_location(
-            "p2_test_smartpins", wrapper_path
-        )
+        spec = importlib.util.spec_from_file_location("p2_test_smartpins", wrapper_path)
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
         wrapper = importlib.util.module_from_spec(spec)
@@ -585,9 +576,7 @@ class HilTests(unittest.TestCase):
             "local_environment",
             return_value={"P2_ALLOW_LOOPBACK_TESTS": "1"},
         ), mock.patch.object(wrapper.hil, "main", return_value=37) as main:
-            rc = wrapper.main(
-                ["--execute", "--cycles", "1", "--timeout", "1"]
-            )
+            rc = wrapper.main(["--execute", "--cycles", "1", "--timeout", "1"])
 
         self.assertEqual(rc, 37)
         self.assertEqual(
@@ -606,9 +595,7 @@ class HilTests(unittest.TestCase):
 
     def test_analog_wrapper_locks_fixture_cycles_timeout_gate_and_build(self):
         wrapper_path = pathlib.Path(__file__).parents[1] / "test-analog.py"
-        spec = importlib.util.spec_from_file_location(
-            "p2_test_analog", wrapper_path
-        )
+        spec = importlib.util.spec_from_file_location("p2_test_analog", wrapper_path)
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
         wrapper = importlib.util.module_from_spec(spec)
@@ -619,9 +606,7 @@ class HilTests(unittest.TestCase):
             "local_environment",
             return_value={"P2_ALLOW_LOOPBACK_TESTS": "1"},
         ), mock.patch.object(wrapper.hil, "main", return_value=39) as main:
-            rc = wrapper.main(
-                ["--execute", "--cycles", "1", "--timeout", "1"]
-            )
+            rc = wrapper.main(["--execute", "--cycles", "1", "--timeout", "1"])
 
         self.assertEqual(rc, 39)
         self.assertEqual(
@@ -655,9 +640,7 @@ class HilTests(unittest.TestCase):
         spec.loader.exec_module(wrapper)
 
         with mock.patch.object(wrapper.hil, "main", return_value=43) as main:
-            rc = wrapper.main(
-                ["--execute", "--cycles", "1", "--timeout", "1"]
-            )
+            rc = wrapper.main(["--execute", "--cycles", "1", "--timeout", "1"])
 
         self.assertEqual(rc, 43)
         self.assertEqual(
@@ -687,9 +670,7 @@ class HilTests(unittest.TestCase):
             "local_environment",
             return_value={"P2_ALLOW_PSRAM_WRITE": "1"},
         ), mock.patch.object(wrapper.hil, "main", return_value=41) as main:
-            rc = wrapper.main(
-                ["--execute", "--sequence", "A55A0713", "--timeout", "1"]
-            )
+            rc = wrapper.main(["--execute", "--sequence", "A55A0713", "--timeout", "1"])
 
         self.assertEqual(rc, 41)
         self.assertEqual(
@@ -786,9 +767,7 @@ class HilTests(unittest.TestCase):
 
     def test_ostest_build_runner_selects_exact_profile(self):
         completed = mock.Mock(returncode=0)
-        with mock.patch.object(
-            hil.subprocess, "run", return_value=completed
-        ) as run:
+        with mock.patch.object(hil.subprocess, "run", return_value=completed) as run:
             rc = hil.default_build_runner("ostest-cond-production")
 
         self.assertEqual(rc, 0)
@@ -803,9 +782,7 @@ class HilTests(unittest.TestCase):
 
     def test_smartpins_build_runner_selects_board_profile(self):
         completed = mock.Mock(returncode=0)
-        with mock.patch.object(
-            hil.subprocess, "run", return_value=completed
-        ) as run:
+        with mock.patch.object(hil.subprocess, "run", return_value=completed) as run:
             rc = hil.default_build_runner("smartpins")
 
         self.assertEqual(rc, 0)
@@ -820,9 +797,7 @@ class HilTests(unittest.TestCase):
 
     def test_analog_build_runner_selects_board_profile(self):
         completed = mock.Mock(returncode=0)
-        with mock.patch.object(
-            hil.subprocess, "run", return_value=completed
-        ) as run:
+        with mock.patch.object(hil.subprocess, "run", return_value=completed) as run:
             rc = hil.default_build_runner("analog")
 
         self.assertEqual(rc, 0)
@@ -837,9 +812,7 @@ class HilTests(unittest.TestCase):
 
     def test_i2c_build_runner_selects_board_profile(self):
         completed = mock.Mock(returncode=0)
-        with mock.patch.object(
-            hil.subprocess, "run", return_value=completed
-        ) as run:
+        with mock.patch.object(hil.subprocess, "run", return_value=completed) as run:
             rc = hil.default_build_runner("i2c")
 
         self.assertEqual(rc, 0)
@@ -854,9 +827,7 @@ class HilTests(unittest.TestCase):
 
     def test_psram_build_runner_selects_board_profile(self):
         completed = mock.Mock(returncode=0)
-        with mock.patch.object(
-            hil.subprocess, "run", return_value=completed
-        ) as run:
+        with mock.patch.object(hil.subprocess, "run", return_value=completed) as run:
             rc = hil.default_build_runner("psram")
 
         self.assertEqual(rc, 0)
@@ -954,9 +925,7 @@ class HilTests(unittest.TestCase):
         self.assertIn("DISABLED", metadata["dac_adc_status"])
         self.assertIn("ENABLED", metadata["spi_status"])
         markers = json.loads(
-            (
-                self.directory / "smartpins" / "cycle-001" / "markers.json"
-            ).read_text()
+            (self.directory / "smartpins" / "cycle-001" / "markers.json").read_text()
         )
         self.assertTrue(markers["complete"])
         self.assertTrue(markers["smartpins_protocol"]["complete"])
@@ -979,9 +948,7 @@ class HilTests(unittest.TestCase):
             rc = self.invoke(argv, environment, factory, lock)
 
         self.assertEqual(rc, hil.EXIT_OK)
-        metadata = json.loads(
-            (self.directory / "analog" / "metadata.json").read_text()
-        )
+        metadata = json.loads((self.directory / "analog" / "metadata.json").read_text())
         self.assertEqual(metadata["smartpins_stages"], ["GPIO", "DAC_ADC"])
         self.assertEqual(
             metadata["required_fixtures"],
@@ -993,17 +960,14 @@ class HilTests(unittest.TestCase):
         self.assertIn("ENABLED", metadata["dac_adc_status"])
         self.assertIn("DISABLED", metadata["spi_status"])
         markers = json.loads(
-            (self.directory / "analog" / "cycle-001" / "markers.json")
-            .read_text()
+            (self.directory / "analog" / "cycle-001" / "markers.json").read_text()
         )
         self.assertTrue(markers["complete"])
         self.assertTrue(markers["smartpins_protocol"]["complete"])
 
         values = hil.read_kconfig(self.directory / ".config")
         values["CONFIG_P2_EC32MB_ADC_PIN"] = "6"
-        with self.assertRaisesRegex(
-            hil.SafetyError, "installed P4-P5 fixture"
-        ):
+        with self.assertRaisesRegex(hil.SafetyError, "installed P4-P5 fixture"):
             hil.validate_smartpins_config(values, "analog")
 
     def test_smartpins_full_validator_rejects_out_of_tolerance_pwm(self):
@@ -1024,10 +988,7 @@ class HilTests(unittest.TestCase):
         self.assertEqual(rc, hil.EXIT_HIL_FAILURE)
         status = json.loads(
             (
-                self.directory
-                / "smartpins-invalid-pwm"
-                / "cycle-001"
-                / "status.json"
+                self.directory / "smartpins-invalid-pwm" / "cycle-001" / "status.json"
             ).read_text()
         )
         self.assertIn("outside 950..1050", status["reason"])
@@ -1082,9 +1043,7 @@ class HilTests(unittest.TestCase):
 
         self.assertEqual(rc, hil.EXIT_OK)
         self.assertNotIn("-e", factory.commands[0])
-        metadata = json.loads(
-            (self.directory / "i2c" / "metadata.json").read_text()
-        )
+        metadata = json.loads((self.directory / "i2c" / "metadata.json").read_text())
         self.assertEqual(metadata["bus_device"], "/dev/i2c0")
         self.assertEqual(metadata["pressure_device"], "/dev/press0")
         self.assertEqual(metadata["pressure_readings_per_cycle"], 32)
@@ -1093,9 +1052,7 @@ class HilTests(unittest.TestCase):
         )
         self.assertTrue(markers["complete"])
         self.assertTrue(markers["i2c_protocol"]["complete"])
-        self.assertEqual(
-            markers["i2c_protocol"]["values"]["recovery_pulses"], 0
-        )
+        self.assertEqual(markers["i2c_protocol"]["values"]["recovery_pulses"], 0)
 
     def test_i2c_validator_rejects_pin_remap_before_serial(self):
         self.write_i2c_config()
@@ -1159,22 +1116,24 @@ class HilTests(unittest.TestCase):
         sequence = "1234ABCD"
         checksum = storage_protocol.stream_checksum("flash", sequence)
         response = (
-            "p2storage flash-write {} {}\r\n"
-            "P2STORAGE:BEGIN:COMMAND=flash-write\r\n"
-            "P2STORAGE:FLASH:WRITE:SEQUENCE={}:BYTES=1048576:"
-            "FNV1A={}:PASS\r\n"
-            "P2STORAGE:READY:RESET=FLASH:SEQUENCE={}\r\n"
-            "P2STORAGE:PASS:FLASH-WRITE\r\n"
-        ).format(
-            storage_protocol.ACKNOWLEDGEMENT,
-            sequence,
-            sequence,
-            checksum,
-            sequence,
-        ).encode("ascii")
-        session = FakeSession(
-            self.clock, [self.storage_boot_output(), response]
+            (
+                "p2storage flash-write {} {}\r\n"
+                "P2STORAGE:BEGIN:COMMAND=flash-write\r\n"
+                "P2STORAGE:FLASH:WRITE:SEQUENCE={}:BYTES=1048576:"
+                "FNV1A={}:PASS\r\n"
+                "P2STORAGE:READY:RESET=FLASH:SEQUENCE={}\r\n"
+                "P2STORAGE:PASS:FLASH-WRITE\r\n"
+            )
+            .format(
+                storage_protocol.ACKNOWLEDGEMENT,
+                sequence,
+                sequence,
+                checksum,
+                sequence,
+            )
+            .encode("ascii")
         )
+        session = FakeSession(self.clock, [self.storage_boot_output(), response])
         factory = SessionFactory([session])
         lock = RecordingLock()
         environment = self.env()
@@ -1203,10 +1162,7 @@ class HilTests(unittest.TestCase):
         )
         marker_status = json.loads(
             (
-                self.directory
-                / "storage-flash-write"
-                / "cycle-001"
-                / "markers.json"
+                self.directory / "storage-flash-write" / "cycle-001" / "markers.json"
             ).read_text()
         )
         self.assertTrue(marker_status["complete"])
@@ -1239,9 +1195,7 @@ class HilTests(unittest.TestCase):
         self.assertEqual(rc, hil.EXIT_OK)
         self.assertEqual(session.writes, [psram_protocol.command_bytes(sequence)])
         markers = json.loads(
-            (
-                self.directory / "psram" / "cycle-001" / "markers.json"
-            ).read_text()
+            (self.directory / "psram" / "cycle-001" / "markers.json").read_text()
         )
         self.assertTrue(markers["complete"])
         self.assertTrue(markers["psram_protocol"]["complete"])
@@ -1249,9 +1203,7 @@ class HilTests(unittest.TestCase):
             markers["psram_protocol"]["values"]["full_bytes"],
             32 * 1024 * 1024,
         )
-        metadata = json.loads(
-            (self.directory / "psram" / "metadata.json").read_text()
-        )
+        metadata = json.loads((self.directory / "psram" / "metadata.json").read_text())
         self.assertEqual(metadata["external_bytes"], 32 * 1024 * 1024)
         self.assertEqual(metadata["psram_expected_fnv1a"], "634C9DC5")
         self.assertTrue(metadata["destructive"])
@@ -1421,10 +1373,7 @@ class HilTests(unittest.TestCase):
         self.assertEqual(rc, hil.EXIT_HIL_FAILURE)
         status = json.loads(
             (
-                self.directory
-                / "psram-missing-progress"
-                / "cycle-001"
-                / "status.json"
+                self.directory / "psram-missing-progress" / "cycle-001" / "status.json"
             ).read_text()
         )
         self.assertIn("read progress", status["reason"])
@@ -1440,11 +1389,9 @@ class HilTests(unittest.TestCase):
                 32 * 1024 * 1024 + 1,
                 4 * 1024 * 1024,
             ):
-                line = (
-                    "P2PSRAM:PROGRESS:SEQUENCE={}:{}={}\r\n".format(
-                        sequence, direction, value
-                    ).encode("ascii")
-                )
+                line = "P2PSRAM:PROGRESS:SEQUENCE={}:{}={}\r\n".format(
+                    sequence, direction, value
+                ).encode("ascii")
                 stale_lines.append(line)
                 response = response.replace(line, b"")
 
@@ -1470,10 +1417,7 @@ class HilTests(unittest.TestCase):
         self.assertEqual(session.writes, [psram_protocol.command_bytes(sequence)])
         status = json.loads(
             (
-                self.directory
-                / "psram-stale-progress"
-                / "cycle-001"
-                / "status.json"
+                self.directory / "psram-stale-progress" / "cycle-001" / "status.json"
             ).read_text()
         )
         self.assertIn("progress", status["reason"])
@@ -1596,9 +1540,7 @@ class HilTests(unittest.TestCase):
     def test_marker_parser_does_not_duplicate_a_crlf_split_marker(self):
         marker = hil.MarkerSpec(
             "dynamic marker",
-            re.compile(
-                r"^P2STORAGE:VALUE=(?P<value>[0-9]+)\r?$", re.MULTILINE
-            ),
+            re.compile(r"^P2STORAGE:VALUE=(?P<value>[0-9]+)\r?$", re.MULTILINE),
         )
         parser = hil.MarkerParser((marker,), reject_duplicates=True)
 
@@ -1644,9 +1586,7 @@ class HilTests(unittest.TestCase):
         self.assertTrue(marker_status["complete"])
         self.assertEqual(marker_status["reset_count"], 1)
         self.assertIsNone(marker_status["duplicate_marker"])
-        metadata = json.loads(
-            (self.directory / "ostest" / "metadata.json").read_text()
-        )
+        metadata = json.loads((self.directory / "ostest" / "metadata.json").read_text())
         self.assertFalse(metadata["debug_assertions"])
         self.assertEqual(metadata["ostest_profile"], "ostest-pi-production")
         self.assertEqual(metadata["required_groups"], [m.label for m in markers])
@@ -1657,9 +1597,7 @@ class HilTests(unittest.TestCase):
 
     def test_ostest_parser_does_not_accept_a_missing_group(self):
         markers = hil.ostest_markers(full_ostest_config())
-        output = ostest_output(markers).replace(
-            "user_main: semaphore test\r\n", "", 1
-        )
+        output = ostest_output(markers).replace("user_main: semaphore test\r\n", "", 1)
         parser = hil.MarkerParser(
             markers,
             hil.BOOT_MARKERS[0].pattern,
@@ -1841,9 +1779,7 @@ class HilTests(unittest.TestCase):
 
         self.assertTrue(parser.complete)
         self.assertIsNone(parser.failure_reason)
-        self.assertEqual(
-            parser.warning_counts, {"ostest hrtimer timing WARNING": 1}
-        )
+        self.assertEqual(parser.warning_counts, {"ostest hrtimer timing WARNING": 1})
 
     def test_ostest_config_validation_classifies_assertion_images(self):
         hil.validate_ostest_config(full_ostest_config(), "disabled")
@@ -1871,17 +1807,13 @@ class HilTests(unittest.TestCase):
                 )
                 hil.validate_ostest_config(values, "any", profile)
 
-        with self.assertRaisesRegex(
-            hil.SafetyError, "ostest-cond-assert requires"
-        ):
+        with self.assertRaisesRegex(hil.SafetyError, "ostest-cond-assert requires"):
             hil.validate_ostest_config(
                 full_ostest_config(False, priority_inheritance=False),
                 "any",
                 "ostest-cond-assert",
             )
-        with self.assertRaisesRegex(
-            hil.SafetyError, "CONFIG_PRIORITY_INHERITANCE"
-        ):
+        with self.assertRaisesRegex(hil.SafetyError, "CONFIG_PRIORITY_INHERITANCE"):
             hil.validate_ostest_config(
                 full_ostest_config(True), "any", "ostest-cond-assert"
             )
@@ -1892,16 +1824,12 @@ class HilTests(unittest.TestCase):
                 values = hil.read_kconfig(hil.ostest_profile_path(profile))
                 hil.validate_ostest_profile_values(values, profile)
 
-        values = hil.read_kconfig(
-            hil.ostest_profile_path("ostest-pi-production")
-        )
+        values = hil.read_kconfig(hil.ostest_profile_path("ostest-pi-production"))
         values["CONFIG_TESTING_OSTEST_RR_RANGE"] = "1"
         with self.assertRaisesRegex(
             hil.SafetyError, "CONFIG_TESTING_OSTEST_RR_RANGE=1"
         ):
-            hil.validate_ostest_profile_values(
-                values, "ostest-pi-production"
-            )
+            hil.validate_ostest_profile_values(values, "ostest-pi-production")
 
     def test_ostest_condition_profile_requires_real_cond_test_summary(self):
         values = full_ostest_config(priority_inheritance=False)
@@ -1999,22 +1927,13 @@ class HilTests(unittest.TestCase):
         self.assertEqual(session.writes, [hil.NSH_COMMAND_BYTES])
         markers = json.loads(
             (
-                self.directory
-                / "nsh-echo-only"
-                / "cycle-001"
-                / "markers.json"
+                self.directory / "nsh-echo-only" / "cycle-001" / "markers.json"
             ).read_text()
         )
-        self.assertIn(
-            "NSH help output, sentinel, and prompts", markers["missing"]
-        )
+        self.assertIn("NSH help output, sentinel, and prompts", markers["missing"])
 
     def test_nsh_does_not_accept_response_text_received_before_probe_send(self):
-        unsolicited = (
-            GOOD_BOOT_OUTPUT
-            + b"nsh> "
-            + GOOD_NSH_RESPONSE
-        )
+        unsolicited = GOOD_BOOT_OUTPUT + b"nsh> " + GOOD_NSH_RESPONSE
         session = FakeSession(self.clock, [unsolicited])
         factory = SessionFactory([session])
         lock = RecordingLock()
@@ -2026,15 +1945,10 @@ class HilTests(unittest.TestCase):
         self.assertEqual(session.writes, [hil.NSH_COMMAND_BYTES])
         markers = json.loads(
             (
-                self.directory
-                / "nsh-unsolicited"
-                / "cycle-001"
-                / "markers.json"
+                self.directory / "nsh-unsolicited" / "cycle-001" / "markers.json"
             ).read_text()
         )
-        self.assertIn(
-            "NSH help output, sentinel, and prompts", markers["missing"]
-        )
+        self.assertIn("NSH help output, sentinel, and prompts", markers["missing"])
 
     def test_nsh_required_command_not_found_fails_immediately(self):
         session = FakeSession(
@@ -2053,10 +1967,7 @@ class HilTests(unittest.TestCase):
         self.assertEqual(rc, hil.EXIT_HIL_FAILURE)
         status = json.loads(
             (
-                self.directory
-                / "nsh-command-not-found"
-                / "cycle-001"
-                / "status.json"
+                self.directory / "nsh-command-not-found" / "cycle-001" / "status.json"
             ).read_text()
         )
         self.assertIn("required NSH command not found", status["reason"])
@@ -2113,15 +2024,10 @@ class HilTests(unittest.TestCase):
         self.assertEqual(rc, hil.EXIT_HIL_FAILURE)
         markers = json.loads(
             (
-                self.directory
-                / "nsh-missing-prompt"
-                / "cycle-001"
-                / "markers.json"
+                self.directory / "nsh-missing-prompt" / "cycle-001" / "markers.json"
             ).read_text()
         )
-        self.assertIn(
-            "NSH free output, sentinel, and prompts", markers["missing"]
-        )
+        self.assertIn("NSH free output, sentinel, and prompts", markers["missing"])
 
     def test_boot_failure_marker_takes_precedence_over_later_success_text(self):
         output = (
@@ -2137,9 +2043,7 @@ class HilTests(unittest.TestCase):
 
         self.assertEqual(rc, hil.EXIT_HIL_FAILURE)
         status = json.loads(
-            (
-                self.directory / "boot-failure" / "cycle-001" / "status.json"
-            ).read_text()
+            (self.directory / "boot-failure" / "cycle-001" / "status.json").read_text()
         )
         self.assertIn("P2BOOT:DATA=FAIL", status["reason"])
 

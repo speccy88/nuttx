@@ -10,10 +10,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
 
-import build_artifact
+import build_artifact  # noqa: E402
 
 
 class BuildArtifactTests(unittest.TestCase):
@@ -21,15 +20,11 @@ class BuildArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             lock = pathlib.Path(temporary) / "toolchain.lock"
             lock.write_text(
-                "nuttx_commit={}\nnuttx_apps_commit={}\n".format(
-                    "1" * 40, "2" * 40
-                ),
+                "nuttx_commit={}\nnuttx_apps_commit={}\n".format("1" * 40, "2" * 40),
                 encoding="utf-8",
             )
 
-            build_artifact.validate_toolchain_source_commits(
-                lock, "1" * 40, "2" * 40
-            )
+            build_artifact.validate_toolchain_source_commits(lock, "1" * 40, "2" * 40)
             with self.assertRaisesRegex(
                 build_artifact.BuildArtifactError,
                 "toolchain lock apps_commit .* does not match source",
@@ -49,9 +44,8 @@ class BuildArtifactTests(unittest.TestCase):
                     path.write_bytes(b"aligned P2 image")
                 elif name == "toolchain.lock":
                     path.write_text(
-                        "nuttx_commit={}\n" "nuttx_apps_commit={}\n".format(
-                            "1" * 40, "2" * 40
-                        ),
+                        "nuttx_commit={}\n"
+                        "nuttx_apps_commit={}\n".format("1" * 40, "2" * 40),
                         encoding="utf-8",
                     )
                 elif name in ("nuttx-source-status.txt", "apps-source-status.txt"):

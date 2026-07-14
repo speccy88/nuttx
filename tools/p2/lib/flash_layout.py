@@ -8,7 +8,6 @@ import json
 import pathlib
 from typing import Iterable
 
-
 FLASH_SIZE = 0x01000000
 PAGE_SIZE = 0x100
 ERASE = 0x1000
@@ -59,9 +58,9 @@ def image_manifest(data: bytes) -> dict[str, object]:
     }
 
 
-def validate_image_manifest(image: pathlib.Path,
-                            manifest: pathlib.Path | None = None
-                            ) -> dict[str, object]:
+def validate_image_manifest(
+    image: pathlib.Path, manifest: pathlib.Path | None = None
+) -> dict[str, object]:
     """Validate an adjacent mkflash manifest against its raw image."""
 
     image = pathlib.Path(image)
@@ -152,8 +151,7 @@ PARTITION_OBJECTS = (
     Partition("smartfs", BOOT_SIZE, FLASH_SIZE - BOOT_SIZE, False),
 )
 PARTITIONS = tuple(
-    (part.name, part.offset, part.size, part.protected)
-    for part in PARTITION_OBJECTS
+    (part.name, part.offset, part.size, part.protected) for part in PARTITION_OBJECTS
 )
 
 
@@ -168,8 +166,7 @@ def _partitions(parts: Iterable[object]) -> tuple[Partition, ...]:
     return tuple(result)
 
 
-def validate(parts=PARTITIONS, flash_size=FLASH_SIZE, erase=ERASE,
-             image_size=0):
+def validate(parts=PARTITIONS, flash_size=FLASH_SIZE, erase=ERASE, image_size=0):
     normalized = sorted(_partitions(parts), key=lambda part: part.offset)
     if not normalized:
         raise ValueError("no flash partitions")
@@ -323,7 +320,7 @@ resets, not true power cycles.
 
 def generated_files(root: pathlib.Path) -> dict[pathlib.Path, str]:
     return {
-        root / "boards/p2/p2x8c4m64p/p2-ec32mb/include/board_flash_layout.h":
-            render_header(),
+        root
+        / "boards/p2/p2x8c4m64p/p2-ec32mb/include/board_flash_layout.h": render_header(),
         root / "Documentation/platforms/p2/flash-layout.rst": render_rst(),
     }

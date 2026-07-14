@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
 
-import storage_protocol as storage
+import storage_protocol as storage  # noqa: E402
 
 
 class StorageProtocolTests(unittest.TestCase):
@@ -58,11 +58,9 @@ class StorageProtocolTests(unittest.TestCase):
         )
         self.assertEqual(
             storage.command_bytes("sd-mbr-repair"),
-            (
-                "p2storage sd-mbr-repair {}\r".format(
-                    storage.ACKNOWLEDGEMENT
-                )
-            ).encode("ascii"),
+            ("p2storage sd-mbr-repair {}\r".format(storage.ACKNOWLEDGEMENT)).encode(
+                "ascii"
+            ),
         )
         self.assertFalse(storage.sequence_required("sd-mbr-repair"))
         self.assertIn("sd-mbr-repair", storage.TARGET_DESTRUCTIVE_ACTIONS)
@@ -88,10 +86,8 @@ class StorageProtocolTests(unittest.TestCase):
 
     def test_sd_mbr_repair_requires_ordered_readback_markers(self):
         body = [
-            "P2STORAGE:SD:ROM-MBR:TYPE=0C:START=2048:"
-            "SECTORS=61130752:PASS",
-            "P2STORAGE:SD:MBR-REPAIR:START=2048:"
-            "SECTORS=61130752:PASS",
+            "P2STORAGE:SD:ROM-MBR:TYPE=0C:START=2048:" "SECTORS=61130752:PASS",
+            "P2STORAGE:SD:MBR-REPAIR:START=2048:" "SECTORS=61130752:PASS",
         ]
         text = self.response("sd-mbr-repair", body)
         result = storage.parse_storage_response(text, "sd-mbr-repair")
@@ -114,9 +110,7 @@ class StorageProtocolTests(unittest.TestCase):
 
         out_of_order = self.response("sd-mbr-repair", list(reversed(body)))
         self.assertFalse(
-            storage.parse_storage_response(
-                out_of_order, "sd-mbr-repair"
-            )["complete"]
+            storage.parse_storage_response(out_of_order, "sd-mbr-repair")["complete"]
         )
         inconsistent = text.replace(
             "P2STORAGE:SD:MBR-REPAIR:START=2048:SECTORS=61130752:PASS",
@@ -128,8 +122,7 @@ class StorageProtocolTests(unittest.TestCase):
 
     def test_sd_rom_verify_requires_all_ordered_read_only_layout_markers(self):
         body = [
-            "P2STORAGE:SD:ROM-MBR:TYPE=0C:START=2048:"
-            "SECTORS=61130752:PASS",
+            "P2STORAGE:SD:ROM-MBR:TYPE=0C:START=2048:" "SECTORS=61130752:PASS",
             "P2STORAGE:SD:ROM-VBR:BPS=512:SPC=32:RESERVED=32:"
             "FATS=2:FATSZ=14918:ROOT=2:FSINFO=1:PASS",
             "P2STORAGE:SD:ROM-FSINFO:LBA=2049:PASS",
@@ -170,9 +163,7 @@ class StorageProtocolTests(unittest.TestCase):
                     "sd-rom-verify", body[:index] + body[index + 1 :]
                 )
                 self.assertFalse(
-                    storage.parse_storage_response(
-                        missing, "sd-rom-verify"
-                    )["complete"]
+                    storage.parse_storage_response(missing, "sd-rom-verify")["complete"]
                 )
 
         out_of_order = self.response(
@@ -184,17 +175,14 @@ class StorageProtocolTests(unittest.TestCase):
 
         no_terminal = text.replace("P2STORAGE:PASS:SD-ROM-VERIFY\r\n", "")
         self.assertFalse(
-            storage.parse_storage_response(
-                no_terminal, "sd-rom-verify"
-            )["complete"]
+            storage.parse_storage_response(no_terminal, "sd-rom-verify")["complete"]
         )
 
     def test_sd_rom_verify_rejects_inconsistent_or_failed_inspection(self):
         text = self.response(
             "sd-rom-verify",
             [
-                "P2STORAGE:SD:ROM-MBR:TYPE=0B:START=2048:"
-                "SECTORS=61130752:PASS",
+                "P2STORAGE:SD:ROM-MBR:TYPE=0B:START=2048:" "SECTORS=61130752:PASS",
                 "P2STORAGE:SD:ROM-VBR:BPS=512:SPC=32:RESERVED=32:"
                 "FATS=2:FATSZ=14918:ROOT=2:FSINFO=1:PASS",
                 "P2STORAGE:SD:ROM-FSINFO:LBA=2049:PASS",
@@ -218,15 +206,12 @@ class StorageProtocolTests(unittest.TestCase):
         )
 
         failed = text.replace(
-            "P2STORAGE:SD:ROM-MBR:TYPE=0B:START=2048:"
-            "SECTORS=61130752:PASS",
+            "P2STORAGE:SD:ROM-MBR:TYPE=0B:START=2048:" "SECTORS=61130752:PASS",
             "P2STORAGE:SD:ROM-FAIL:STAGE=MBR:REASON=FIELDS",
         )
         result = storage.parse_storage_response(failed, "sd-rom-verify")
         self.assertFalse(result["complete"])
-        self.assertEqual(
-            result["failures"][0]["kind"], "P2 SD ROM layout failure"
-        )
+        self.assertEqual(result["failures"][0]["kind"], "P2 SD ROM layout failure")
 
     def test_flash_write_requires_predicted_checksum_nonce_and_reset_marker(self):
         checksum = storage.stream_checksum("flash", self.sequence)
@@ -234,23 +219,17 @@ class StorageProtocolTests(unittest.TestCase):
             "flash-write",
             [
                 "P2STORAGE:FLASH:WRITE:SEQUENCE={}:BYTES=1048576:"
-                "FNV1A={}:PASS".format(
-                    self.sequence, checksum
-                ),
+                "FNV1A={}:PASS".format(self.sequence, checksum),
                 "P2STORAGE:READY:RESET=FLASH:SEQUENCE={}".format(self.sequence),
             ],
         )
 
-        result = storage.parse_storage_response(
-            text, "flash-write", self.sequence
-        )
+        result = storage.parse_storage_response(text, "flash-write", self.sequence)
 
         self.assertTrue(result["complete"], result)
         self.assertEqual(result["expected_checksum"], checksum)
 
-        stale = storage.parse_storage_response(
-            text, "flash-write", "1234ABCE"
-        )
+        stale = storage.parse_storage_response(text, "flash-write", "1234ABCE")
         self.assertFalse(stale["complete"])
         self.assertTrue(stale["missing"])
 
@@ -259,9 +238,7 @@ class StorageProtocolTests(unittest.TestCase):
             "sd-verify",
             [
                 "P2STORAGE:SD:PERSISTENCE:SEQUENCE={}:BYTES=1048576:"
-                "FNV1A=00000000:PASS".format(
-                    self.sequence
-                )
+                "FNV1A=00000000:PASS".format(self.sequence)
             ],
         )
         result = storage.parse_storage_response(text, "sd-verify", self.sequence)
@@ -333,9 +310,7 @@ class StorageProtocolTests(unittest.TestCase):
             "FNV1A={}:PASS".format(storage.record_checksum("flash", "00000000")),
             flash_labels,
         )
-        self.assertIn(
-            "P2STORAGE:FLASH:CYCLE:COUNT=16:PASS", flash_labels
-        )
+        self.assertIn("P2STORAGE:FLASH:CYCLE:COUNT=16:PASS", flash_labels)
 
         sd = storage.response_marker_patterns("sd-stress", "FFFFFFE0")
         sd_labels = [label for label, pattern in sd]
@@ -355,7 +330,7 @@ class StorageProtocolTests(unittest.TestCase):
                 "P2STORAGE:FLASH:FULL:PROGRESS:SEQUENCE={}:"
                 "BYTES=2097152".format(self.sequence),
                 "P2STORAGE:FLASH:FULL:SEQUENCE={}:BYTES=15532032:"
-                "ENOSPC=1:PASS".format(self.sequence)
+                "ENOSPC=1:PASS".format(self.sequence),
             ],
         )
         result = storage.parse_storage_response(text, "flash-full", self.sequence)
@@ -369,9 +344,7 @@ class StorageProtocolTests(unittest.TestCase):
                 elif replacement.startswith("ENOSPC"):
                     corrupted = corrupted.replace("ENOSPC=1", replacement)
                 else:
-                    corrupted = corrupted.replace(
-                        "SEQUENCE=1234ABCD", replacement
-                    )
+                    corrupted = corrupted.replace("SEQUENCE=1234ABCD", replacement)
                 self.assertFalse(
                     storage.parse_storage_response(
                         corrupted, "flash-full", self.sequence
@@ -388,9 +361,7 @@ class StorageProtocolTests(unittest.TestCase):
                 "P2STORAGE:READY:POWER-CUT=FLASH:SEQUENCE=FFFFFFFF",
             ],
         ).replace("P2STORAGE:PASS:FLASH-INTERRUPT-ARM\r\n", "")
-        result = storage.parse_storage_response(
-            arm, "flash-interrupt-arm", base
-        )
+        result = storage.parse_storage_response(arm, "flash-interrupt-arm", base)
         self.assertTrue(result["complete"], result)
         self.assertNotIn("P2STORAGE:PASS:FLASH-INTERRUPT-ARM", result["found"])
         self.assertIn(storage.ACKNOWLEDGEMENT, result["command"])
@@ -402,9 +373,7 @@ class StorageProtocolTests(unittest.TestCase):
                 "P2STORAGE:FLASH:INTERRUPT:RECOVERY:SEQUENCE=FFFFFFFF:PASS",
             ],
         )
-        result = storage.parse_storage_response(
-            verify, "flash-interrupt-verify", base
-        )
+        result = storage.parse_storage_response(verify, "flash-interrupt-verify", base)
         self.assertTrue(result["complete"], result)
         self.assertNotIn(storage.ACKNOWLEDGEMENT, result["command"])
         self.assertEqual(
@@ -412,36 +381,26 @@ class StorageProtocolTests(unittest.TestCase):
         )
 
         invalid = verify.replace("PREFIX:BYTES=128", "PREFIX:BYTES=129")
-        result = storage.parse_storage_response(
-            invalid, "flash-interrupt-verify", base
-        )
+        result = storage.parse_storage_response(invalid, "flash-interrupt-verify", base)
         self.assertFalse(result["complete"])
         self.assertIn("0..128", result["errors"][0])
 
     def test_board_markers_pin_jedec_geometry_layout_and_no_autoformat(self):
         output = "".join(
             {
-                "P2STORAGE:W25=PRIVATE JEDEC=SUPPORTED":
-                    "\nP2STORAGE:W25=PRIVATE JEDEC=EF7018\r\n",
-                "P2STORAGE:W25_FREQUENCY PROBE=400000 ACTIVE=2000000":
-                    "\nP2STORAGE:W25_FREQUENCY PROBE=400000 "
-                    "ACTIVE=2000000\r\n",
-                "P2STORAGE:W25_GEOMETRY":
-                    "\nP2STORAGE:W25_GEOMETRY BLOCK=256 ERASE=4096 "
-                    "ERASEBLOCKS=4096 BYTES=16777216\r\n",
-                "P2STORAGE:W25_LAYOUT":
-                    "\nP2STORAGE:W25_LAYOUT BOOT=0x00000000+0x00080000 "
-                    "DATA=0x00080000+0x00F80000 FIRSTBLOCK=2048 "
-                    "NBLOCKS=63488\r\n",
-                "P2STORAGE:W25_BOOT_CRC32":
-                    "\nP2STORAGE:W25_BOOT_CRC32=89ABCDEF\r\n",
-                "P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO":
-                    "\nP2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO\r\n",
-                "P2STORAGE:MMCSD_FREQUENCY ID=400000 TRANSFER=2000000":
-                    "\nP2STORAGE:MMCSD_FREQUENCY ID=400000 "
-                    "TRANSFER=2000000\r\n",
-                "P2STORAGE:MMCSD=/dev/mmcsd0":
-                    "\nP2STORAGE:MMCSD=/dev/mmcsd0\r\n",
+                "P2STORAGE:W25=PRIVATE JEDEC=SUPPORTED": "\nP2STORAGE:W25=PRIVATE JEDEC=EF7018\r\n",
+                "P2STORAGE:W25_FREQUENCY PROBE=400000 ACTIVE=2000000": "\nP2STORAGE:W25_FREQUENCY PROBE=400000 "
+                "ACTIVE=2000000\r\n",
+                "P2STORAGE:W25_GEOMETRY": "\nP2STORAGE:W25_GEOMETRY BLOCK=256 ERASE=4096 "
+                "ERASEBLOCKS=4096 BYTES=16777216\r\n",
+                "P2STORAGE:W25_LAYOUT": "\nP2STORAGE:W25_LAYOUT BOOT=0x00000000+0x00080000 "
+                "DATA=0x00080000+0x00F80000 FIRSTBLOCK=2048 "
+                "NBLOCKS=63488\r\n",
+                "P2STORAGE:W25_BOOT_CRC32": "\nP2STORAGE:W25_BOOT_CRC32=89ABCDEF\r\n",
+                "P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO": "\nP2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO\r\n",
+                "P2STORAGE:MMCSD_FREQUENCY ID=400000 TRANSFER=2000000": "\nP2STORAGE:MMCSD_FREQUENCY ID=400000 "
+                "TRANSFER=2000000\r\n",
+                "P2STORAGE:MMCSD=/dev/mmcsd0": "\nP2STORAGE:MMCSD=/dev/mmcsd0\r\n",
             }[label]
             for label, pattern in storage.BOARD_MARKER_PATTERNS
         )
@@ -462,9 +421,7 @@ class StorageProtocolTests(unittest.TestCase):
         for jedec in ("EF3018", "EF8018", "C84018", "FFFFFF"):
             with self.subTest(invalid=jedec):
                 self.assertIsNone(
-                    pattern.search(
-                        "P2STORAGE:W25=PRIVATE JEDEC={}\r\n".format(jedec)
-                    )
+                    pattern.search("P2STORAGE:W25=PRIVATE JEDEC={}\r\n".format(jedec))
                 )
 
 

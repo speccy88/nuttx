@@ -2,7 +2,6 @@ import os
 import pathlib
 import unittest
 
-
 ROOT = pathlib.Path(__file__).parents[3]
 BOARD = ROOT / "boards/p2/p2x8c4m64p/p2-ec32mb"
 APPS = pathlib.Path(
@@ -68,7 +67,7 @@ class StorageBoardBindingTests(unittest.TestCase):
             "register_blockpartition(P2STORAGE_SD_PARTITION_DEVPATH, 0660,",
             "format.ff_hidsec = P2STORAGE_SD_PARTITION_START;",
             "mkfatfs(P2STORAGE_SD_PARTITION_DEVPATH, &format)",
-            'P2STORAGE:SD:ROM-MBR:TYPE=0C:START=%',
+            "P2STORAGE:SD:ROM-MBR:TYPE=0C:START=%",
         ):
             self.assertIn(requirement, source)
 
@@ -87,9 +86,9 @@ class StorageBoardBindingTests(unittest.TestCase):
             "UINT32_C(0x41615252)",
             "UINT32_C(0x61417272)",
             "P2STORAGE_P2_ROM_MAX_IMAGE_SIZE",
-            'NAME=_BOOT_P2.BIX:CLUSTER=%',
-            'P2STORAGE:SD:ROM-CHAIN:FIRST=%',
-            'P2STORAGE:SD:ROM-IMAGE:LBA=%',
+            "NAME=_BOOT_P2.BIX:CLUSTER=%",
+            "P2STORAGE:SD:ROM-CHAIN:FIRST=%",
+            "P2STORAGE:SD:ROM-IMAGE:LBA=%",
             'terminal = "SD-ROM-VERIFY";',
         ):
             self.assertIn(requirement, source)
@@ -104,31 +103,24 @@ class StorageBoardBindingTests(unittest.TestCase):
         flash = source.index("w25_ret = p2_w25_initialize();")
         sd = source.index("mmcsd_ret = p2_mmcsd_initialize();")
         self.assertLess(flash, sd)
-        self.assertIn('P2STORAGE:W25=PRIVATE', source)
-        self.assertIn('P2STORAGE:W25_FREQUENCY PROBE=', source)
-        self.assertIn('P2STORAGE:W25_GEOMETRY BLOCK=', source)
-        self.assertIn('P2STORAGE:W25_LAYOUT BOOT=', source)
-        self.assertIn('P2STORAGE:W25_BOOT_CRC32=', source)
-        self.assertIn(
-            'P2STORAGE:W25=UNAVAILABLE:CHECK_FLASH_SWITCH', source
-        )
-        self.assertIn('P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO', source)
-        self.assertIn('P2STORAGE:MMCSD=/dev/mmcsd0', source)
-        self.assertIn('P2STORAGE:MMCSD_FREQUENCY ID=', source)
+        self.assertIn("P2STORAGE:W25=PRIVATE", source)
+        self.assertIn("P2STORAGE:W25_FREQUENCY PROBE=", source)
+        self.assertIn("P2STORAGE:W25_GEOMETRY BLOCK=", source)
+        self.assertIn("P2STORAGE:W25_LAYOUT BOOT=", source)
+        self.assertIn("P2STORAGE:W25_BOOT_CRC32=", source)
+        self.assertIn("P2STORAGE:W25=UNAVAILABLE:CHECK_FLASH_SWITCH", source)
+        self.assertIn("P2STORAGE:SMARTFS=/dev/smart0 AUTOFORMAT=NO", source)
+        self.assertIn("P2STORAGE:MMCSD=/dev/mmcsd0", source)
+        self.assertIn("P2STORAGE:MMCSD_FREQUENCY ID=", source)
 
     def test_probe_and_transfer_frequencies_have_compile_time_fences(self):
         source = (BOARD / "src/p2_ec32mb_storage.c").read_text()
+        self.assertIn("CONFIG_P2_EC32MB_W25_PROBE_FREQUENCY > 400000", source)
         self.assertIn(
-            "CONFIG_P2_EC32MB_W25_PROBE_FREQUENCY > 400000", source
-        )
-        self.assertIn(
-            "CONFIG_P2_EC32MB_W25_PROBE_FREQUENCY >= "
-            "CONFIG_W25_SPIFREQUENCY",
+            "CONFIG_P2_EC32MB_W25_PROBE_FREQUENCY >= " "CONFIG_W25_SPIFREQUENCY",
             source,
         )
-        self.assertIn(
-            "CONFIG_MMCSD_IDMODE_CLOCK >= CONFIG_MMCSD_SPICLOCK", source
-        )
+        self.assertIn("CONFIG_MMCSD_IDMODE_CLOCK >= CONFIG_MMCSD_SPICLOCK", source)
 
     def test_raw_w25_stays_private_while_only_data_partition_gets_smart(self):
         source = (BOARD / "src/p2_ec32mb_storage.c").read_text()

@@ -393,6 +393,7 @@ static void spi_exchange(FAR struct spi_dev_s *dev,
         }
     }
 }
+
 /****************************************************************************
  * Name: spi_sndblock
  *

@@ -5,7 +5,6 @@ import os
 import pathlib
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 BOARD_ROOT = ROOT / "boards" / "p2" / "p2x8c4m64p"
 APPS = pathlib.Path(
@@ -123,7 +122,9 @@ class BaseProfileTests(unittest.TestCase):
             (ROOT / "arch" / "p2" / "src" / "common" / "p2_setjmp.S").is_file()
         )
 
-        patch = self.read(ROOT / "tools" / "p2" / "patches" / "p2llvm-preempt-safe-integer.patch")
+        patch = self.read(
+            ROOT / "tools" / "p2" / "patches" / "p2llvm-preempt-safe-integer.patch"
+        )
         self.assertIn(
             'DecoderMethod = "DecodeTJInstruction", isBranch = 1, isTerminator = 1',
             patch,

@@ -12,7 +12,6 @@ import sys
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-
 FORMAT = "p2-build-artifact-v1"
 SUPPORTED_BOARDS = ("p2-ec32mb", "p2-ec")
 PASS_REQUIRED_FILES = (
@@ -380,9 +379,9 @@ def main(argv=None) -> int:
         print("build_apps_commit={}".format(artifact.apps_commit))
         print("build_clock_hz={}".format(artifact.board_clock_hz))
         print("build_binary_sha256={}".format(artifact.binary_sha256))
-        print("build_source_clean={}".format(
-            "true" if artifact.source_clean else "false"
-        ))
+        print(
+            "build_source_clean={}".format("true" if artifact.source_clean else "false")
+        )
         return 0
     except (BuildArtifactError, OSError) as exc:
         print("ERROR: {}".format(exc), file=sys.stderr)

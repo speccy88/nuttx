@@ -19,7 +19,6 @@ import tarfile
 import tempfile
 from typing import Iterable
 
-
 FORMAT = "p2-flat-up-dual-board-release-bundle-v1"
 DEFAULT_PREFIX = "p2-edge-flat-up-v0.1.1"
 PLATFORM = "macos-arm64"
@@ -413,7 +412,7 @@ def _validate_hardware_evidence(paths: list[pathlib.Path], build) -> None:
         )
 
 
-def package(args: argparse.Namespace) -> pathlib.Path:
+def package(args: argparse.Namespace) -> pathlib.Path:  # noqa: C901
     output = args.output.expanduser().resolve()
     if output.exists():
         raise ReleaseBundleError("output already exists: {}".format(output))
@@ -461,10 +460,7 @@ def package(args: argparse.Namespace) -> pathlib.Path:
         "p2-ec32mb": args.ec32mb_hardware_status,
         "p2-ec": args.ec_revd_hardware_status,
     }
-    if (
-        release_profile == BASE_PROFILE
-        and "HIL-VERIFIED" in hardware_statuses.values()
-    ):
+    if release_profile == BASE_PROFILE and "HIL-VERIFIED" in hardware_statuses.values():
         raise ReleaseBundleError(
             "base profile releases must use HIL-REQUIRED hardware status"
         )
@@ -884,7 +880,7 @@ def _verify_archived_build_statuses(
         ) from exc
 
 
-def verify(root_value: pathlib.Path) -> dict[str, str]:
+def verify(root_value: pathlib.Path) -> dict[str, str]:  # noqa: C901
     root = pathlib.Path(root_value).expanduser().resolve()
     if not root.is_dir():
         raise ReleaseBundleError("release bundle is absent: {}".format(root))
@@ -1144,13 +1140,9 @@ def verify(root_value: pathlib.Path) -> dict[str, str]:
             "p2-ec",
             BOARD_SPECS["p2-ec"]["slug"],
             {
-                "build_status_sha256": board_manifest["p2-ec"][
-                    "build_status_sha256"
-                ],
+                "build_status_sha256": board_manifest["p2-ec"]["build_status_sha256"],
                 "elf_sha256": elf_digests["p2-ec"],
-                "raw_binary_sha256": hashlib.sha256(
-                    raw_images["p2-ec"]
-                ).hexdigest(),
+                "raw_binary_sha256": hashlib.sha256(raw_images["p2-ec"]).hexdigest(),
                 "nuttx_commit": board_manifest["p2-ec"]["nuttx_commit"],
                 "apps_commit": board_manifest["p2-ec"]["apps_commit"],
             },

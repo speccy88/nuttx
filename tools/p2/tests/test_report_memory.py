@@ -6,7 +6,6 @@ import subprocess
 import tempfile
 import unittest
 
-
 SCRIPT = pathlib.Path(__file__).parents[1] / "report-memory.sh"
 HUB_LIMIT = 0x7C000
 
@@ -56,7 +55,9 @@ class ReportMemoryTests(unittest.TestCase):
             self.assertIn("P2MEM:LINKED_IMAGE_END=0x00068000", result.stdout)
             self.assertIn("P2MEM:HEAP=0x0006a000-0x0007c000:BYTES=73728", result.stdout)
             self.assertIn("P2MEM:RAW_IMAGE=", result.stdout)
-            self.assertTrue(result.stdout.rstrip().endswith("P2MEM:PASS:STATICALLY-VERIFIED"))
+            self.assertTrue(
+                result.stdout.rstrip().endswith("P2MEM:PASS:STATICALLY-VERIFIED")
+            )
 
     def test_rejects_missing_or_malformed_map(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -66,7 +67,9 @@ class ReportMemoryTests(unittest.TestCase):
             self.assertIn("P2MEM:BLOCKED:MAP=MISSING_OR_EMPTY", missing.stderr)
 
             malformed = root / "bad.map"
-            malformed.write_text(map_text().replace("_eheap", "_wrong"), encoding="utf-8")
+            malformed.write_text(
+                map_text().replace("_eheap", "_wrong"), encoding="utf-8"
+            )
             result = self.run_report(malformed)
             self.assertEqual(result.returncode, 2)
             self.assertIn("P2MEM:BLOCKED:MAP_SYMBOL=_eheap", result.stderr)
@@ -75,7 +78,9 @@ class ReportMemoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             invalid = root / "invalid.map"
-            invalid.write_text(map_text(stack_start=0x6A000, stack_end=0x69000), encoding="utf-8")
+            invalid.write_text(
+                map_text(stack_start=0x6A000, stack_end=0x69000), encoding="utf-8"
+            )
             result = self.run_report(invalid)
             self.assertEqual(result.returncode, 2)
             self.assertIn("P2MEM:BLOCKED:MAP_LAYOUT=INVALID", result.stderr)

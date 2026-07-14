@@ -25,53 +25,61 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from bringup_protocol import (
-    BRINGUP_FAILURE_PATTERNS as APP_BRINGUP_FAILURE_PATTERNS,
-    BRINGUP_MARKERS as APP_BRINGUP_MARKERS,
-)
+import monitor
+from bringup_protocol import BRINGUP_FAILURE_PATTERNS as APP_BRINGUP_FAILURE_PATTERNS
+from bringup_protocol import BRINGUP_MARKERS as APP_BRINGUP_MARKERS
+from i2c_protocol import FAILURE_PATTERNS as I2C_FAILURE_PATTERNS
+from i2c_protocol import marker_patterns as i2c_marker_patterns
 from i2c_protocol import (
-    FAILURE_PATTERNS as I2C_FAILURE_PATTERNS,
-    marker_patterns as i2c_marker_patterns,
     parse_i2c,
 )
-import monitor
-from schedstress_protocol import (
-    FAILURE_PATTERNS as SCHEDSTRESS_FAILURE_PATTERNS,
-    HEAP_CONCURRENCY_COUNT as SCHEDSTRESS_HEAP_CONCURRENCY_COUNT,
-    HEAP_CONCURRENCY_ROUNDS as SCHEDSTRESS_HEAP_CONCURRENCY_ROUNDS,
-    HEAP_CONCURRENCY_THREADS as SCHEDSTRESS_HEAP_CONCURRENCY_THREADS,
-    STAGES as SCHEDSTRESS_STAGES,
-    TOTAL_EVENTS as SCHEDSTRESS_TOTAL_EVENTS,
-    marker_patterns as schedstress_marker_patterns,
-    parse_schedstress,
-)
-from smartpins_protocol import (
-    FAILURE_PATTERNS as SMARTPINS_FAILURE_PATTERNS,
-    hil_marker_patterns as smartpins_marker_patterns,
-    parse_smartpins,
-    stages_from_kconfig as smartpins_stages_from_kconfig,
-)
+from psram_protocol import FAILURE_PATTERNS as PSRAM_FAILURE_PATTERNS
+from psram_protocol import command_bytes as psram_command_bytes
+from psram_protocol import expected_fnv1a as psram_expected_fnv1a
+from psram_protocol import marker_patterns as psram_marker_patterns
+from psram_protocol import normalize_sequence as normalize_psram_sequence
 from psram_protocol import (
-    FAILURE_PATTERNS as PSRAM_FAILURE_PATTERNS,
-    command_bytes as psram_command_bytes,
-    expected_fnv1a as psram_expected_fnv1a,
-    marker_patterns as psram_marker_patterns,
-    normalize_sequence as normalize_psram_sequence,
     parse_psram,
 )
+from schedstress_protocol import FAILURE_PATTERNS as SCHEDSTRESS_FAILURE_PATTERNS
+from schedstress_protocol import (
+    HEAP_CONCURRENCY_COUNT as SCHEDSTRESS_HEAP_CONCURRENCY_COUNT,
+)
+from schedstress_protocol import (
+    HEAP_CONCURRENCY_ROUNDS as SCHEDSTRESS_HEAP_CONCURRENCY_ROUNDS,
+)
+from schedstress_protocol import (
+    HEAP_CONCURRENCY_THREADS as SCHEDSTRESS_HEAP_CONCURRENCY_THREADS,
+)
+from schedstress_protocol import STAGES as SCHEDSTRESS_STAGES
+from schedstress_protocol import TOTAL_EVENTS as SCHEDSTRESS_TOTAL_EVENTS
+from schedstress_protocol import marker_patterns as schedstress_marker_patterns
+from schedstress_protocol import (
+    parse_schedstress,
+)
+from smartpins_protocol import FAILURE_PATTERNS as SMARTPINS_FAILURE_PATTERNS
+from smartpins_protocol import hil_marker_patterns as smartpins_marker_patterns
+from smartpins_protocol import (
+    parse_smartpins,
+)
+from smartpins_protocol import stages_from_kconfig as smartpins_stages_from_kconfig
+from storage_protocol import ALTERNATE_TRANSACTIONS as STORAGE_ALTERNATE_TRANSACTIONS
+from storage_protocol import BOARD_MARKER_PATTERNS as STORAGE_BOARD_MARKER_PATTERNS
+from storage_protocol import FAILURE_PATTERNS as STORAGE_ACTION_FAILURE_PATTERNS
 from storage_protocol import (
-    ALTERNATE_TRANSACTIONS as STORAGE_ALTERNATE_TRANSACTIONS,
-    BOARD_MARKER_PATTERNS as STORAGE_BOARD_MARKER_PATTERNS,
-    FAILURE_PATTERNS as STORAGE_ACTION_FAILURE_PATTERNS,
     FLASH_WRITABLE_ACTIONS,
     SD_DESTRUCTIVE_ACTIONS,
-    command_bytes as storage_command_bytes,
-    first_error as storage_first_error,
-    normalize_sequence as normalize_storage_sequence,
-    parse_storage_response,
-    response_marker_patterns as storage_response_marker_patterns,
-    sequence_required as storage_sequence_required,
 )
+from storage_protocol import command_bytes as storage_command_bytes
+from storage_protocol import first_error as storage_first_error
+from storage_protocol import normalize_sequence as normalize_storage_sequence
+from storage_protocol import (
+    parse_storage_response,
+)
+from storage_protocol import (
+    response_marker_patterns as storage_response_marker_patterns,
+)
+from storage_protocol import sequence_required as storage_sequence_required
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 DEFAULT_IMAGE = (
@@ -124,12 +132,7 @@ OSTEST_PROFILES = {
     "ostest-cond-production": (False, False),
 }
 OSTEST_CONFIG_ROOT = (
-    REPO_ROOT
-    / "boards"
-    / "p2"
-    / "p2x8c4m64p"
-    / "p2-ec32mb"
-    / "configs"
+    REPO_ROOT / "boards" / "p2" / "p2x8c4m64p" / "p2-ec32mb" / "configs"
 )
 SCHEDSTRESS_PROFILE_PATH = (
     REPO_ROOT
@@ -368,14 +371,18 @@ STORAGE_MARKERS = BOOT_MARKERS + (
     MarkerSpec("nsh> prompt", re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE)),
 )
 
-STORAGE_ACTION_BOOT_MARKERS = BOOT_MARKERS + tuple(
-    MarkerSpec(label, pattern) for label, pattern in STORAGE_BOARD_MARKER_PATTERNS
-) + (
-    MarkerSpec(
-        "nsh> prompt",
-        re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE),
-        repeatable=True,
-    ),
+STORAGE_ACTION_BOOT_MARKERS = (
+    BOOT_MARKERS
+    + tuple(
+        MarkerSpec(label, pattern) for label, pattern in STORAGE_BOARD_MARKER_PATTERNS
+    )
+    + (
+        MarkerSpec(
+            "nsh> prompt",
+            re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE),
+            repeatable=True,
+        ),
+    )
 )
 
 STORAGE_FAILURE_PATTERNS = (
@@ -428,19 +435,15 @@ NSH_COMMAND_MARKERS = (
     MarkerSpec(
         NSH_SLEEP_DONE_LABEL,
         re.compile(
-            r"(?:^|[\r\n])"
-            + NSH_PROMPT_PATTERN
-            + r"echo P2NSH:SLEEP=OK\r?\n+"
-            r"P2NSH:SLEEP=OK\r?\n+"
-            + NSH_PROMPT_PATTERN,
+            r"(?:^|[\r\n])" + NSH_PROMPT_PATTERN + r"echo P2NSH:SLEEP=OK\r?\n+"
+            r"P2NSH:SLEEP=OK\r?\n+" + NSH_PROMPT_PATTERN,
             re.MULTILINE,
         ),
     ),
     nsh_command_result_marker(
         "NSH ls /dev output, sentinel, and prompts",
         "ls /dev",
-        r"(?:^|[\r\n])/dev:\r?\n[\s\S]*?"
-        r"(?:^|[\r\n])\s*(?:console|ttyS0)[^\r\n]*",
+        r"(?:^|[\r\n])/dev:\r?\n[\s\S]*?" r"(?:^|[\r\n])\s*(?:console|ttyS0)[^\r\n]*",
         "P2NSH:LSDEV=OK",
     ),
     nsh_command_result_marker(
@@ -452,28 +455,25 @@ NSH_COMMAND_MARKERS = (
     MarkerSpec(
         "NSH final P2_NSH_OK output and prompt",
         re.compile(
-            r"(?:^|[\r\n])(?:"
-            + NSH_PROMPT_PATTERN
-            + r")?echo P2_NSH_OK\r?\n+"
-            r"P2_NSH_OK\r?\n+"
-            + NSH_PROMPT_PATTERN,
+            r"(?:^|[\r\n])(?:" + NSH_PROMPT_PATTERN + r")?echo P2_NSH_OK\r?\n+"
+            r"P2_NSH_OK\r?\n+" + NSH_PROMPT_PATTERN,
             re.MULTILINE,
         ),
     ),
 )
 
-NSH_MARKERS = BOOT_MARKERS + (
-    MarkerSpec("nsh> prompt", re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE)),
-) + NSH_COMMAND_MARKERS
+NSH_MARKERS = (
+    BOOT_MARKERS
+    + (MarkerSpec("nsh> prompt", re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE)),)
+    + NSH_COMMAND_MARKERS
+)
 
 BOOT_FAILURE_PATTERNS = (
     ("P2BOOT:DATA=FAIL", re.compile(r"P2BOOT:DATA=FAIL")),
     ("P2BOOT:BSS=FAIL", re.compile(r"P2BOOT:BSS=FAIL")),
 )
 
-BRINGUP_FAILURE_PATTERNS = BOOT_FAILURE_PATTERNS + tuple(
-    APP_BRINGUP_FAILURE_PATTERNS
-)
+BRINGUP_FAILURE_PATTERNS = BOOT_FAILURE_PATTERNS + tuple(APP_BRINGUP_FAILURE_PATTERNS)
 
 NSH_FAILURE_PATTERNS = BOOT_FAILURE_PATTERNS + (
     (
@@ -519,9 +519,7 @@ OSTEST_FAILURE_EXCEPTIONS = (
     r"[^\r\n]*\bPASS\b[^\r\n]*pthread_join failed[^\r\n]*ESRCH",
     r"[^\r\n]*\bRoundrobin\s+Failed\b",
 )
-OSTEST_FAILURE_EXCEPTION = r"(?!(?:{}))".format(
-    "|".join(OSTEST_FAILURE_EXCEPTIONS)
-)
+OSTEST_FAILURE_EXCEPTION = r"(?!(?:{}))".format("|".join(OSTEST_FAILURE_EXCEPTIONS))
 
 OSTEST_FAILURE_PATTERNS = BOOT_FAILURE_PATTERNS + (
     (
@@ -534,8 +532,7 @@ OSTEST_FAILURE_PATTERNS = BOOT_FAILURE_PATTERNS + (
     (
         "ostest pthread rwlock exclusivity",
         re.compile(
-            r"(?:^|[\r\n])pthread_rwlock:\s+Opened rw_lock\b"
-            r"[^\r\n]*(?:\r?\n|$)"
+            r"(?:^|[\r\n])pthread_rwlock:\s+Opened rw_lock\b" r"[^\r\n]*(?:\r?\n|$)"
         ),
     ),
     (
@@ -563,8 +560,7 @@ OSTEST_FAILURE_PATTERNS = BOOT_FAILURE_PATTERNS + (
     (
         "ostest nonzero nerrors",
         re.compile(
-            r"(?:^|[\r\n])[^\r\n]*\bnerrors\s*=\s*[+-]?(?!0\b)\d+"
-            r"[^\r\n]*\r?\n",
+            r"(?:^|[\r\n])[^\r\n]*\bnerrors\s*=\s*[+-]?(?!0\b)\d+" r"[^\r\n]*\r?\n",
             re.IGNORECASE,
         ),
     ),
@@ -621,9 +617,7 @@ def kconfig_enabled(values: Mapping[str, str], name: str) -> bool:
     return values.get(name) == "y"
 
 
-def kconfig_integer(
-    values: Mapping[str, str], name: str, default: int = 0
-) -> int:
+def kconfig_integer(values: Mapping[str, str], name: str, default: int = 0) -> int:
     try:
         return int(values.get(name, str(default)), 0)
     except ValueError as exc:
@@ -645,16 +639,15 @@ def validate_smartpins_config(
             )
 
         mismatches = [
-            "{}={} (required {})".format(
-                name, values.get(name, "<unset>"), expected
-            )
+            "{}={} (required {})".format(name, values.get(name, "<unset>"), expected)
             for name, expected in SMARTPINS_ANALOG_CONFIG
             if values.get(name) != expected
         ]
         if mismatches:
             raise SafetyError(
-                "analog image does not match the installed P4-P5 fixture: {}"
-                .format(", ".join(mismatches))
+                "analog image does not match the installed P4-P5 fixture: {}".format(
+                    ", ".join(mismatches)
+                )
             )
         return stages
 
@@ -706,9 +699,7 @@ def validate_storage_action_config(values: Mapping[str, str]) -> None:
     """Require every value which changes the destructive console protocol."""
 
     mismatches = [
-        "{}={} (required {})".format(
-            name, values.get(name, "<unset>"), expected
-        )
+        "{}={} (required {})".format(name, values.get(name, "<unset>"), expected)
         for name, expected in STORAGE_ACTION_REQUIRED_CONFIG
         if values.get(name) != expected
     ]
@@ -785,9 +776,7 @@ def validate_schedstress_config(values: Mapping[str, str]) -> None:
         "CONFIG_DISABLE_PTHREAD",
         "CONFIG_SMP",
     )
-    enabled_forbidden = [
-        name for name in forbidden if kconfig_enabled(values, name)
-    ]
+    enabled_forbidden = [name for name in forbidden if kconfig_enabled(values, name)]
 
     if values.get("CONFIG_INIT_ENTRYPOINT") != '"p2schedstress_main"':
         mismatches.append(
@@ -806,9 +795,7 @@ def validate_schedstress_config(values: Mapping[str, str]) -> None:
     for name, wanted in locked_integers:
         if kconfig_integer(values, name) != wanted:
             mismatches.append(
-                "{}={} (expected {})".format(
-                    name, values.get(name, "<unset>"), wanted
-                )
+                "{}={} (expected {})".format(name, values.get(name, "<unset>"), wanted)
             )
 
     if mismatches or missing or enabled_forbidden:
@@ -831,9 +818,7 @@ def ostest_profile_path(profile: str) -> pathlib.Path:
     return OSTEST_CONFIG_ROOT / profile / "defconfig"
 
 
-def validate_ostest_profile_values(
-    values: Mapping[str, str], profile: str
-) -> None:
+def validate_ostest_profile_values(values: Mapping[str, str], profile: str) -> None:
     """Require every value pinned by the selected profile defconfig."""
 
     expected = read_kconfig(ostest_profile_path(profile))
@@ -851,7 +836,7 @@ def validate_ostest_profile_values(
 
 
 def ostest_failure_patterns(
-    values: Mapping[str, str]
+    values: Mapping[str, str],
 ) -> Tuple[Tuple[str, re.Pattern], ...]:
     """Return profile-specific failures while allowing the PI-only skip."""
 
@@ -913,9 +898,7 @@ def validate_ostest_config(
         "CONFIG_DISABLE_PTHREAD",
         "CONFIG_STDIO_DISABLE_BUFFERING",
     )
-    enabled_forbidden = [
-        name for name in forbidden if kconfig_enabled(values, name)
-    ]
+    enabled_forbidden = [name for name in forbidden if kconfig_enabled(values, name)]
     if profile is not None and not priority_inheritance:
         enabled_forbidden.extend(
             name
@@ -953,9 +936,7 @@ def validate_ostest_config(
         requested = assertion_mode == "enabled"
         if requested != expected_assertions:
             raise SafetyError(
-                "{} contradicts --ostest-assertions {}".format(
-                    profile, assertion_mode
-                )
+                "{} contradicts --ostest-assertions {}".format(profile, assertion_mode)
             )
     if assertion_mode == "enabled" and not assertions:
         raise SafetyError("assertion run requires CONFIG_DEBUG_ASSERTIONS=y")
@@ -963,17 +944,13 @@ def validate_ostest_config(
         raise SafetyError("production run requires CONFIG_DEBUG_ASSERTIONS disabled")
 
 
-def ostest_markers(values: Mapping[str, str]) -> Tuple[MarkerSpec, ...]:
+def ostest_markers(values: Mapping[str, str]) -> Tuple[MarkerSpec, ...]:  # noqa: C901
     """Derive the canonical enabled ostest groups from the captured config."""
 
     markers = list(BOOT_MARKERS)
 
-    def add(
-        label: str, prefix: bool = False, repeatable: bool = False
-    ) -> None:
-        markers.append(
-            ostest_line_marker(label, prefix=prefix, repeatable=repeatable)
-        )
+    def add(label: str, prefix: bool = False, repeatable: bool = False) -> None:
+        markers.append(ostest_line_marker(label, prefix=prefix, repeatable=repeatable))
 
     add("stdio_test: write fd=1")
     add("stdio_test: Standard I/O Check: printf")
@@ -1006,14 +983,12 @@ def ostest_markers(values: Mapping[str, str]) -> Tuple[MarkerSpec, ...]:
         add("user_main: FPU test")
     if not kconfig_enabled(values, "CONFIG_BUILD_KERNEL"):
         add("user_main: task_restart test")
-    if (
-        kconfig_enabled(values, "CONFIG_SCHED_WAITPID")
-        and not kconfig_enabled(values, "CONFIG_BUILD_KERNEL")
+    if kconfig_enabled(values, "CONFIG_SCHED_WAITPID") and not kconfig_enabled(
+        values, "CONFIG_BUILD_KERNEL"
     ):
         add("user_main: waitpid test")
-    if (
-        kconfig_enabled(values, "CONFIG_TESTING_OSTEST_MULTIUSER")
-        and kconfig_enabled(values, "CONFIG_SCHED_USER_IDENTITY")
+    if kconfig_enabled(values, "CONFIG_TESTING_OSTEST_MULTIUSER") and kconfig_enabled(
+        values, "CONFIG_SCHED_USER_IDENTITY"
     ):
         add("user_main: multi-user test")
 
@@ -1116,9 +1091,8 @@ def ostest_markers(values: Mapping[str, str]) -> Tuple[MarkerSpec, ...]:
         add("user_main: smp call test")
     if kconfig_enabled(values, "CONFIG_SCHED_EVENTS") and flat:
         add("user_main: nxevent test")
-    if (
-        kconfig_enabled(values, "CONFIG_ARCH_PERF_EVENTS")
-        and not kconfig_enabled(values, "CONFIG_ARCH_PERF_EVENTS_USER_ACCESS")
+    if kconfig_enabled(values, "CONFIG_ARCH_PERF_EVENTS") and not kconfig_enabled(
+        values, "CONFIG_ARCH_PERF_EVENTS_USER_ACCESS"
     ):
         add("user_main: performance event time counter test")
     add("Final memory usage:")
@@ -1284,9 +1258,7 @@ class MarkerParser:
         for label, pattern in self.warning_patterns:
             for match in pattern.finditer(combined):
                 if base + match.end() > previous_total:
-                    self.warning_counts[label] = (
-                        self.warning_counts.get(label, 0) + 1
-                    )
+                    self.warning_counts[label] = self.warning_counts.get(label, 0) + 1
 
         self._total += len(text)
         self._tail = combined[-self._overlap :]
@@ -1613,8 +1585,14 @@ def preserve_hil_inputs(config: HilConfig) -> Tuple[str, ...]:
     if config.protocol == "smartpins":
         profile = "analog" if "DAC_ADC" in config.smartpins_stages else "smartpins"
         candidates.append(
-            REPO_ROOT / "boards" / "p2" / "p2x8c4m64p" / "p2-ec32mb"
-            / "configs" / profile / "defconfig"
+            REPO_ROOT
+            / "boards"
+            / "p2"
+            / "p2x8c4m64p"
+            / "p2-ec32mb"
+            / "configs"
+            / profile
+            / "defconfig"
         )
 
     if config.protocol == "storage" and config.storage_action:
@@ -1636,9 +1614,7 @@ def preserve_hil_inputs(config: HilConfig) -> Tuple[str, ...]:
                 "p2i2c_main.c",
             )
         )
-        board_dir = (
-            REPO_ROOT / "boards" / "p2" / "p2x8c4m64p" / "p2-ec32mb"
-        )
+        board_dir = REPO_ROOT / "boards" / "p2" / "p2x8c4m64p" / "p2-ec32mb"
         candidates.extend(
             (
                 board_dir / "Kconfig",
@@ -1671,9 +1647,7 @@ def preserve_hil_inputs(config: HilConfig) -> Tuple[str, ...]:
             p2psram_dir / name
             for name in ("Kconfig", "Make.defs", "Makefile", "p2psram_main.c")
         )
-        board_dir = (
-            REPO_ROOT / "boards" / "p2" / "p2x8c4m64p" / "p2-ec32mb"
-        )
+        board_dir = REPO_ROOT / "boards" / "p2" / "p2x8c4m64p" / "p2-ec32mb"
         candidates.extend(
             (
                 board_dir / "Kconfig",
@@ -1919,8 +1893,7 @@ def exact_protocol_markers(
         ]
     elif protocol == "i2c":
         markers = [
-            MarkerSpec(label, pattern)
-            for label, pattern in i2c_marker_patterns()
+            MarkerSpec(label, pattern) for label, pattern in i2c_marker_patterns()
         ]
     elif protocol == "schedstress":
         markers = [
@@ -2016,7 +1989,7 @@ class HilRunner:
         self.lock_factory = lock_factory
         self.owner_probe = owner_probe
 
-    def run(self) -> bool:
+    def run(self) -> bool:  # noqa: C901
         config = self.config
         if config.protocol == "ostest":
             config_path = REPO_ROOT / ".config"
@@ -2058,8 +2031,7 @@ class HilRunner:
         config.artifact_dir.mkdir(parents=True, exist_ok=False)
         preserved_inputs = preserve_hil_inputs(config)
         preserved_input_sha256 = {
-            path: sha256_file(config.artifact_dir / path)
-            for path in preserved_inputs
+            path: sha256_file(config.artifact_dir / path) for path in preserved_inputs
         }
         if config.protocol == "psram":
             copied_config = config.artifact_dir / "inputs" / ".config"
@@ -2083,8 +2055,7 @@ class HilRunner:
             copied_config = config.artifact_dir / "inputs" / ".config"
             if (
                 not copied_config.is_file()
-                or sha256_file(copied_config)
-                != config.schedstress_config_sha256
+                or sha256_file(copied_config) != config.schedstress_config_sha256
             ):
                 raise SafetyError(
                     "preserved schedstress .config does not match the "
@@ -2140,13 +2111,9 @@ class HilRunner:
             if "PWM_CAPTURE" in config.smartpins_stages:
                 fixtures.append("PWM_CAPTURE:P4-P5 direct")
             if "DAC_ADC" in config.smartpins_stages:
-                fixtures.append(
-                    "DAC_ADC:P4-1kohm-P5; P5-100nF-GND"
-                )
+                fixtures.append("DAC_ADC:P4-1kohm-P5; P5-100nF-GND")
             if "SPI" in config.smartpins_stages:
-                fixtures.append(
-                    "SPI:P6-MOSI to P7-MISO; P8-SCK and P9-CS unconnected"
-                )
+                fixtures.append("SPI:P6-MOSI to P7-MISO; P8-SCK and P9-CS unconnected")
             overall.update(
                 {
                     "smartpins_config_sha256": config.smartpins_config_sha256,
@@ -2181,16 +2148,12 @@ class HilRunner:
         elif config.protocol == "schedstress":
             overall.update(
                 {
-                    "schedstress_config_sha256": (
-                        config.schedstress_config_sha256
-                    ),
+                    "schedstress_config_sha256": (config.schedstress_config_sha256),
                     "scheduler_event_counts": {
                         stage: count for stage, count in SCHEDSTRESS_STAGES
                     },
                     "scheduler_event_total": SCHEDSTRESS_TOTAL_EVENTS,
-                    "heap_concurrency_threads": (
-                        SCHEDSTRESS_HEAP_CONCURRENCY_THREADS
-                    ),
+                    "heap_concurrency_threads": (SCHEDSTRESS_HEAP_CONCURRENCY_THREADS),
                     "heap_concurrency_rounds_per_thread": (
                         SCHEDSTRESS_HEAP_CONCURRENCY_ROUNDS
                     ),
@@ -2326,7 +2289,7 @@ class HilRunner:
             write_json(config.artifact_dir / "status.json", overall)
         return passed == config.cycles
 
-    def _run_cycle(self, cycle: int) -> CycleResult:
+    def _run_cycle(self, cycle: int) -> CycleResult:  # noqa: C901
         config = self.config
         cycle_dir = config.artifact_dir / "cycle-{:03d}".format(cycle)
         cycle_dir.mkdir(parents=False, exist_ok=False)
@@ -2341,6 +2304,12 @@ class HilRunner:
             reject_duplicates=config.reject_duplicate_markers,
         )
         protocol_text: List[str] = []
+        capture_protocol_text = config.protocol in (
+            "smartpins",
+            "i2c",
+            "schedstress",
+            "psram",
+        ) or bool(config.storage_action)
         smartpins_result = None
         i2c_result = None
         schedstress_result = None
@@ -2417,9 +2386,7 @@ class HilRunner:
         elif config.protocol == "schedstress":
             metadata.update(
                 {
-                    "schedstress_config_sha256": (
-                        config.schedstress_config_sha256
-                    ),
+                    "schedstress_config_sha256": (config.schedstress_config_sha256),
                     "scheduler_event_total": SCHEDSTRESS_TOTAL_EVENTS,
                     "heap_concurrency_allocations": (
                         SCHEDSTRESS_HEAP_CONCURRENCY_COUNT
@@ -2463,9 +2430,7 @@ class HilRunner:
                             raw_log.flush()
                             raw_bytes += len(data)
                             decoded = normalizer.feed(data)
-                            if (config.protocol in (
-                                    "smartpins", "i2c", "schedstress", "psram") or
-                                    config.storage_action):
+                            if capture_protocol_text:
                                 protocol_text.append(decoded)
                             previously_found = set(parser.found)
                             parser.feed(decoded)
@@ -2537,9 +2502,7 @@ class HilRunner:
                                         )
                                         break
                                 if config.protocol == "i2c":
-                                    i2c_result = parse_i2c(
-                                        "".join(protocol_text)
-                                    )
+                                    i2c_result = parse_i2c("".join(protocol_text))
                                     if not i2c_result["complete"]:
                                         reason = (
                                             "I2C protocol validation failed: {}"
@@ -2635,9 +2598,7 @@ class HilRunner:
                     trailing = normalizer.finish()
                     if trailing:
                         parser.feed(trailing)
-                        if (config.protocol in (
-                                "smartpins", "i2c", "schedstress", "psram") or
-                                config.storage_action):
+                        if capture_protocol_text:
                             protocol_text.append(trailing)
         finally:
             if session is not None:
@@ -2691,9 +2652,7 @@ class HilRunner:
             "interactive_send_completed": interactive_send_completed,
             "warning_counts": dict(sorted(parser.warning_counts.items())),
             "nsh_sleep_elapsed_seconds": (
-                round(nsh_sleep_elapsed, 6)
-                if nsh_sleep_elapsed is not None
-                else None
+                round(nsh_sleep_elapsed, 6) if nsh_sleep_elapsed is not None else None
             ),
             "ended_utc": utc_timestamp(self.utc_now()),
         }
@@ -2830,7 +2789,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def config_from_args(
+def config_from_args(  # noqa: C901
     args,
     env: Mapping[str, str],
     utc_now: Callable[[], datetime.datetime],
@@ -2869,9 +2828,7 @@ def config_from_args(
 
     if args.protocol == "smartpins":
         if env.get("P2_ALLOW_LOOPBACK_TESTS", "0") != "1":
-            raise SafetyError(
-                "smartpins requires P2_ALLOW_LOOPBACK_TESTS=1"
-            )
+            raise SafetyError("smartpins requires P2_ALLOW_LOOPBACK_TESTS=1")
         smartpins_config_path = REPO_ROOT / ".config"
         smartpins_config = read_kconfig(smartpins_config_path)
         smartpins_stages = validate_smartpins_config(
@@ -2912,9 +2869,7 @@ def config_from_args(
                 )
             if args.storage_sequence:
                 try:
-                    storage_sequence = normalize_storage_sequence(
-                        args.storage_sequence
-                    )
+                    storage_sequence = normalize_storage_sequence(args.storage_sequence)
                 except ValueError as exc:
                     raise SafetyError(str(exc)) from exc
             if storage_action in FLASH_WRITABLE_ACTIONS:
@@ -2928,9 +2883,7 @@ def config_from_args(
                 and env.get("P2_ALLOW_SD_DESTRUCTIVE", "0") != "1"
             ):
                 raise SafetyError(
-                    "{} requires P2_ALLOW_SD_DESTRUCTIVE=1".format(
-                        storage_action
-                    )
+                    "{} requires P2_ALLOW_SD_DESTRUCTIVE=1".format(storage_action)
                 )
         storage_config_path = REPO_ROOT / ".config"
         storage_config = read_kconfig(storage_config_path)
@@ -3029,9 +2982,7 @@ def config_from_args(
         raise SafetyError("P2 image cannot be the LOADP2 executable")
     image_sha = sha256_file(image)
     if args.protocol == "psram":
-        psram_expected_hash = "{:08X}".format(
-            psram_expected_fnv1a(psram_sequence)
-        )
+        psram_expected_hash = "{:08X}".format(psram_expected_fnv1a(psram_sequence))
 
     loader_baud = args.loader_baud or int(env.get("P2_LOADER_BAUD", "2000000"))
     console_baud = args.console_baud or int(env.get("P2_CONSOLE_BAUD", "230400"))
@@ -3111,7 +3062,8 @@ def config_from_args(
             if args.protocol == "context"
             else (
                 BOOT_MARKERS[0].pattern
-                if args.protocol in (
+                if args.protocol
+                in (
                     "boot",
                     "bringup",
                     "nsh",
@@ -3180,18 +3132,13 @@ def config_from_args(
         ),
         loadp2_script=LOADP2_SCRIPT if args.protocol == "hello" else "",
         send_after_label=(
-            "nsh> prompt"
-            if (args.protocol == "nsh" or storage_action or
-                args.protocol == "psram")
-            else ""
+            "nsh> prompt" if args.protocol in ("nsh", "psram") or storage_action else ""
         ),
         send_payload=(
             NSH_COMMAND_BYTES
             if args.protocol == "nsh"
             else (
-                storage_command_bytes(
-                    storage_action, storage_sequence or None
-                )
+                storage_command_bytes(storage_action, storage_sequence or None)
                 if storage_action
                 else (
                     psram_command_bytes(psram_sequence)
@@ -3214,14 +3161,17 @@ def config_from_args(
                 )
                 if storage_action
                 else (
-                    tuple(label for label, _pattern in
-                          psram_marker_patterns(psram_sequence))
+                    tuple(
+                        label
+                        for label, _pattern in psram_marker_patterns(psram_sequence)
+                    )
                     if args.protocol == "psram"
                     else ()
                 )
             )
         ),
-        reject_duplicate_markers=args.protocol in (
+        reject_duplicate_markers=args.protocol
+        in (
             "ostest",
             "smartpins",
             "i2c",
@@ -3292,9 +3242,7 @@ def main(
             build_rc = build_runner(build_target)
             if build_rc != 0:
                 raise SafetyError(
-                    "{} build failed with exit code {}".format(
-                        build_target, build_rc
-                    )
+                    "{} build failed with exit code {}".format(build_target, build_rc)
                 )
         config = config_from_args(args, environment, utc_now, port_validator)
         runner = HilRunner(

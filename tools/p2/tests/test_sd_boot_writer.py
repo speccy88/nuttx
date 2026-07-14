@@ -9,7 +9,6 @@ import subprocess
 import tempfile
 import unittest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "tools/p2/write-sd-boot.sh"
 
@@ -24,18 +23,18 @@ class SdBootWriterTests(unittest.TestCase):
             "  echo '@ADDR=file1,@ADDR+file2'\n"
             "  exit 0\n"
             "fi\n"
-            "touch \"$FAKE_LOADP2_INVOKED\"\n"
-            "printf '%s\\n' \"$@\" > \"$FAKE_LOADP2_ARGS\"\n"
+            'touch "$FAKE_LOADP2_INVOKED"\n'
+            'printf \'%s\\n\' "$@" > "$FAKE_LOADP2_ARGS"\n'
             "for argument do\n"
-            "  case \"$argument\" in\n"
+            '  case "$argument" in\n'
             "    @0=*,@8000=*)\n"
             "      staged=${argument#*,@8000=}\n"
-            "      printf '%s\\n' \"$staged\" > \"$FAKE_STAGED_PATH\"\n"
-            "      cp \"$staged\" \"$FAKE_STAGED_COPY\"\n"
+            '      printf \'%s\\n\' "$staged" > "$FAKE_STAGED_PATH"\n'
+            '      cp "$staged" "$FAKE_STAGED_COPY"\n'
             "      ;;\n"
             "  esac\n"
             "done\n"
-            "exit \"${FAKE_LOADP2_RESULT:-0}\"\n",
+            'exit "${FAKE_LOADP2_RESULT:-0}"\n',
             encoding="utf-8",
         )
         loader.chmod(0o755)
@@ -120,7 +119,9 @@ class SdBootWriterTests(unittest.TestCase):
             ("P2_ALLOW_SD_DESTRUCTIVE", "P2_ALLOW_SD_DESTRUCTIVE=1"),
         )
         for disabled, message in expected:
-            with self.subTest(disabled=disabled), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(
+                disabled=disabled
+            ), tempfile.TemporaryDirectory() as directory:
                 root = pathlib.Path(directory)
                 environment = dict(gates, **{disabled: "0"})
                 result = self.run_script(root, ("--execute",), environment)
@@ -325,9 +326,7 @@ class SdBootWriterTests(unittest.TestCase):
             fake_lsof.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             fake_lsof.chmod(0o755)
             fake_tee = root / "tee"
-            fake_tee.write_text(
-                "#!/bin/sh\ncat >/dev/null\nexit 1\n", encoding="utf-8"
-            )
+            fake_tee.write_text("#!/bin/sh\ncat >/dev/null\nexit 1\n", encoding="utf-8")
             fake_tee.chmod(0o755)
             artifact = root / "artifact"
             gates = {
