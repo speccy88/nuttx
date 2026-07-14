@@ -240,9 +240,11 @@ the target reproduced FNV-1a ``D0D0F215``.  Independent SD-only reset boot is
 entry/data/BSS/NuttX, W25-off, microSD, SmartFS-unavailable, showcase, and NSH
 markers.  The boot status SHA-256 is
 ``61534212bd8bcf9f4ca996d36731c0e612951d7d9554c96ff360aaf607a3e758``.
-The local release package and extracted-bundle verification are **PASS**.
-GitHub upload, fresh-download verification, and publication remain
-**PENDING**.
+The release package, extracted-bundle verification, one fresh GitHub
+draft-release download, and publication are **PASS**.  The public
+``p2-edge-flat-up-v0.1.0`` prerelease contains all 20 byte-matched assets; all
+19 recorded checksums and the bundled verifier passed after restoring the
+standalone-download executable mode bits.
 
 The fresh ABI run is **PASS** at
 ``/tmp/p2-release-final.14cadad-r1/abi/20260713T231547Z``.  It records NuttX
@@ -298,8 +300,8 @@ The applicable OSTest matrix and the current candidate's RAM showcase, ABI,
 host/static checks, clean dual-board builds, flash programming, and ten-cycle
 reset-only flash-boot proof are complete.  Exact-candidate SD writing and
 raw-card inspection plus its no-loader SD-only ROM reset are also complete.
-The local 20-file package, all six installer dry-runs, and extracted-bundle
-verification are complete.  GitHub upload, fresh-download verification, and
-publication remain **PENDING**, so release closure is not yet complete.
+The local 20-file package, all six installer dry-runs, extracted-bundle
+verification, one fresh GitHub draft download, publication, and draft PR are
+complete.  The flat-UP release closure is complete.
 Fixture-dependent gaps remain named rather than being converted into support
 claims; the explicitly deferred SMP work is not part of this finish gate.

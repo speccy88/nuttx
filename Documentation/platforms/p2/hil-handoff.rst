@@ -164,9 +164,11 @@ confirmed ``(FLASH,up,down)=(OFF,OFF,ON)`` setting, the exact 402,452-byte
 candidate reached the ordered entry-through-NSH markers in 16.688852 seconds
 with no loader download and zero serial TX.  Its ``status.json`` SHA-256 is
 ``61534212bd8bcf9f4ca996d36731c0e612951d7d9554c96ff360aaf607a3e758``.
-The local 20-file release package and extracted-bundle verification are
-**PASS**.  GitHub upload, fresh-download verification, and publication remain
-**PENDING** at this snapshot.
+The local 20-file release package, extracted-bundle verification, one fresh
+GitHub draft-release download, and publication are **PASS**.  The public
+``p2-edge-flat-up-v0.1.0`` prerelease contains all 20 byte-matched assets; all
+19 recorded checksums and the bundled verifier passed after restoring the
+standalone-download executable mode bits.
 
 The candidate-bound ABI run is **PASS** at
 ``/tmp/p2-release-final.14cadad-r1/abi/20260713T231547Z`` with NuttX commit

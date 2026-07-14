@@ -41,9 +41,10 @@ current release candidate has clean dual-board builds, a fresh ABI PASS, Rev-B
 RAM showcase HIL, flash-programming HIL, and ten completed hash-bound
 reset-only flash boots.  Its exact SD write and read-only ROM-layout inspection
 plus its final no-loader SD-only ROM reset are also PASS.  The 20-file local
-package, all six installer dry-runs, and extracted-bundle verification are
-also PASS.  GitHub upload, fresh-download verification, and publication are
-still **PENDING** at this snapshot.
+package, all six installer dry-runs, extracted-bundle verification, one fresh
+GitHub draft-release download, and publication are also PASS.  The public
+``p2-edge-flat-up-v0.1.0`` prerelease contains all 20 assets and the draft PR
+is open.
 
 1. Hardware setup
 -----------------
@@ -1684,8 +1685,8 @@ fresh-download verification pass.
   136 top-level status bundles.  It remains less authoritative than the
   per-test sealed artifact writers; do not use it to infer a missing HIL PASS.
 
-32. Remaining blockers and deferred scope
-------------------------------------------
+32. Remaining gaps, closure, and deferred scope
+------------------------------------------------
 
 The complete applicable ``ostest`` matrix and the PI completion-state change
 are closed by the accepted campaigns in section 28.  They are no longer
@@ -1709,9 +1710,10 @@ acceptance blockers.
      - Add controlled power removal during a bounded data-partition write and
        verify recovery plus unchanged boot CRC
    * - GitHub publication
-     - **PENDING**; the local package is verified but not yet a durable release
-     - Upload the exact assets, verify them from a fresh download, then publish
-       and verify the GitHub release
+     - **PASS**; the public ``p2-edge-flat-up-v0.1.0`` prerelease has exactly
+       20 assets, and one fresh draft-release download passed byte comparison,
+       all 19 checksums, and the verifier after executable modes were restored
+     - No further closure is required for this release goal
    * - Conditional AIO and multi-user groups
      - BLOCKED on writable-filesystem and credential fixtures; neither feature
        is enabled by the direct-entry OSTest profiles
@@ -1727,7 +1729,6 @@ The applicable historical flat-UP hardware matrix is accepted, and the exact
 candidate has passed clean builds, fresh ABI, Rev-B RAM showcase, and flash
 programming plus ten completed reset-only flash boots.  Its exact SD write and
 read-only raw-card verification plus no-loader SD-only ROM reset also pass.
-The local package and extracted-bundle checks pass.  Release closure is still
-incomplete until the GitHub publication row above passes.
-SMP remains a separate future project and requires no closure for this
-flat-UP goal.
+The local package, extracted-bundle checks, fresh GitHub download, public
+prerelease, and draft PR pass.  Release closure is complete.  SMP remains a
+separate future project and requires no closure for this flat-UP goal.
