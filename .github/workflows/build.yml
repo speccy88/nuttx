@@ -97,7 +97,7 @@ jobs:
       - name: Checkout nuttx repo
         uses: actions/checkout@v7
         with:
-          repository: apache/nuttx
+          repository: ${{ github.repository }}
           ref: ${{ steps.gittargets.outputs.os_ref }}
           path: sources/nuttx
           fetch-depth: 1
@@ -145,6 +145,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DOCKER_BUILDKIT: 1
+      # Documented sim/login CI test credential (not a production secret).
+      # Used when CONFIG_BOARD_ETC_ROMFS_PASSWD_ENABLE=y and defconfig omits
+      # the password.  See tools/update_romfs_password.sh.
+      NUTTX_ROMFS_PASSWD_PASSWORD: NuttXSimLogin1
 
     strategy:
       max-parallel: 12
