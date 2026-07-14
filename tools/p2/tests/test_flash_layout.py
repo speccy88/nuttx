@@ -20,7 +20,7 @@ import flash_layout
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
-def make_build_artifact(root, image):
+def make_build_artifact(root, image, clean=True):
     root.mkdir()
     for name in build_artifact.PASS_REQUIRED_FILES:
         path = root / name
@@ -36,7 +36,9 @@ def make_build_artifact(root, image):
                 encoding="utf-8",
             )
         elif name in ("nuttx-source-status.txt", "apps-source-status.txt"):
-            path.write_text("", encoding="utf-8")
+            path.write_text(
+                "" if clean else " M development-change\n", encoding="utf-8"
+            )
         else:
             path.write_text(name + "\n", encoding="utf-8")
     files = {
@@ -61,9 +63,9 @@ def make_build_artifact(root, image):
         "apps_branch": "codex/test",
         "apps_commit": "2" * 40,
         "apps_commit_after": "2" * 40,
-        "source_clean": True,
-        "nuttx_source_clean": True,
-        "apps_source_clean": True,
+        "source_clean": clean,
+        "nuttx_source_clean": clean,
+        "apps_source_clean": clean,
         "board_clock_hz": 180000000,
         "binary_sha256": files["nuttx.bin"]["sha256"],
         "elf_sha256": files["nuttx"]["sha256"],
@@ -99,6 +101,92 @@ class FlashLayoutTests(unittest.TestCase):
         self.assertEqual(flash_layout.image_plan(0x5000).erase_end, 0x10000)
         with self.assertRaisesRegex(ValueError, "four-byte aligned"):
             flash_layout.image_plan(3)
+
+    def test_dirty_build_requires_explicit_flash_authorization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temp = pathlib.Path(directory)
+            loader = temp / "loadp2"
+            loader.write_text(
+                "#!/bin/sh\n"
+                "if [ \"${1:-}\" = '-?' ]; then\n"
+                "  echo '[ -FLASH ] program application to SPI flash'\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+            loader.chmod(0o755)
+            image = temp / "image.bin"
+            image.write_bytes(b"P2!!")
+            image.with_suffix(".bin.json").write_text(
+                json.dumps(flash_layout.image_manifest(image.read_bytes())),
+                encoding="utf-8",
+            )
+            build = make_build_artifact(
+                temp / "build", image.read_bytes(), clean=False
+            )
+            digest = hashlib.sha256(loader.read_bytes()).hexdigest()
+            lock = temp / "toolchain.lock"
+            lock.write_text(f"sha256={digest}  {loader}\n", encoding="utf-8")
+            env = os.environ.copy()
+            env.update(
+                {
+                    "HOME": str(temp),
+                    "LOADP2": str(loader),
+                    "P2_TOOLCHAIN_LOCK": str(lock),
+                    "P2_PYTHON": sys.executable,
+                }
+            )
+            command = [
+                "bash",
+                str(ROOT / "tools/p2/flash.sh"),
+                "--port",
+                "/dev/not-opened",
+                "--image",
+                str(image),
+                "--build-artifact",
+                str(build),
+            ]
+            rejected = subprocess.run(
+                command,
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("not produced from clean source trees", rejected.stderr)
+
+            dry_run = subprocess.run(
+                command + ["--allow-dirty-build"],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(dry_run.returncode, 0, dry_run.stderr)
+            self.assertIn("build_source_clean=false", dry_run.stdout)
+            self.assertIn("DRY-RUN", dry_run.stdout)
+
+            env.update(
+                {
+                    "P2_HIL": "1",
+                    "P2_ALLOW_RESET": "1",
+                    "P2_ALLOW_FLASH_WRITE": "1",
+                    "P2_ALLOW_FLASH_ERASE": "1",
+                    "P2_ALLOW_SD_WRITE": "1",
+                }
+            )
+            no_dirty_gate = subprocess.run(
+                command + ["--allow-dirty-build", "--execute"],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(no_dirty_gate.returncode, 2)
+            self.assertIn("P2_ALLOW_DIRTY_BUILD=1", no_dirty_gate.stderr)
 
     def test_flash_execute_requires_sd_write_gate_before_serial_open(self):
         with tempfile.TemporaryDirectory() as directory:

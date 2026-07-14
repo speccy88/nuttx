@@ -7,6 +7,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 [[ -f "$HOME/.p2-nuttx-env" ]] && source "$HOME/.p2-nuttx-env"
 
 execute=0
+allow_dirty_build=0
 port=
 image=
 build_artifact=
@@ -14,11 +15,12 @@ artifact_dir=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --execute) execute=1 ;;
+    --allow-dirty-build) allow_dirty_build=1 ;;
     --port) shift; port=${1:-} ;;
     --image) shift; image=${1:-} ;;
     --build-artifact) shift; build_artifact=${1:-} ;;
     --artifact-dir) shift; artifact_dir=${1:-} ;;
-    *) echo "HIL REQUIRED: usage: $0 --port DEVICE --image BINARY --build-artifact DIR [--artifact-dir DIR] [--execute]"; exit 2 ;;
+    *) echo "HIL REQUIRED: usage: $0 --port DEVICE --image BINARY --build-artifact DIR [--artifact-dir DIR] [--allow-dirty-build] [--execute]"; exit 2 ;;
   esac
   shift
 done
@@ -47,8 +49,11 @@ manifest=$image.json
 image_size=$(wc -c < "$image" | tr -d ' ')
 image_sha256=$(shasum -a 256 "$image" | awk '{print $1}')
 manifest_sha256=$(shasum -a 256 "$manifest" | awk '{print $1}')
-build_info=$("$python" "$ROOT/tools/p2/build_artifact.py" \
-  --artifact "$build_artifact" --image "$image" --require-clean)
+build_args=(--artifact "$build_artifact" --image "$image")
+if [[ $allow_dirty_build -eq 0 ]]; then
+  build_args+=(--require-clean)
+fi
+build_info=$("$python" "$ROOT/tools/p2/build_artifact.py" "${build_args[@]}")
 printf '%s\n' "$build_info"
 build_artifact=$(printf '%s\n' "$build_info" | sed -n 's/^build_artifact=//p')
 build_status_sha256=$(printf '%s\n' "$build_info" | sed -n 's/^build_status_sha256=//p')
@@ -56,6 +61,9 @@ build_profile=$(printf '%s\n' "$build_info" | sed -n 's/^build_profile=//p')
 build_nuttx_commit=$(printf '%s\n' "$build_info" | sed -n 's/^build_nuttx_commit=//p')
 build_apps_commit=$(printf '%s\n' "$build_info" | sed -n 's/^build_apps_commit=//p')
 build_clock_hz=$(printf '%s\n' "$build_info" | sed -n 's/^build_clock_hz=//p')
+build_source_clean=$(printf '%s\n' "$build_info" | sed -n 's/^build_source_clean=//p')
+[[ "$build_source_clean" == true || "$build_source_clean" == false ]] ||
+  { echo "ERROR: build artifact did not report source cleanliness" >&2; exit 2; }
 program_range=$(printf '%s\n' "$layout" | sed -n 's/^program_range=//p')
 erase_range=$(printf '%s\n' "$layout" | sed -n 's/^erase_range=//p')
 loader_baud=${P2_LOADER_BAUD:-2000000}
@@ -81,6 +89,10 @@ fi
   { echo "ERROR: P2_ALLOW_FLASH_ERASE=1 is required" >&2; exit 2; }
 [[ "${P2_ALLOW_SD_WRITE:-0}" == 1 ]] ||
   { echo "ERROR: P2_ALLOW_SD_WRITE=1 is required because flash programming drives shared P60/P61" >&2; exit 2; }
+if [[ "$build_source_clean" == false ]]; then
+  [[ $allow_dirty_build -eq 1 && "${P2_ALLOW_DIRTY_BUILD:-0}" == 1 ]] ||
+    { echo "ERROR: dirty development builds require --allow-dirty-build and P2_ALLOW_DIRTY_BUILD=1" >&2; exit 2; }
+fi
 [[ -c "$port" ]] || { echo "ERROR: serial device is absent: $port" >&2; exit 2; }
 
 if command -v timeout >/dev/null 2>&1; then
@@ -138,6 +150,8 @@ write_status()
   FLASH_BUILD_NUTTX_COMMIT=$build_nuttx_commit \
   FLASH_BUILD_APPS_COMMIT=$build_apps_commit \
   FLASH_BUILD_CLOCK_HZ=$build_clock_hz \
+  FLASH_BUILD_SOURCE_CLEAN=$build_source_clean \
+  FLASH_DIRTY_BUILD_AUTHORIZED=$allow_dirty_build \
   FLASH_PROGRAM_SETTLE_SECONDS=$settle_seconds \
   "$python" - <<'PY'
 import json
@@ -166,6 +180,8 @@ value = {
     "build_profile": os.environ["FLASH_BUILD_PROFILE"],
     "build_nuttx_commit": os.environ["FLASH_BUILD_NUTTX_COMMIT"],
     "build_apps_commit": os.environ["FLASH_BUILD_APPS_COMMIT"],
+    "build_source_clean": os.environ["FLASH_BUILD_SOURCE_CLEAN"] == "true",
+    "dirty_build_authorized": os.environ["FLASH_DIRTY_BUILD_AUTHORIZED"] == "1",
     "board_clock_hz": int(os.environ["FLASH_BUILD_CLOCK_HZ"]),
     "program_settle_seconds": int(os.environ["FLASH_PROGRAM_SETTLE_SECONDS"]),
     "program_range": os.environ["FLASH_PROGRAM_RANGE"],

@@ -580,7 +580,11 @@ class HilTests(unittest.TestCase):
         wrapper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(wrapper)
 
-        with mock.patch.object(wrapper.hil, "main", return_value=37) as main:
+        with mock.patch.object(
+            wrapper.hil,
+            "local_environment",
+            return_value={"P2_ALLOW_LOOPBACK_TESTS": "1"},
+        ), mock.patch.object(wrapper.hil, "main", return_value=37) as main:
             rc = wrapper.main(
                 ["--execute", "--cycles", "1", "--timeout", "1"]
             )
@@ -678,7 +682,11 @@ class HilTests(unittest.TestCase):
         wrapper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(wrapper)
 
-        with mock.patch.object(wrapper.hil, "main", return_value=41) as main:
+        with mock.patch.object(
+            wrapper.hil,
+            "local_environment",
+            return_value={"P2_ALLOW_PSRAM_WRITE": "1"},
+        ), mock.patch.object(wrapper.hil, "main", return_value=41) as main:
             rc = wrapper.main(
                 ["--execute", "--sequence", "A55A0713", "--timeout", "1"]
             )

@@ -1,10 +1,14 @@
+import os
 import pathlib
 import unittest
 
 
 ROOT = pathlib.Path(__file__).parents[3]
 BOARD = ROOT / "boards/p2/p2x8c4m64p/p2-ec32mb"
-P2STORAGE = ROOT.parent / "apps/testing/p2storage/p2storage_main.c"
+APPS = pathlib.Path(
+    os.environ.get("NUTTX_APPS_DIR", str(ROOT.parent / "apps"))
+).resolve()
+P2STORAGE = APPS / "testing/p2storage/p2storage_main.c"
 
 
 class StorageBoardBindingTests(unittest.TestCase):
@@ -49,7 +53,7 @@ class StorageBoardBindingTests(unittest.TestCase):
         ):
             self.assertIn(setting, profile)
 
-        kconfig = (ROOT.parent / "apps/testing/p2storage/Kconfig").read_text()
+        kconfig = (APPS / "testing/p2storage/Kconfig").read_text()
         self.assertIn("depends on BCH && !DISABLE_PSEUDOFS_OPERATIONS", kconfig)
 
     def test_sd_format_creates_the_partition_layout_required_by_p2_rom(self):
@@ -59,8 +63,8 @@ class StorageBoardBindingTests(unittest.TestCase):
             "#  define P2STORAGE_SD_PARTITION_START   UINT32_C(2048)",
             "#  define P2STORAGE_FAT32_PARTITION_TYPE 0x0c",
             "entry[0] = 0x80;",
-            "g_io_buffer[P2STORAGE_MBR_SIGNATURE_OFFSET] = 0x55;",
-            "g_io_buffer[P2STORAGE_MBR_SIGNATURE_OFFSET + 1] = 0xaa;",
+            "sector[P2STORAGE_MBR_SIGNATURE_OFFSET] = 0x55;",
+            "sector[P2STORAGE_MBR_SIGNATURE_OFFSET + 1] = 0xaa;",
             "register_blockpartition(P2STORAGE_SD_PARTITION_DEVPATH, 0660,",
             "format.ff_hidsec = P2STORAGE_SD_PARTITION_START;",
             "mkfatfs(P2STORAGE_SD_PARTITION_DEVPATH, &format)",

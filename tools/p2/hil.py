@@ -2802,6 +2802,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(
             "probe",
             "sd-rom-verify",
+            "sd-mbr-repair",
             "flash-format",
             "flash-write",
             "flash-verify",

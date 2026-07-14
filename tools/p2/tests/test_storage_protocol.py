@@ -53,6 +53,21 @@ class StorageProtocolTests(unittest.TestCase):
         self.assertNotIn("sd-rom-verify", storage.TARGET_DESTRUCTIVE_ACTIONS)
         self.assertNotIn("sd-rom-verify", storage.SD_DESTRUCTIVE_ACTIONS)
         self.assertEqual(
+            storage.command_line("sd-mbr-repair"),
+            "p2storage sd-mbr-repair {}".format(storage.ACKNOWLEDGEMENT),
+        )
+        self.assertEqual(
+            storage.command_bytes("sd-mbr-repair"),
+            (
+                "p2storage sd-mbr-repair {}\r".format(
+                    storage.ACKNOWLEDGEMENT
+                )
+            ).encode("ascii"),
+        )
+        self.assertFalse(storage.sequence_required("sd-mbr-repair"))
+        self.assertIn("sd-mbr-repair", storage.TARGET_DESTRUCTIVE_ACTIONS)
+        self.assertIn("sd-mbr-repair", storage.SD_DESTRUCTIVE_ACTIONS)
+        self.assertEqual(
             storage.command_line("flash-write", self.sequence),
             "p2storage flash-write {} {}".format(
                 storage.ACKNOWLEDGEMENT, self.sequence
@@ -68,6 +83,48 @@ class StorageProtocolTests(unittest.TestCase):
             storage.command_line("probe", self.sequence)
         with self.assertRaisesRegex(ValueError, "does not accept"):
             storage.command_line("sd-rom-verify", self.sequence)
+        with self.assertRaisesRegex(ValueError, "does not accept"):
+            storage.command_line("sd-mbr-repair", self.sequence)
+
+    def test_sd_mbr_repair_requires_ordered_readback_markers(self):
+        body = [
+            "P2STORAGE:SD:ROM-MBR:TYPE=0C:START=2048:"
+            "SECTORS=61130752:PASS",
+            "P2STORAGE:SD:MBR-REPAIR:START=2048:"
+            "SECTORS=61130752:PASS",
+        ]
+        text = self.response("sd-mbr-repair", body)
+        result = storage.parse_storage_response(text, "sd-mbr-repair")
+
+        self.assertTrue(result["complete"], result)
+        self.assertIn(storage.ACKNOWLEDGEMENT, result["command"])
+        self.assertEqual(
+            result["captures"]["sd_repair_partition_sectors"],
+            result["captures"]["sd_repair_confirm_sectors"],
+        )
+        self.assertEqual(
+            storage.response_labels("sd-mbr-repair"),
+            (
+                "P2STORAGE:BEGIN:COMMAND=sd-mbr-repair",
+                "P2STORAGE:SD:ROM-MBR",
+                "P2STORAGE:SD:MBR-REPAIR",
+                "P2STORAGE:PASS:SD-MBR-REPAIR",
+            ),
+        )
+
+        out_of_order = self.response("sd-mbr-repair", list(reversed(body)))
+        self.assertFalse(
+            storage.parse_storage_response(
+                out_of_order, "sd-mbr-repair"
+            )["complete"]
+        )
+        inconsistent = text.replace(
+            "P2STORAGE:SD:MBR-REPAIR:START=2048:SECTORS=61130752:PASS",
+            "P2STORAGE:SD:MBR-REPAIR:START=2048:SECTORS=61130751:PASS",
+        )
+        result = storage.parse_storage_response(inconsistent, "sd-mbr-repair")
+        self.assertFalse(result["complete"])
+        self.assertIn("SD MBR repair sector counts must match", result["errors"])
 
     def test_sd_rom_verify_requires_all_ordered_read_only_layout_markers(self):
         body = [

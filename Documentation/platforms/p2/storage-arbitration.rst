@@ -81,6 +81,17 @@ selected-board showcase marker, and reached the first NSH prompt.  This is
 physical Rev-B development evidence for the layout and W25-off fix; it is not
 the identity of the current release candidate.
 
+Flash-loader SD hazard
+----------------------
+
+Programming W25 while a microSD card is installed can select and clock the card
+through the shared P60/P61 wiring.  A 2026-07-14 HIL run changed the card's
+sector-zero MBR while leaving its FAT32 VBR, FSInfo, backup sectors, and files
+intact.  ``P2_ALLOW_SD_WRITE=1`` only authorizes this electrical risk; it cannot
+protect the card.  Remove the microSD card before every W25 programming
+operation.  ``p2storage sd-mbr-repair`` is a guarded recovery operation for the
+exact validated NuttX-produced layout and refuses other layouts.
+
 Current release candidate
 -------------------------
 
