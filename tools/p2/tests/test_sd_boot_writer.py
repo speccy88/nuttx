@@ -299,9 +299,12 @@ class SdBootWriterTests(unittest.TestCase):
                 env=dict(
                     os.environ,
                     HOME=str(root),
+                    TMPDIR=str(root),
                     P2_HIL_ENV_FILE="/dev/null",
                     FAKE_LOADP2_INVOKED=str(root / "invoked"),
                     FAKE_LOADP2_ARGS=str(root / "args"),
+                    FAKE_STAGED_PATH=str(root / "staged-path"),
+                    FAKE_STAGED_COPY=str(root / "staged-copy"),
                     **gates,
                 ),
                 text=True,
@@ -310,6 +313,7 @@ class SdBootWriterTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 1)
             self.assertIn("receive script reported an error", result.stderr)
+            self.assertEqual(list(root.glob("p2-sd-boot-payload.*")), [])
             status = json.loads((artifact / "status.json").read_text())
             self.assertEqual(status["status"], "FAIL")
             self.assertEqual(status["boot_status"], "UNVERIFIED")

@@ -422,6 +422,14 @@ value.update(
 path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 
+# Remove the staged Hub payload before reporting the final result.  The EXIT
+# trap remains as a fallback for every earlier refusal, but an explicit cleanup
+# here also covers shells whose EXIT trap handling is disrupted by a failed
+# loader/receive pipeline.
+
+cleanup_staged_payload
+staged_payload=
+
 if [[ -n "$failure" ]]; then
   echo "ERROR: $failure; artifact: $artifact_dir" >&2
   exit 1
