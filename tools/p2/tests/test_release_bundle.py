@@ -118,6 +118,13 @@ def rewrite_build_commits(root: pathlib.Path, nuttx: str, apps: str) -> None:
     status_path.write_text(json.dumps(status), encoding="utf-8")
 
 
+def rewrite_build_profile(root: pathlib.Path, profile: str) -> None:
+    status_path = root / "status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    status["profile"] = profile
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+
+
 class ReleaseFixture:
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -239,7 +246,10 @@ class ReleaseFixture:
         self.temporary.cleanup()
 
     def package(
-        self, output: pathlib.Path, revd_verified: bool = False
+        self,
+        output: pathlib.Path,
+        revd_verified: bool = False,
+        ec32mb_verified: bool = True,
     ) -> subprocess.CompletedProcess:
         command = [
                 sys.executable,
@@ -257,12 +267,15 @@ class ReleaseFixture:
                 str(self.sd_writer),
                 "--sd-writer-sha256",
                 self.sd_writer_sha256,
+                "--output",
+                str(output),
+            ]
+        if ec32mb_verified:
+            command[command.index("--output"):command.index("--output")] = [
                 "--ec32mb-evidence",
                 str(self.hil),
                 "--ec32mb-hardware-status",
                 "HIL-VERIFIED",
-                "--output",
-                str(output),
             ]
         if revd_verified:
             command[command.index("--output"):command.index("--output")] = [
@@ -281,6 +294,38 @@ class ReleaseFixture:
 
 
 class ReleaseBundleTests(ReleaseFixture, unittest.TestCase):
+    def test_package_accepts_dual_base_builds_as_hil_required(self):
+        rewrite_build_profile(self.ec32mb, release_bundle.BASE_PROFILE)
+        rewrite_build_profile(self.ec_revd, release_bundle.BASE_PROFILE)
+        output = self.temp / "release-base"
+        result = self.package(output, ec32mb_verified=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((output / "release-manifest.json").read_text())
+        for board in release_bundle.BOARD_SPECS:
+            with self.subTest(board=board):
+                self.assertEqual(
+                    manifest["boards"][board]["profile"], release_bundle.BASE_PROFILE
+                )
+                self.assertEqual(
+                    manifest["boards"][board]["hardware_status"], "HIL-REQUIRED"
+                )
+                self.assertFalse(
+                    manifest["boards"][board]["hardware_evidence_included"]
+                )
+
+    def test_package_rejects_hil_verified_base_claim(self):
+        rewrite_build_profile(self.ec32mb, release_bundle.BASE_PROFILE)
+        rewrite_build_profile(self.ec_revd, release_bundle.BASE_PROFILE)
+        result = self.package(self.temp / "release-base-hil")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("base profile releases must use HIL-REQUIRED", result.stderr)
+
+    def test_package_rejects_mixed_base_and_showcase_profiles(self):
+        rewrite_build_profile(self.ec_revd, release_bundle.BASE_PROFILE)
+        result = self.package(self.temp / "release-mixed-profile")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("same supported profile", result.stderr)
+
     def test_package_accepts_revd_hil_verified_evidence(self):
         output = self.temp / "release-revd-verified"
         result = self.package(output, revd_verified=True)
@@ -514,6 +559,26 @@ class ReleaseBundleTests(ReleaseFixture, unittest.TestCase):
         )
         self.assertEqual(verified.returncode, 2)
         self.assertIn("apps commits do not match", verified.stderr)
+
+    def test_verifier_rejects_hil_verified_base_metadata(self):
+        rewrite_build_profile(self.ec32mb, release_bundle.BASE_PROFILE)
+        rewrite_build_profile(self.ec_revd, release_bundle.BASE_PROFILE)
+        output = self.temp / "release-base-verify-hil"
+        self.assertEqual(self.package(output, ec32mb_verified=False).returncode, 0)
+        manifest_path = output / "release-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["boards"]["p2-ec32mb"]["hardware_status"] = "HIL-VERIFIED"
+        manifest["boards"]["p2-ec32mb"]["hardware_evidence_included"] = True
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        release_bundle._write_checksums(output)
+        verified = subprocess.run(
+            [sys.executable, str(output / "verify-release.py"), "verify", str(output)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(verified.returncode, 2)
+        self.assertIn("base profile releases must use HIL-REQUIRED", verified.stderr)
 
 
 class ReleaseInstallerTests(ReleaseFixture, unittest.TestCase):

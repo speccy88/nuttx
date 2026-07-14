@@ -43,6 +43,8 @@ VERIFIER = "verify-release.py"
 DEFAULT_SD_BOOT_BOARD = "p2-ec32mb"
 SHOWCASE_HIL_FORMAT = "p2-showcase-hil-v1"
 SHOWCASE_PROFILE = "showcase"
+BASE_PROFILE = "base"
+RELEASE_PROFILES = (BASE_PROFILE, SHOWCASE_PROFILE)
 REQUIRED_SHOWCASE_HIL_STAGES = (
     "ordered boot and showcase readiness",
     "p2help",
@@ -440,10 +442,12 @@ def package(args: argparse.Namespace) -> pathlib.Path:
     except build_artifact.BuildArtifactError as exc:
         raise ReleaseBundleError(str(exc)) from exc
     profiles = {build.profile for build in builds.values()}
-    if profiles != {SHOWCASE_PROFILE}:
+    if len(profiles) != 1 or not profiles.issubset(RELEASE_PROFILES):
         raise ReleaseBundleError(
-            "dual-board release builds must both use the showcase profile"
+            "dual-board release builds must use the same supported profile "
+            "(base or showcase)"
         )
+    release_profile = next(iter(profiles))
     for attribute, label in (
         ("nuttx_commit", "NuttX commit"),
         ("apps_commit", "apps commit"),
@@ -453,6 +457,17 @@ def package(args: argparse.Namespace) -> pathlib.Path:
             raise ReleaseBundleError(
                 "dual-board release build {} values do not match".format(label)
             )
+    hardware_statuses = {
+        "p2-ec32mb": args.ec32mb_hardware_status,
+        "p2-ec": args.ec_revd_hardware_status,
+    }
+    if (
+        release_profile == BASE_PROFILE
+        and "HIL-VERIFIED" in hardware_statuses.values()
+    ):
+        raise ReleaseBundleError(
+            "base profile releases must use HIL-REQUIRED hardware status"
+        )
     if args.ec32mb_hardware_status == "HIL-VERIFIED" and not args.ec32mb_evidence:
         raise ReleaseBundleError(
             "HIL-VERIFIED EC32MB status requires hardware evidence"
@@ -852,7 +867,7 @@ def _verify_archived_build_statuses(
                     ("status", "PASS"),
                     ("exit_code", 0),
                     ("board", board),
-                    ("profile", SHOWCASE_PROFILE),
+                    ("profile", details["profile"]),
                     ("source_clean", True),
                     ("nuttx_commit", details["nuttx_commit"]),
                     ("apps_commit", details["apps_commit"]),
@@ -1077,8 +1092,19 @@ def verify(root_value: pathlib.Path) -> dict[str, str]:
                 raise ReleaseBundleError(
                     "{} archive _BOOT_P2.BIX differs from flash image".format(board)
                 )
-    if profiles != {SHOWCASE_PROFILE}:
-        raise ReleaseBundleError("dual-board release profiles must both be showcase")
+    if len(profiles) != 1 or not profiles.issubset(RELEASE_PROFILES):
+        raise ReleaseBundleError(
+            "dual-board release profiles must be the same supported profile "
+            "(base or showcase)"
+        )
+    release_profile = next(iter(profiles))
+    if release_profile == BASE_PROFILE and any(
+        details["hardware_status"] == "HIL-VERIFIED"
+        for details in board_manifest.values()
+    ):
+        raise ReleaseBundleError(
+            "base profile releases must use HIL-REQUIRED hardware status"
+        )
     if len(nuttx_commits) != 1:
         raise ReleaseBundleError("dual-board NuttX commits do not match")
     if len(apps_commits) != 1:
