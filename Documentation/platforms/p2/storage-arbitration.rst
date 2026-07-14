@@ -79,7 +79,7 @@ reached the ordered P2 boot markers, reported W25 unavailable, continued to
 ``/dev/mmcsd0``, skipped the absent ``/dev/smart0`` mount, emitted the
 selected-board showcase marker, and reached the first NSH prompt.  This is
 physical Rev-B development evidence for the layout and W25-off fix; it is not
-the identity of the current release candidate.
+the identity of a later release.
 
 Flash-loader SD hazard
 ----------------------
@@ -92,10 +92,10 @@ protect the card.  Remove the microSD card before every W25 programming
 operation.  ``p2storage sd-mbr-repair`` is a guarded recovery operation for the
 exact validated NuttX-produced layout and refuses other layouts.
 
-Current release candidate
--------------------------
+P2 Edge Flat-UP v0.1.1 release evidence
+----------------------------------------
 
-The current candidate is bound to NuttX
+The published ``p2-edge-flat-up-v0.1.1`` release is bound to NuttX
 ``14cadad3a6794e10cbc9f0dfb20f352e4844d35f`` and apps
 ``a333035462f545056e7a2fb859a9fbdc6d4ef831``.  Its P2-EC32MB Rev B raw image
 is 402,452 bytes with SHA-256

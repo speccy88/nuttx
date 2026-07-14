@@ -1,8 +1,8 @@
 # Apache NuttX on the Parallax Propeller 2
 
 This tree contains a hardware-oriented **draft** NuttX port for the Parallax
-P2X8C4M64P Propeller 2. The installable showcase supports two official P2 Edge
-modules:
+P2X8C4M64P Propeller 2. The installable base release supports two official P2
+Edge modules:
 
 | Installer board name | Module | LEDs | External PSRAM |
 | --- | --- | --- | --- |
@@ -13,13 +13,20 @@ Both images run NuttX in flat, uniprocessor mode on cog 0 at 180 MHz. Other
 cogs may run bounded peripheral services, but they are not NuttX CPUs. This is
 not an SMP port and it is not yet an upstream-supported P2 target.
 
+The current `p2-edge-base-v0.2.0` images provide NSH command-line editing and
+history, the serial-console `vi` editor, compact Berry, LEDs, protected onboard
+flash storage, and microSD automount. They intentionally exclude LCD, touch,
+LVGL, graphical Berry bindings, ELF modules, and the experimental banked
+runtime. The detailed hardware-showcase sections later in this README document
+the older `p2-edge-flat-up-v0.1.1` release and are labelled as historical.
+
 The quickest and safest first run is to download the release bundle, select
 your exact module, dry-run the installer, and load its ELF into Hub RAM. That
 path needs no source build and writes neither SPI flash nor the microSD card.
 
 ## Quick start: run NuttX from RAM
 
-Release: [`p2-edge-flat-up-v0.1.1`](https://github.com/speccy88/nuttx/releases/tag/p2-edge-flat-up-v0.1.1)
+Release: [`p2-edge-base-v0.2.0`](https://github.com/speccy88/nuttx/releases/tag/p2-edge-base-v0.2.0)
 
 The supplied installer and `loadp2` binary target Apple-silicon macOS. Connect
 a PropPlug to P62/P63, power the board, and close every serial terminal before
@@ -28,7 +35,7 @@ continuing. Only one process can own the PropPlug at a time.
 Download the complete bundle and verify its outer checksum:
 
 ```zsh
-TAG=p2-edge-flat-up-v0.1.1
+TAG=p2-edge-base-v0.2.0
 ASSET="$TAG-bundle-macos-arm64.tar.gz"
 BASE="https://github.com/speccy88/nuttx/releases/download/$TAG"
 
@@ -85,15 +92,20 @@ and reset a RAM-only image back into the configured persistent boot source.
 At the prompt, run:
 
 ```text
-nsh> p2help
+nsh> help
 nsh> uname -a
-nsh> ps
 nsh> free
-nsh> ls /dev
+nsh> mount
+nsh> ls -l /dev
+nsh> berry /etc/berry-p2/core_smoke.be
 ```
 
-`p2help` is the showcase image's on-board tour of the module, registered
-devices, fixtures, and useful demonstration commands.
+The Berry smoke script prints `P2BERRY:CORE=PASS:VALUE=42:EXCEPTION=PASS` when
+the compact interpreter is working. A valid existing SmartFS volume and FAT
+microSD are mounted at `/mnt/flash` and `/mnt/sd` without formatting. On the
+P2-EC32MB, `/dev/psram0` remains an explicit bulk-storage device; it is absent
+on Rev D and is not Berry's heap. Run `vi` for the editor, press `i` to insert
+text, then `Esc`, type `:q!`, and press Enter to leave without saving.
 
 ## Release files and board selection
 
@@ -102,8 +114,8 @@ silently choose the wrong image.
 
 | Module | `--board` value | RAM | SPI flash | microSD source |
 | --- | --- | --- | --- | --- |
-| P2-EC32MB Rev B | `p2-ec32mb` | `p2-edge-flat-up-v0.1.1-p2-ec32mb-revb-ram.elf` | `p2-edge-flat-up-v0.1.1-p2-ec32mb-revb-flash.bin` | `p2-edge-flat-up-v0.1.1-p2-ec32mb-revb-_BOOT_P2.BIX` |
-| P2-EC Rev D | `p2-ec` | `p2-edge-flat-up-v0.1.1-p2-ec-revd-ram.elf` | `p2-edge-flat-up-v0.1.1-p2-ec-revd-flash.bin` | `p2-edge-flat-up-v0.1.1-p2-ec-revd-_BOOT_P2.BIX` |
+| P2-EC32MB Rev B | `p2-ec32mb` | `p2-edge-base-v0.2.0-p2-ec32mb-revb-ram.elf` | `p2-edge-base-v0.2.0-p2-ec32mb-revb-flash.bin` | `p2-edge-base-v0.2.0-p2-ec32mb-revb-_BOOT_P2.BIX` |
+| P2-EC Rev D | `p2-ec` | `p2-edge-base-v0.2.0-p2-ec-revd-ram.elf` | `p2-edge-base-v0.2.0-p2-ec-revd-flash.bin` | `p2-edge-base-v0.2.0-p2-ec-revd-_BOOT_P2.BIX` |
 
 The release-root `_BOOT_P2.BIX` is a convenience alias for
 **P2-EC32MB Rev B only**. Do not copy that alias to a Rev D card. The bundle
@@ -405,7 +417,6 @@ Start by seeing what this compact image includes:
 
 ```text
 nsh> help
-nsh> p2help
 nsh> uname -a
 nsh> uptime
 nsh> ps
@@ -414,7 +425,7 @@ nsh> ls -l /dev
 nsh> mount
 ```
 
-The showcase configuration enables eight-entry command history and completion.
+The base configuration enables eight-entry command history and completion.
 Type the first four letters below, press Tab, then type ` -a` and Enter:
 
 ```text
@@ -430,22 +441,19 @@ nsh> echo P2HISTORY:PASS
 
 The shell is configured so Ctrl-C interrupts the foreground command and
 returns the prompt. A safe manual check is to run `sleep 30`, press Ctrl-C, and
-confirm that `nsh>` returns before 30 seconds. The clean Rev B candidate RAM
-HIL passed this for both `sleep 30` and the external
-`pwm -f 1000 -d 50 -t 30` command, in addition to Tab completion and Up-arrow
-history. Its preserved evidence binds those checks to candidate ELF SHA-256
-`1409460f5399e267516e6ea394d99cf2b30e638ac55cbc82318175712c01dd3c`;
-the verified local package archives that evidence unchanged.
+confirm that `nsh>` returns before 30 seconds.
 
 Useful low-footprint commands include `cat`, `cp`, `echo`, `hexdump`, `kill`,
 `ls`, `mkdir`, `mount`, `mv`, `ps`, `rm`, `rmdir`, `sleep`, `umount`, and the
-P2-specific `p2help`, `p2smartpins`, `p2i2c`, `p2storage`, and (EC32MB only)
-`p2psram`. The larger floating-point `dd` statistics path is deliberately not
-in this image; use normal file commands and `hexdump` instead.
+included `berry`, `vi`, `leds`, and non-destructive `p2storage` commands. The
+larger floating-point `dd` statistics path is deliberately not in this image;
+use normal file commands and `hexdump` instead.
 
-## Try the P2 hardware
+## Historical v0.1.1 hardware showcase
 
-The same showcase image exposes normal NuttX devices and focused commands. Run
+This section describes the older `p2-edge-flat-up-v0.1.1` showcase, not the
+smaller v0.2.0 base image. That showcase exposes normal NuttX devices and
+focused commands. Run
 `p2help` on the board before using the examples; it prints the module identity
 and the interfaces enabled in that build. Use `ls /dev` and the startup markers
 to distinguish devices that are physically available at runtime.
@@ -522,7 +530,7 @@ With FLASH OFF for ROM SD boot, the module disconnects the W25 chip select.
 `P2FLASHBOOT:SMARTFS=UNAVAILABLE:CHECK_FLASH_SWITCH`, and NuttX continues with
 `/dev/mmcsd0` instead of waiting forever for an inaccessible flash device.
 
-## What is physically verified
+## What was physically verified in v0.1.1
 
 The P2-EC32MB Rev B flat-UP baseline has preserved HIL evidence for startup,
 the scheduler and applicable OSTest set, NSH, GPIO/edge, UART1, PWM/capture,
@@ -609,15 +617,14 @@ bootstrapping, provide `git`, `make`, `cmake`, Python 3, `shasum`, `flock`,
 `lsof`, and `timeout` or `gtimeout`. The bootstrap builds pinned p2llvm and
 FlexProp components and checks out the exact companion NuttX-apps revision.
 
-This clone command reproduces the tagged source. The final binaries were built
-and verified from NuttX `14cadad3a6794e10cbc9f0dfb20f352e4844d35f` with sibling
-apps at `a333035462f545056e7a2fb859a9fbdc6d4ef831`; the later NuttX changes in
-the tag update documentation only.
+This clone command reproduces the tagged NuttX source. The bootstrap checks out
+the exact companion NuttX Apps revision recorded by the release, and the
+release manifest records both commit IDs and every artifact hash.
 
 ```sh
-mkdir p2-nuttx-v0.1.1
-cd p2-nuttx-v0.1.1
-git clone --branch p2-edge-flat-up-v0.1.1 --depth 1 \
+mkdir p2-nuttx-v0.2.0
+cd p2-nuttx-v0.2.0
+git clone --branch p2-edge-base-v0.2.0 --depth 1 \
   https://github.com/speccy88/nuttx.git nuttx
 cd nuttx
 
@@ -625,17 +632,17 @@ P2_CACHE="$PWD/../.p2-nuttx-cache" ./tools/p2/bootstrap-local.sh
 source "$HOME/.p2-nuttx-env"
 ```
 
-Build the same board-specific showcase profiles used for the release, keeping
+Build the same board-specific base profiles used for the release, keeping
 artifacts outside the checkout:
 
 ```sh
-BUILD_ROOT=$(mktemp -d /tmp/p2-edge-v0.1.1.XXXXXX)
+BUILD_ROOT=$(mktemp -d /tmp/p2-edge-v0.2.0.XXXXXX)
 
-P2_ARTIFACTS="$BUILD_ROOT/p2-ec32mb-showcase" \
-  ./tools/p2/build.sh p2-ec32mb:showcase
+P2_ARTIFACTS="$BUILD_ROOT/p2-ec32mb-base" \
+  ./tools/p2/build.sh p2-ec32mb:base
 
-P2_ARTIFACTS="$BUILD_ROOT/p2-ec-revd-showcase" \
-  ./tools/p2/build.sh p2-ec:showcase
+P2_ARTIFACTS="$BUILD_ROOT/p2-ec-revd-base" \
+  ./tools/p2/build.sh p2-ec:base
 ```
 
 Each artifact directory contains `nuttx` (RAM ELF), `nuttx.bin` (raw
@@ -645,15 +652,14 @@ in one session with:
 
 ```sh
 "$LOADP2" -p "$PORT" -l 2000000 -b 230400 \
-  -ZERO -v -DTR "$BUILD_ROOT/p2-ec32mb-showcase/nuttx" -t
+  -ZERO -v -DTR "$BUILD_ROOT/p2-ec32mb-base/nuttx" -t
 ```
 
 Specialized P2-EC32MB profiles remain available for focused bring-up and HIL:
 `nsh`, `flashboot`, `bringup`, `smartpins`, `analog`, `i2c`, `psram`,
 `storage`, `clock`, `schedstress`, and the applicable `ostest*` variants. The
-Rev D supplies the release `showcase` profile plus a storage profile for
-explicit media initialization. The showcase HIL runner supports both boards,
-including the Rev D no-PSRAM runtime contract. All HIL helpers
+Rev D supplies the `base` and `showcase` profiles plus a storage profile for
+explicit media initialization. All HIL helpers
 under `tools/p2` default to dry-run or require explicit gates; they never
 silently open serial, reset, erase flash, or write SD.
 
@@ -673,23 +679,14 @@ silently open serial, reset, erase flash, or write SD.
   physical follow-up items.
 - The bundled installer and loader are macOS arm64 only. Other hosts require a
   separately obtained compatible loader and are not release-qualified here.
-- The exact P2-EC Rev D release passes physical RAM showcase, SPI-flash
-  reset boot, and SD-only ROM boot qualification. The bundled serial SD writer
-  timed out on the attached card; host copying the verified board-specific
-  `_BOOT_P2.BIX` is the qualified Rev D installation path for this release.
-- The exact clean P2-EC32MB candidate passes RAM HIL, guarded flash
-  programming, and ten completed hash-bound reset-only flash boots. The
-  originally requested 20-cycle wrapper was intentionally interrupted after
-  those redundant PASS results; its top-level `FAIL` is interruption status,
-  not a claimed PASS artifact or a boot failure. Final-candidate SD write and
-  raw-card layout inspection pass, as does one exact-candidate no-loader
-  SD-only reset with zero serial TX. The 20-file release package and a clean
-  extracted-bundle verification also pass; the release supplies both outer
-  checksums and an in-bundle verifier. Rev D RAM, flash, and SD-only hardware
-  evidence is included.
+- The v0.2.0 base package marks both board artifacts **HIL-REQUIRED**. The
+  older v0.1.1 showcase evidence remains valid for its exact hashes, but must
+  not be reused as proof for these new Berry-enabled binaries. In particular,
+  exact-board v0.2.0 Rev D hardware verification remains follow-up work.
 
 ## Port documentation and evidence
 
+- [P2 Edge Berry base v0.2.0 release notes](Documentation/platforms/p2/release-notes-v0.2.0.md)
 - [Goal status table](Documentation/platforms/p2/goal-status-table.md)
 - [Final flat-UP HIL report](Documentation/platforms/p2/final-hil-report.rst)
 - [P2 documentation index](Documentation/platforms/p2/index.rst)
