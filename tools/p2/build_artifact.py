@@ -343,6 +343,9 @@ def main(argv=None) -> int:
         print("build_apps_commit={}".format(artifact.apps_commit))
         print("build_clock_hz={}".format(artifact.board_clock_hz))
         print("build_binary_sha256={}".format(artifact.binary_sha256))
+        print("build_source_clean={}".format(
+            "true" if artifact.source_clean else "false"
+        ))
         return 0
     except (BuildArtifactError, OSError) as exc:
         print("ERROR: {}".format(exc), file=sys.stderr)

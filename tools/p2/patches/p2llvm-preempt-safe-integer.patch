@@ -361,12 +361,17 @@ index 7cea8a4af5cc..97e8e1407bc9 100644
 \ No newline at end of file
 +}
 diff --git a/llvm/lib/Target/P2/P2InstrInfo.td b/llvm/lib/Target/P2/P2InstrInfo.td
-index 02a18c61238b..0d6559551571 100644
+index 02a18c61238b..4ba0cc9a81fa 100644
 --- a/llvm/lib/Target/P2/P2InstrInfo.td
 +++ b/llvm/lib/Target/P2/P2InstrInfo.td
+@@ -314 +314 @@ let DecoderMethod = "DecodeJumpInstruction", isBarrier = 1, isBranch = 1, isTerm
+-let DecoderMethod = "DecodeTJInstruction", isBranch = 1, isBarrier = 1, isTerminator = 1 in {
++let DecoderMethod = "DecodeTJInstruction", isBranch = 1, isTerminator = 1 in {
 @@ -496 +496 @@ def : Pat<(zextloadi1 imm:$s), (ZEROXri (RDBYTEri imm:$s, always, noeff), 0, alw
 -def : Pat<(zextloadi1 addr:$s), (ZEROXri (RDBYTEri imm:$s, always, noeff), 0, always, noeff)>;
 +def : Pat<(zextloadi1 addr:$s), (ZEROXri (RDBYTErr P2GPR:$s, always, noeff), 0, always, noeff)>;
 @@ -514,0 +515,2 @@ def : Pat<(store i64:$d, addr:$s), (WRDLONG P2GPRPair:$d, P2GPR:$s)>;
 +def : Pat<(extloadi1 imm:$s), (ZEROXri (RDBYTEri imm:$s, always, noeff), 0, always, noeff)>;
 +def : Pat<(extloadi1 addr:$s), (ZEROXri (RDBYTErr P2GPR:$s, always, noeff), 0, always, noeff)>;
+@@ -722 +723,0 @@ def PUSHBii     : InstAlias<"$cc pushb $d", (WRLONGii i32imm:$d, 0b111100001, P2
+-
