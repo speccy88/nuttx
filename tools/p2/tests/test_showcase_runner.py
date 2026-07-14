@@ -146,7 +146,7 @@ def smartpin_output(stage):
     return ("\r\n" + "\r\n".join(lines) + "\r\n").encode("ascii")
 
 
-def boot_output():
+def boot_output(board="p2-ec32mb"):
     lines = [
         "loadp2 fixture",
         "P2BOOT:ENTRY",
@@ -158,20 +158,26 @@ def boot_output():
         "P2I2C:BMP180=PASS:DEV=/dev/press0:ADDR=0x77:ID=0x55",
         "P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash:MOUNTED:"
         "AUTOFORMAT=NO:DESTRUCTIVE_HANDLERS=ABSENT",
-        "P2SHOWCASE:READY:BOARD=p2-ec32mb:RUN=p2help",
+        "P2SHOWCASE:READY:BOARD={}:RUN=p2help".format(board),
         "nsh> ",
     ]
     return "\r\n".join(lines).encode("ascii")
 
 
-def events_through_ctrl_c(include_ctrl_prompt=True):
+def events_through_ctrl_c(include_ctrl_prompt=True, board="p2-ec32mb"):
+    module = (
+        "Module: P2-EC32MB Rev B; LEDs P38/P39; PSRAM 32 MiB"
+        if board == "p2-ec32mb"
+        else "Module: P2-EC Rev D; LEDs P56/P57; no onboard PSRAM"
+    )
     events = [
-        boot_output(),
+        boot_output(board),
         (
-            "\r\nP2SHOWCASE:BOARD=p2-ec32mb:PROFILE=showcase\r\n"
+            "\r\nP2SHOWCASE:BOARD={}:PROFILE=showcase\r\n"
+            "{}\r\n"
             "  /dev/userleds  two active-high buffered LEDs (LED switch ON)\r\n"
             "P2SHOWCASE:PASS\r\n"
-        ).encode("ascii"),
+        ).format(board, module).encode("ascii"),
         b"\r\nnsh> ",
         (
             "\r\nleds_main: Starting the led_daemon\r\n"
@@ -183,21 +189,25 @@ def events_through_ctrl_c(include_ctrl_prompt=True):
         b"\r\nnsh> ",
         b"\r\nnsh> \x1b[KSIGTERM received\r\nled_daemon: Terminated.\r\n",
         b"\r\nnsh> ",
-        b"\r\nNuttX 12.9.0 p2 p2-ec32mb\r\n",
+    ]
+    if board == "p2-ec":
+        events.append(b"\r\nadc0\r\ndac0\r\ngpio0\r\nuserleds\r\nnsh> ")
+    events.extend([
+        ("\r\nNuttX 12.9.0 p2 {}\r\n".format(board)).encode("ascii"),
         b"\r\nnsh> ",
         b"\r\nP2SHOWCASE:HISTORY=PASS\r\n",
         b"\r\nnsh> ",
         b"\r\nP2SHOWCASE:HISTORY=PASS\r\n",
         b"\r\nnsh> ",
         b"\r\nsleep 30\r\n",
-    ]
+    ])
     if include_ctrl_prompt:
         events.append(b"^C\r\nnsh> ")
     return events
 
 
-def complete_events():
-    events = events_through_ctrl_c()
+def complete_events(board="p2-ec32mb"):
+    events = events_through_ctrl_c(board=board)
     for stage in ("GPIO", "EDGE", "UART", "DAC_ADC"):
         events.extend((smartpin_output(stage), b"\r\nnsh> "))
     events.extend(
@@ -250,10 +260,15 @@ class ShowcaseRunnerTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def make_build_artifact(self, root, profile="showcase", clean=True):
+    def make_build_artifact(
+        self, root, profile="showcase", clean=True, board="p2-ec32mb"
+    ):
         root.mkdir()
         config = (
-            ROOT / "boards/p2/p2x8c4m64p/p2-ec32mb/configs/showcase/defconfig"
+            ROOT
+            / "boards/p2/p2x8c4m64p"
+            / board
+            / "configs/showcase/defconfig"
         ).read_bytes()
         for name in build_artifact.PASS_REQUIRED_FILES:
             path = root / name
@@ -288,11 +303,11 @@ class ShowcaseRunnerTests(unittest.TestCase):
             "format": build_artifact.FORMAT,
             "status": "PASS",
             "exit_code": 0,
-            "board": "p2-ec32mb",
+            "board": board,
             "profile": profile,
             "started_utc": "2026-07-13T12:00:00.000Z",
             "ended_utc": "2026-07-13T12:01:00.000Z",
-            "build_command": "tools/p2/build.sh showcase --board p2-ec32mb",
+            "build_command": "tools/p2/build.sh showcase --board {}".format(board),
             "nuttx_branch": "codex/showcase",
             "nuttx_commit": "1" * 40,
             "nuttx_commit_after": "1" * 40,
@@ -325,7 +340,7 @@ class ShowcaseRunnerTests(unittest.TestCase):
             "LOADP2": str(self.loadp2),
         }
 
-    def invoke(self, name, events):
+    def invoke(self, name, events, build=None):
         artifact = self.directory / name
         timeline = []
         session = FakeSession(self.clock, events, timeline)
@@ -335,7 +350,7 @@ class ShowcaseRunnerTests(unittest.TestCase):
             [
                 "--execute",
                 "--build-artifact",
-                str(self.build),
+                str(self.build if build is None else build),
                 "--artifact-dir",
                 str(artifact),
                 "--stage-timeout",
@@ -417,6 +432,30 @@ class ShowcaseRunnerTests(unittest.TestCase):
         )
         self.assertTrue(
             any("p2smartpins pwm" in item["reason"] for item in status["omissions"])
+        )
+
+    def test_revd_session_requires_runtime_psram_absence(self):
+        revd = self.make_build_artifact(self.directory / "revd", board="p2-ec")
+        rc, artifact, session, factory, lock = self.invoke(
+            "revd-pass", complete_events("p2-ec"), build=revd
+        )
+
+        self.assertEqual(rc, showcase.EXIT_OK)
+        self.assertEqual(lock.entered, 1)
+        self.assertEqual(len(factory.commands), 1)
+        self.assertIn(b"ls /dev\r", session.writes)
+        status = json.loads((artifact / "status.json").read_text())
+        self.assertEqual(status["status"], "PASS")
+        self.assertEqual(status["board"], "p2-ec")
+        stages = {stage["name"]: stage for stage in status["stages"]}
+        self.assertFalse(
+            stages["Rev D no-PSRAM runtime contract"]["psram_device_present"]
+        )
+        self.assertTrue(
+            any(
+                item["stage"] == "p2psram" and "NOT APPLICABLE" in item["reason"]
+                for item in status["omissions"]
+            )
         )
 
     def test_ctrl_c_must_return_a_new_prompt_before_deadline(self):

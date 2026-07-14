@@ -121,7 +121,9 @@ The clean release candidate is NuttX
   ``0f27ae1662c18ab051372d157ac030aa3f66bebb104a68ef3597462878737608``;
   config SHA-256
   ``ce66616aa712d9834372ef0bb7810f50262e55cfc2991aea22c43ea940c6a1ff``.
-  Rev D has no PSRAM and all Rev-D runtime claims remain **HIL-REQUIRED**.
+  Rev D has no PSRAM.  Exact-image RAM showcase, SPI-flash reset boot, and
+  SD-only ROM boot are physically **PASS** under
+  ``/tmp/p2-revd-final.14cadad-r1``.
 
 Both candidate builds are flat UP; SMP is deliberately not enabled.
 
@@ -206,6 +208,6 @@ Known physical blockers and deferred scope
 No power-cycle command is configured, so true power-loss testing remains
 blocked.  The available P2-EC32MB Rev B has broad historical RAM, flash, and
 SD-boot evidence, while the exact candidate closures are listed above;
-equivalent P2-EC Rev D campaigns remain **HIL-REQUIRED**.  SMP is **DEFERRED /
+equivalent P2-EC Rev D RAM, flash, and SD-only campaigns are now **PASS**.  SMP is **DEFERRED /
 OUT OF SCOPE** for this goal: it is an unsupported future architecture
 project, not a HIL toggle or a flat-UP finish gate.

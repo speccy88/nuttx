@@ -44,9 +44,9 @@ manager.
 P2-EC Rev D differs deliberately: it has no PSRAM, so P40-P55 are not reserved
 for PSRAM.  P56/P57 are its active-high board LEDs and are reserved only when
 ``CONFIG_ARCH_LEDS`` or ``CONFIG_USERLED`` is enabled.  P58-P61 remain storage
-and P62/P63 remain the console.  The Rev D policy is compiled and statically
-verified, but runtime behavior is **HIL-REQUIRED** until a Rev D module is
-available.
+and P62/P63 remain the console.  The exact Rev D release passed physical HIL:
+P56/P57 LED-device control, the installed Smart Pin fixtures, BMP180 I2C,
+storage probe, and explicit absence of ``/dev/psram0``.
 
 .. list-table:: Installed and reported HIL fixture
    :header-rows: 1

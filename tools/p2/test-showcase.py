@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Run the exact EC32MB showcase image through one guarded HIL session.
+"""Run an exact P2 Edge showcase image through one guarded HIL session.
 
 The loader owns the serial port from reset through the final prompt.  This is
 intentional: opening the PropPlug a second time can toggle DTR and discard a
@@ -38,8 +38,39 @@ FORMAT = "p2-showcase-hil-v1"
 EXIT_OK = 0
 EXIT_CONFIGURATION = 2
 EXIT_HIL_FAILURE = 3
-BOARD = "p2-ec32mb"
 PROFILE = "showcase"
+
+
+@dataclass(frozen=True)
+class BoardSpec:
+    board: str
+    defconfig: pathlib.Path
+    board_symbol: str
+    has_psram: bool
+    module_help: str
+
+
+BOARD_SPECS = {
+    "p2-ec32mb": BoardSpec(
+        board="p2-ec32mb",
+        defconfig=(
+            REPO_ROOT
+            / "boards/p2/p2x8c4m64p/p2-ec32mb/configs/showcase/defconfig"
+        ),
+        board_symbol="CONFIG_ARCH_BOARD_P2_EC32MB",
+        has_psram=True,
+        module_help="Module: P2-EC32MB Rev B; LEDs P38/P39; PSRAM 32 MiB",
+    ),
+    "p2-ec": BoardSpec(
+        board="p2-ec",
+        defconfig=(
+            REPO_ROOT / "boards/p2/p2x8c4m64p/p2-ec/configs/showcase/defconfig"
+        ),
+        board_symbol="CONFIG_ARCH_BOARD_P2_EC",
+        has_psram=False,
+        module_help="Module: P2-EC Rev D; LEDs P56/P57; no onboard PSRAM",
+    ),
+}
 EXPECTED_SMARTPIN_CAPS = (
     "GPIO",
     "EDGE",
@@ -50,20 +81,18 @@ EXPECTED_SMARTPIN_CAPS = (
 )
 PROMPT_PATTERN = re.compile(r"^(?:\x1b\[K)?nsh> ", re.MULTILINE)
 
-BOOT_PATTERNS = (
-    ("P2BOOT:ENTRY", re.compile(r"^P2BOOT:ENTRY\r?$", re.MULTILINE)),
-    ("P2BOOT:DATA=OK", re.compile(r"^P2BOOT:DATA=OK\r?$", re.MULTILINE)),
-    ("P2BOOT:BSS=OK", re.compile(r"^P2BOOT:BSS=OK\r?$", re.MULTILINE)),
-    ("P2BOOT:NX_START", re.compile(r"^P2BOOT:NX_START\r?$", re.MULTILINE)),
-    (
-        "P2SHOWCASE:READY",
-        re.compile(
-            r"^P2SHOWCASE:READY:BOARD=p2-ec32mb:RUN=p2help\r?$",
-            re.MULTILINE,
+def boot_patterns(board: str) -> Tuple[Tuple[str, re.Pattern], ...]:
+    return (
+        ("P2BOOT:ENTRY", re.compile(r"^P2BOOT:ENTRY\r?$", re.MULTILINE)),
+        ("P2BOOT:DATA=OK", re.compile(r"^P2BOOT:DATA=OK\r?$", re.MULTILINE)),
+        ("P2BOOT:BSS=OK", re.compile(r"^P2BOOT:BSS=OK\r?$", re.MULTILINE)),
+        ("P2BOOT:NX_START", re.compile(r"^P2BOOT:NX_START\r?$", re.MULTILINE)),
+        (
+            "P2SHOWCASE:READY",
+            _line_literal("P2SHOWCASE:READY:BOARD={}:RUN=p2help".format(board)),
         ),
-    ),
-    ("nsh> prompt", PROMPT_PATTERN),
-)
+        ("nsh> prompt", PROMPT_PATTERN),
+    )
 
 FAILURE_PATTERNS = (
     ("P2 boot data/BSS failure", re.compile(r"P2BOOT:(?:DATA|BSS)=FAIL")),
@@ -100,8 +129,6 @@ FAILURE_PATTERNS = (
 
 SHOWCASE_REQUIRED_CONFIG = (
     ("CONFIG_ARCH", '"p2"'),
-    ("CONFIG_ARCH_BOARD", '"p2-ec32mb"'),
-    ("CONFIG_ARCH_BOARD_P2_EC32MB", "y"),
     ("CONFIG_BUILD_FLAT", "y"),
     ("CONFIG_INIT_ENTRYPOINT", '"nsh_main"'),
     ("CONFIG_NSH_READLINE", "y"),
@@ -123,7 +150,6 @@ SHOWCASE_REQUIRED_CONFIG = (
     ("CONFIG_P2_EC32MB_I2C_SDA_PIN", "24"),
     ("CONFIG_P2_EC32MB_I2C_SCL_PIN", "25"),
     ("CONFIG_P2_EC32MB_BMP180", "y"),
-    ("CONFIG_P2_EC32MB_PSRAM", "y"),
     ("CONFIG_SYSTEM_P2HELP", "y"),
     ("CONFIG_TESTING_P2SMARTPINS", "y"),
     ("CONFIG_TESTING_P2SMARTPINS_EDGE", "y"),
@@ -134,7 +160,6 @@ SHOWCASE_REQUIRED_CONFIG = (
     ("CONFIG_TESTING_P2I2C", "y"),
     ("CONFIG_TESTING_P2STORAGE", "y"),
     ("CONFIG_TESTING_P2STORAGE_DESTRUCTIVE", "n"),
-    ("CONFIG_TESTING_P2PSRAM", "y"),
     ("CONFIG_FSUTILS_MKFATFS", "n"),
     ("CONFIG_FSUTILS_MKSMARTFS", "n"),
     ("CONFIG_SYSTEM_DD", "n"),
@@ -202,12 +227,23 @@ def _is_relative_to(path: pathlib.Path, parent: pathlib.Path) -> bool:
         return False
 
 
-def validate_showcase_config(path: pathlib.Path) -> str:
+def validate_showcase_config(
+    path: pathlib.Path, expected_board: Optional[str] = None
+) -> str:
     values = hil.read_kconfig(path)
-    expected_path = (
-        REPO_ROOT / "boards/p2/p2x8c4m64p/p2-ec32mb/configs/showcase/defconfig"
-    )
-    expected = hil.read_kconfig(expected_path)
+    board = values.get("CONFIG_ARCH_BOARD", "").strip('"')
+    if board not in BOARD_SPECS:
+        raise ShowcaseError(
+            "unsupported showcase board in config: {}".format(board or "<missing>")
+        )
+    if expected_board is not None and board != expected_board:
+        raise ShowcaseError(
+            "build board {} does not match config board {}".format(
+                expected_board, board
+            )
+        )
+    spec = BOARD_SPECS[board]
+    expected = hil.read_kconfig(spec.defconfig)
     mismatches = []
     for name, wanted in expected.items():
         actual = values.get(name, "n")
@@ -217,11 +253,21 @@ def validate_showcase_config(path: pathlib.Path) -> str:
         actual = values.get(name, "n")
         if actual != wanted:
             mismatches.append("{}={} (required {})".format(name, actual, wanted))
+    for name, wanted in (
+        ("CONFIG_ARCH_BOARD", '"{}"'.format(board)),
+        (spec.board_symbol, "y"),
+        ("CONFIG_P2_EC32MB_PSRAM", "y" if spec.has_psram else "n"),
+        ("CONFIG_TESTING_P2PSRAM", "y" if spec.has_psram else "n"),
+    ):
+        actual = values.get(name, "n")
+        if actual != wanted:
+            mismatches.append("{}={} (required {})".format(name, actual, wanted))
     if values.get("CONFIG_SMP", "n") != "n":
         mismatches.append("CONFIG_SMP must be disabled for the flat UP showcase")
     if mismatches:
         raise ShowcaseError(
-            "build artifact is not the exact EC32MB showcase profile: {}".format(
+            "build artifact is not the exact {} showcase profile: {}".format(
+                board,
                 ", ".join(dict.fromkeys(mismatches))
             )
         )
@@ -506,12 +552,13 @@ class ShowcaseRunner:
         self.lock_factory = lock_factory
         self.owner_probe = owner_probe
         self.started_monotonic = monotonic()
+        self.board_spec = BOARD_SPECS[config.build.board]
         self.status: Dict[str, object] = {
             "format": FORMAT,
             "status": "RUNNING",
             "exit_code": None,
             "reason": "HIL session has not completed",
-            "board": BOARD,
+            "board": config.build.board,
             "profile": PROFILE,
             "smp_enabled": False,
             "port": config.port,
@@ -549,7 +596,18 @@ class ShowcaseRunner:
             "loadp2_source": str(config.source_loadp2),
             "loadp2_sha256": config.loadp2_sha256,
         }
-        if not config.include_psram:
+        if not self.board_spec.has_psram:
+            self.status["omissions"].append(
+                {
+                    "stage": "p2psram",
+                    "reason": (
+                        "NOT APPLICABLE: the P2-EC Rev D module has no onboard "
+                        "PSRAM; the exact config and runtime device check require "
+                        "the PSRAM driver, command, and /dev/psram0 to be absent"
+                    ),
+                }
+            )
+        elif not config.include_psram:
             self.status["omissions"].append(
                 {
                     "stage": "p2psram",
@@ -610,7 +668,7 @@ class ShowcaseRunner:
         shutil.copytree(self.config.build.path, build_copy, copy_function=shutil.copy2)
         copied = build_artifact.load(build_copy, require_clean=True)
         if (
-            copied.board != BOARD
+            copied.board != self.config.build.board
             or copied.profile != PROFILE
             or copied.elf_sha256 != self.config.build.elf_sha256
             or copied.binary_sha256 != self.config.build.binary_sha256
@@ -692,7 +750,10 @@ class ShowcaseRunner:
             lambda: {
                 "markers": dict(
                     console.wait_sequence(
-                        "boot", BOOT_PATTERNS, self.config.boot_timeout, start=0
+                        "boot",
+                        boot_patterns(self.config.build.board),
+                        self.config.boot_timeout,
+                        start=0,
                     ).matches
                 )
             },
@@ -707,7 +768,15 @@ class ShowcaseRunner:
                 (
                     (
                         "P2SHOWCASE board/profile",
-                        _line_literal("P2SHOWCASE:BOARD=p2-ec32mb:PROFILE=showcase"),
+                        _line_literal(
+                            "P2SHOWCASE:BOARD={}:PROFILE=showcase".format(
+                                self.config.build.board
+                            )
+                        ),
+                    ),
+                    (
+                        "module identity",
+                        _line_literal(self.board_spec.module_help),
                     ),
                     (
                         "/dev/userleds help",
@@ -791,6 +860,31 @@ class ShowcaseRunner:
             }
 
         self._stage("/dev/userleds and leds driver path", userleds)
+
+        if not self.board_spec.has_psram:
+            def no_psram_device() -> Dict[str, object]:
+                name = "Rev D no-PSRAM runtime contract"
+                start = len(console.text)
+                console.send(name, "list runtime devices", b"ls /dev\r")
+                capture = console.wait_sequence(
+                    name,
+                    (("prompt after device list", PROMPT_PATTERN),),
+                    self.config.stage_timeout,
+                    start=start,
+                )
+                segment = _capture_segment(console.text, start, capture.end)
+                if re.search(
+                    r"(?<![A-Za-z0-9_])psram0(?![A-Za-z0-9_])", segment
+                ):
+                    raise ShowcaseError("Rev D unexpectedly registered /dev/psram0")
+                return {
+                    "command": "ls /dev",
+                    "psram_device_present": False,
+                    "config_psram_driver": False,
+                    "config_psram_command": False,
+                }
+
+            self._stage("Rev D no-PSRAM runtime contract", no_psram_device)
 
         self._stage(
             "shell Tab completion",
@@ -1049,7 +1143,9 @@ class ShowcaseRunner:
             "P2BOOT:DATA=OK",
             "P2BOOT:BSS=OK",
             "P2BOOT:NX_START",
-            "P2SHOWCASE:READY:BOARD=p2-ec32mb:RUN=p2help",
+            "P2SHOWCASE:READY:BOARD={}:RUN=p2help".format(
+                self.config.build.board
+            ),
         ):
             count = console.text.count(marker)
             if count != 1:
@@ -1123,7 +1219,9 @@ class ShowcaseRunner:
                 {
                     "status": "PASS",
                     "exit_code": EXIT_OK,
-                    "reason": "all required EC32MB showcase HIL stages passed",
+                    "reason": "all required {} showcase HIL stages passed".format(
+                        self.config.build.board
+                    ),
                 }
             )
             return True
@@ -1191,13 +1289,19 @@ def parse_config(
         raise ShowcaseError(str(exc)) from exc
 
     build = build_artifact.load(args.build_artifact, require_clean=True)
-    if build.board != BOARD or build.profile != PROFILE:
+    if build.board not in BOARD_SPECS or build.profile != PROFILE:
         raise ShowcaseError(
-            "build artifact must be {}:{}, got {}:{}".format(
-                BOARD, PROFILE, build.board, build.profile
+            "build artifact must be a supported P2 Edge {} profile, got {}:{}".format(
+                PROFILE, build.board, build.profile
             )
         )
-    config_sha = validate_showcase_config(build.path / "config")
+    if args.include_psram and not BOARD_SPECS[build.board].has_psram:
+        raise ShowcaseError(
+            "--include-psram is not applicable to {}: no onboard PSRAM".format(
+                build.board
+            )
+        )
+    config_sha = validate_showcase_config(build.path / "config", build.board)
     elf = build.path / "nuttx"
     raw = build.path / "nuttx.bin"
     if elf.read_bytes()[:4] != b"\x7fELF":

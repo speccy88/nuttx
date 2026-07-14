@@ -19,7 +19,7 @@ path needs no source build and writes neither SPI flash nor the microSD card.
 
 ## Quick start: run NuttX from RAM
 
-Release: [`p2-edge-flat-up-v0.1.0`](https://github.com/speccy88/nuttx/releases/tag/p2-edge-flat-up-v0.1.0)
+Release: [`p2-edge-flat-up-v0.1.1`](https://github.com/speccy88/nuttx/releases/tag/p2-edge-flat-up-v0.1.1)
 
 The supplied installer and `loadp2` binary target Apple-silicon macOS. Connect
 a PropPlug to P62/P63, power the board, and close every serial terminal before
@@ -28,7 +28,7 @@ continuing. Only one process can own the PropPlug at a time.
 Download the complete bundle and verify its outer checksum:
 
 ```zsh
-TAG=p2-edge-flat-up-v0.1.0
+TAG=p2-edge-flat-up-v0.1.1
 ASSET="$TAG-bundle-macos-arm64.tar.gz"
 BASE="https://github.com/speccy88/nuttx/releases/download/$TAG"
 
@@ -102,8 +102,8 @@ silently choose the wrong image.
 
 | Module | `--board` value | RAM | SPI flash | microSD source |
 | --- | --- | --- | --- | --- |
-| P2-EC32MB Rev B | `p2-ec32mb` | `p2-edge-flat-up-v0.1.0-p2-ec32mb-revb-ram.elf` | `p2-edge-flat-up-v0.1.0-p2-ec32mb-revb-flash.bin` | `p2-edge-flat-up-v0.1.0-p2-ec32mb-revb-_BOOT_P2.BIX` |
-| P2-EC Rev D | `p2-ec` | `p2-edge-flat-up-v0.1.0-p2-ec-revd-ram.elf` | `p2-edge-flat-up-v0.1.0-p2-ec-revd-flash.bin` | `p2-edge-flat-up-v0.1.0-p2-ec-revd-_BOOT_P2.BIX` |
+| P2-EC32MB Rev B | `p2-ec32mb` | `p2-edge-flat-up-v0.1.1-p2-ec32mb-revb-ram.elf` | `p2-edge-flat-up-v0.1.1-p2-ec32mb-revb-flash.bin` | `p2-edge-flat-up-v0.1.1-p2-ec32mb-revb-_BOOT_P2.BIX` |
+| P2-EC Rev D | `p2-ec` | `p2-edge-flat-up-v0.1.1-p2-ec-revd-ram.elf` | `p2-edge-flat-up-v0.1.1-p2-ec-revd-flash.bin` | `p2-edge-flat-up-v0.1.1-p2-ec-revd-_BOOT_P2.BIX` |
 
 The release-root `_BOOT_P2.BIX` is a convenience alias for
 **P2-EC32MB Rev B only**. Do not copy that alias to a Rev D card. The bundle
@@ -240,8 +240,11 @@ on, and attach without loading another image. The
 [goal status table](Documentation/platforms/p2/goal-status-table.md) separates
 an actual reset-only SD boot from a file-write result. The exact Rev B
 candidate passed the write, complete raw-card inspection, and an independent
-SD-only reset with zero serial TX and no loader download. Rev D remains
-HIL-required until the same proof is run on that module.
+SD-only reset with zero serial TX and no loader download. The Rev D release
+image is HIL-verified in RAM, SPI flash, and SD-only ROM boot. The bundled
+serial writer timed out on the attached card, so the exact board-specific
+release file was copied on macOS, verified in place by SHA-256, cleanly
+ejected, and then booted in SD-only mode.
 
 You may instead copy a board-specific release file to a FAT32 card on a host,
 but it must be renamed exactly `_BOOT_P2.BIX`, placed in the root, and stored
@@ -562,9 +565,10 @@ SHA-256 `61534212bd8bcf9f4ca996d36731c0e612951d7d9554c96ff360aaf607a3e758`.
 A separate 402,060-byte development-only image, SHA-256
 `e1226636846386e5538e731b0fa568ca99fffeb6f992bc6e271f5b5c86e5b3cf`,
 previously passed both raw inspection and SD-only boot; it remains historical
-fix evidence rather than the clean candidate to package. P2-EC Rev D is
-build- and static-verification qualified only because no Rev D module is
-attached, so its runtime claims remain **HIL-REQUIRED**. See the
+fix evidence rather than the clean candidate to package. The exact P2-EC Rev D
+release ELF passed all required RAM-showcase stages on physical hardware, and
+the exact raw release image passed guarded programming plus one zero-transmit
+reset-only SPI-flash boot and one zero-transmit SD-only ROM boot. See the
 [goal status table](Documentation/platforms/p2/goal-status-table.md) for the
 line-by-line distinction between the proven baseline and final release work.
 
@@ -611,9 +615,9 @@ apps at `a333035462f545056e7a2fb859a9fbdc6d4ef831`; the later NuttX changes in
 the tag update documentation only.
 
 ```sh
-mkdir p2-nuttx-v0.1.0
-cd p2-nuttx-v0.1.0
-git clone --branch p2-edge-flat-up-v0.1.0 --depth 1 \
+mkdir p2-nuttx-v0.1.1
+cd p2-nuttx-v0.1.1
+git clone --branch p2-edge-flat-up-v0.1.1 --depth 1 \
   https://github.com/speccy88/nuttx.git nuttx
 cd nuttx
 
@@ -625,7 +629,7 @@ Build the same board-specific showcase profiles used for the release, keeping
 artifacts outside the checkout:
 
 ```sh
-BUILD_ROOT=$(mktemp -d /tmp/p2-edge-v0.1.0.XXXXXX)
+BUILD_ROOT=$(mktemp -d /tmp/p2-edge-v0.1.1.XXXXXX)
 
 P2_ARTIFACTS="$BUILD_ROOT/p2-ec32mb-showcase" \
   ./tools/p2/build.sh p2-ec32mb:showcase
@@ -647,7 +651,9 @@ in one session with:
 Specialized P2-EC32MB profiles remain available for focused bring-up and HIL:
 `nsh`, `flashboot`, `bringup`, `smartpins`, `analog`, `i2c`, `psram`,
 `storage`, `clock`, `schedstress`, and the applicable `ostest*` variants. The
-Rev D board currently supplies the release `showcase` profile. All HIL helpers
+Rev D supplies the release `showcase` profile plus a storage profile for
+explicit media initialization. The showcase HIL runner supports both boards,
+including the Rev D no-PSRAM runtime contract. All HIL helpers
 under `tools/p2` default to dry-run or require explicit gates; they never
 silently open serial, reset, erase flash, or write SD.
 
@@ -667,8 +673,10 @@ silently open serial, reset, erase flash, or write SD.
   physical follow-up items.
 - The bundled installer and loader are macOS arm64 only. Other hosts require a
   separately obtained compatible loader and are not release-qualified here.
-- P2-EC Rev D compiles and passes static checks, but remains HIL-required until
-  run on actual Rev D hardware.
+- The exact P2-EC Rev D release passes physical RAM showcase, SPI-flash
+  reset boot, and SD-only ROM boot qualification. The bundled serial SD writer
+  timed out on the attached card; host copying the verified board-specific
+  `_BOOT_P2.BIX` is the qualified Rev D installation path for this release.
 - The exact clean P2-EC32MB candidate passes RAM HIL, guarded flash
   programming, and ten completed hash-bound reset-only flash boots. The
   originally requested 20-cycle wrapper was intentionally interrupted after
@@ -677,8 +685,8 @@ silently open serial, reset, erase flash, or write SD.
   raw-card layout inspection pass, as does one exact-candidate no-loader
   SD-only reset with zero serial TX. The 20-file release package and a clean
   extracted-bundle verification also pass; the release supplies both outer
-  checksums and an in-bundle verifier. No runtime claim extends to P2-EC Rev D
-  without a Rev D module.
+  checksums and an in-bundle verifier. Rev D RAM, flash, and SD-only hardware
+  evidence is included.
 
 ## Port documentation and evidence
 

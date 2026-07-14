@@ -273,10 +273,10 @@ stable boot CRC is ``B31D0271`` and every cycle verified persistent sequence
 ``F23A0713`` / one-MiB FNV-1a ``693C9DC5`` with zero pre-prompt TX.  The
 20-cycle wrapper's top-level status remains interruption/FAIL because it was
 intentionally stopped after cycle 10; it is not itself a PASS artifact.
-P2-EC Rev D is
-build- and static-verification qualified only; because no Rev-D module was
-attached, all runtime behavior remains **HIL-REQUIRED**.  Its lack of PSRAM is
-intentional board scope, not a missing test profile.
+P2-EC Rev D is physically **HIL-VERIFIED**.  Its exact release RAM showcase
+passed all applicable driver and shell stages plus the no-PSRAM runtime
+contract; exact-image SPI-flash reset boot and SD-only ROM boot also passed.
+Its lack of PSRAM is intentional board scope, not a missing test profile.
 
 Both candidate builds are flat UP; SMP is deliberately not enabled.
 Their provisional build directories are
@@ -1644,9 +1644,10 @@ fresh-download verification pass.
 * Only flat, uniprocessor NuttX is supported.  Protected/kernel builds and SMP
   are compile-time excluded.  SMP is **DEFERRED / OUT OF SCOPE** and does not
   gate flat-UP completion.
-* P2-EC Rev D (``p2-ec``) remains build- and static-verification qualified
-  only.  No Rev-D module was attached, so every Rev-D runtime claim, including
-  flash and ROM microSD boot, remains **HIL-REQUIRED**.
+* P2-EC Rev D (``p2-ec``) is build-, static-, and physically HIL-verified for
+  exact-image RAM, SPI flash, and ROM microSD boot.  The accepted SD proof used
+  a host-copied, SHA-256-verified board-specific ``_BOOT_P2.BIX`` after the
+  bundled serial writer timed out on that card.
 * CT1/INT1 is the only complete interrupt routing path.  GPIO edge and UART1
   RX service are 100 Hz tick-sampled.
 * Tickless operation is absent.  The raw-clock result brackets serial commands

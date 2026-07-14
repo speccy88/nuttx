@@ -103,7 +103,9 @@ The P2-EC Rev D build has no PSRAM.  Its 386,752-byte raw image has SHA-256
 ``596b0f022c28fa4462a6e13692ad54ecab095f17d6532d441e60e0dee481c230``
 and its 476,768-byte ELF has SHA-256
 ``2d1e4f2d84455b6cd15edc31571796d9cc1505fae49de7f65245856b70f5bea7``.
-Rev-D runtime remains **HIL-REQUIRED**.
+Rev D runtime is **HIL-VERIFIED**: the exact release passed the bounded RAM
+showcase, one reset-only SPI-flash boot, and one host-installed SD-only ROM
+boot with zero serial TX.
 
 Both candidate builds are flat UP; SMP is deliberately not enabled.
 
@@ -132,9 +134,8 @@ Unsupported or incomplete areas
   architecture IRQ sources are not implemented.
 * Reset-interrupted flash recovery is verified; true power-loss recovery is
   not, because no controlled power-cycle command is available.
-* P2-EC Rev D has no PSRAM.  Equivalent RAM, flash, and ROM SD-boot HIL
-  remains required on that board; the physical boot proof above applies to
-  P2-EC32MB Rev B.
+* P2-EC Rev D has no PSRAM.  Equivalent RAM, flash, and ROM SD-boot HIL passed
+  on the exact release image; the no-PSRAM runtime contract also passed.
 
 Those boundaries remain explicit unsupported, deferred, or ``HIL-REQUIRED``
 items; they are not implied successes of the working UP port.  SMP is

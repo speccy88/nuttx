@@ -46,8 +46,8 @@ remain dynamically claimable.
 P2-EC Rev D has no PSRAM, so P40-P55 remain available for configured lower
 halves.  P56-P57 are instead its active-high LEDs and are reserved when either
 LED option is enabled; storage and console retain P58-P61 and P62-P63.  That
-mapping is compiled and statically verified, while Rev D runtime behavior
-remains **HIL-REQUIRED**.  See :doc:`pin-map` for the installed Rev B HIL
+mapping is compiled, statically verified, and physically HIL-verified by the
+exact Rev D showcase.  See :doc:`pin-map` for the installed fixture
 allocations and the complete board distinction.
 
 Standard device interfaces
@@ -139,5 +139,7 @@ claiming a digital P4/P5 waveform.  All 16 required showcase stages passed in
 379.246116 seconds; the status SHA-256 is
 ``2ce85939d560a2e727b845d1e87f758939dd6028ce6b6afaba1bcc1c031e8250``.
 This ``/tmp`` evidence is provisional and must be preserved in or linked from
-the release package.  P2-EC Rev D has no PSRAM, uses P56/P57 for LEDs, and
-remains **HIL-REQUIRED** for runtime Smart Pin claims.
+the release package.  P2-EC Rev D has no PSRAM, uses P56/P57 for LEDs, and its
+exact showcase passed the same installed GPIO, edge, UART, ADC/DAC, PWM-smoke,
+SPI, and I2C fixtures at
+``/tmp/p2-revd-final.14cadad-r1/revd-showcase-hil-pass``.

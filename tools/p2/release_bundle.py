@@ -21,7 +21,7 @@ from typing import Iterable
 
 
 FORMAT = "p2-flat-up-dual-board-release-bundle-v1"
-DEFAULT_PREFIX = "p2-edge-flat-up-v0.1.0"
+DEFAULT_PREFIX = "p2-edge-flat-up-v0.1.1"
 PLATFORM = "macos-arm64"
 LOADP2_VERSION = "0.078"
 SD_WRITER_SHA256 = "b71f5d92e6b491c7b62fdc4b80baa63cea24d3975e98d6df4e3d2e8ae1b412e4"
@@ -59,8 +59,11 @@ REQUIRED_SHOWCASE_HIL_STAGES = (
     "p2smartpins spi",
     "p2i2c BMP180 on P24/P25",
     "p2storage probe (read-only)",
-    "optional p2psram volatile write/read proof",
 )
+BOARD_SHOWCASE_HIL_STAGES = {
+    "p2-ec32mb": ("optional p2psram volatile write/read proof",),
+    "p2-ec": ("Rev D no-PSRAM runtime contract",),
+}
 SHOWCASE_HIL_LOGS = {
     "raw_serial_sha256": "console.raw",
     "normalized_serial_sha256": "console.normalized.log",
@@ -273,7 +276,9 @@ def _manifest_entry(root: pathlib.Path, name: str, role: str) -> dict[str, objec
     }
 
 
-def _showcase_hil_status_error(status: object, expected: dict[str, str]) -> str | None:
+def _showcase_hil_status_error(
+    status: object, expected: dict[str, str], board: str
+) -> str | None:
     """Return why a status is not exact, release-bound showcase evidence."""
 
     if not isinstance(status, dict):
@@ -282,7 +287,7 @@ def _showcase_hil_status_error(status: object, expected: dict[str, str]) -> str 
         ("format", SHOWCASE_HIL_FORMAT),
         ("status", "PASS"),
         ("exit_code", 0),
-        ("board", "p2-ec32mb"),
+        ("board", board),
         ("profile", SHOWCASE_PROFILE),
         ("smp_enabled", False),
         ("single_serial_owner", True),
@@ -301,16 +306,17 @@ def _showcase_hil_status_error(status: object, expected: dict[str, str]) -> str 
             "P2_HIL",
             "P2_ALLOW_RESET",
             "P2_ALLOW_LOOPBACK_TESTS",
-            "P2_ALLOW_PSRAM_WRITE",
         )
     ):
+        return "showcase HIL safety gates are incomplete"
+    if gates.get("P2_ALLOW_PSRAM_WRITE") is not (board == "p2-ec32mb"):
         return "showcase HIL safety gates are incomplete"
 
     build = status.get("build")
     if not isinstance(build, dict):
         return "showcase HIL build binding is missing"
     for key, wanted in (
-        ("board", "p2-ec32mb"),
+        ("board", board),
         ("profile", SHOWCASE_PROFILE),
         ("source_clean", True),
         ("status_sha256", expected["build_status_sha256"]),
@@ -336,9 +342,8 @@ def _showcase_hil_status_error(status: object, expected: dict[str, str]) -> str 
         observed[name] = stage.get("status")
         if stage.get("status") != "PASS":
             return "showcase HIL stage did not PASS: {}".format(name)
-    missing = [
-        name for name in REQUIRED_SHOWCASE_HIL_STAGES if observed.get(name) != "PASS"
-    ]
+    required_stages = REQUIRED_SHOWCASE_HIL_STAGES + BOARD_SHOWCASE_HIL_STAGES[board]
+    missing = [name for name in required_stages if observed.get(name) != "PASS"]
     if missing:
         return "required showcase HIL stage is missing: {}".format(missing[0])
 
@@ -387,7 +392,7 @@ def _validate_hardware_evidence(paths: list[pathlib.Path], build) -> None:
             if not status_path.is_file():
                 continue
             status = _read_json(status_path)
-            error = _showcase_hil_status_error(status, expected)
+            error = _showcase_hil_status_error(status, expected, build.board)
             if error is None:
                 error = _validate_showcase_hil_files(status_path, status)
             if error is None:
@@ -397,8 +402,9 @@ def _validate_hardware_evidence(paths: list[pathlib.Path], build) -> None:
     if not matched:
         detail = "; ".join(rejected[:3])
         raise ReleaseBundleError(
-            "HIL-VERIFIED EC32MB evidence must contain exact {} evidence "
+            "HIL-VERIFIED {} evidence must contain exact {} evidence "
             "with all required PASS stages and release-bound logs{}".format(
+                build.board,
                 SHOWCASE_HIL_FORMAT,
                 ": " + detail if detail else "",
             )
@@ -453,6 +459,12 @@ def package(args: argparse.Namespace) -> pathlib.Path:
         )
     if args.ec32mb_hardware_status == "HIL-VERIFIED":
         _validate_hardware_evidence(args.ec32mb_evidence, builds["p2-ec32mb"])
+    if args.ec_revd_hardware_status == "HIL-VERIFIED" and not args.ec_revd_evidence:
+        raise ReleaseBundleError(
+            "HIL-VERIFIED P2-EC Rev D status requires hardware evidence"
+        )
+    if args.ec_revd_hardware_status == "HIL-VERIFIED":
+        _validate_hardware_evidence(args.ec_revd_evidence, builds["p2-ec"])
 
     names = _release_names(args.prefix)
     board_names = names["boards"]
@@ -593,7 +605,9 @@ def package(args: argparse.Namespace) -> pathlib.Path:
         }
         for board, build in builds.items():
             hardware_status = (
-                args.ec32mb_hardware_status if board == "p2-ec32mb" else "HIL-REQUIRED"
+                args.ec32mb_hardware_status
+                if board == "p2-ec32mb"
+                else args.ec_revd_hardware_status
             )
             manifest["boards"][board] = {
                 "slug": BOARD_SPECS[board]["slug"],
@@ -732,7 +746,7 @@ def _verify_distribution_archive(
 
 
 def _verify_archived_hardware_evidence(
-    path: pathlib.Path, board_slug: str, expected: dict[str, str]
+    path: pathlib.Path, board: str, board_slug: str, expected: dict[str, str]
 ) -> None:
     prefix = "evidence/{}/additional/".format(board_slug)
     try:
@@ -754,7 +768,7 @@ def _verify_archived_hardware_evidence(
                     status = json.loads(stream.read().decode("utf-8"))
                 except (UnicodeError, json.JSONDecodeError):
                     continue
-                error = _showcase_hil_status_error(status, expected)
+                error = _showcase_hil_status_error(status, expected, board)
                 if error is not None:
                     rejected.append("{}: {}".format(member.name, error))
                     continue
@@ -1012,11 +1026,8 @@ def verify(root_value: pathlib.Path) -> dict[str, str]:
                 "{} build status SHA-256 is malformed".format(board)
             )
         hardware_status = details.get("hardware_status")
-        if board == "p2-ec":
-            if hardware_status != "HIL-REQUIRED":
-                raise ReleaseBundleError("P2-EC Rev D must remain HIL-REQUIRED")
-        elif hardware_status not in ("HIL-REQUIRED", "HIL-VERIFIED"):
-            raise ReleaseBundleError("invalid EC32MB hardware status")
+        if hardware_status not in ("HIL-REQUIRED", "HIL-VERIFIED"):
+            raise ReleaseBundleError("invalid {} hardware status".format(board))
         if (
             hardware_status == "HIL-VERIFIED"
             and details.get("hardware_evidence_included") is not True
@@ -1087,6 +1098,7 @@ def verify(root_value: pathlib.Path) -> dict[str, str]:
     if board_manifest["p2-ec32mb"]["hardware_status"] == "HIL-VERIFIED":
         _verify_archived_hardware_evidence(
             root / names["evidence"],
+            "p2-ec32mb",
             BOARD_SPECS["p2-ec32mb"]["slug"],
             {
                 "build_status_sha256": board_manifest["p2-ec32mb"][
@@ -1098,6 +1110,23 @@ def verify(root_value: pathlib.Path) -> dict[str, str]:
                 ).hexdigest(),
                 "nuttx_commit": board_manifest["p2-ec32mb"]["nuttx_commit"],
                 "apps_commit": board_manifest["p2-ec32mb"]["apps_commit"],
+            },
+        )
+    if board_manifest["p2-ec"]["hardware_status"] == "HIL-VERIFIED":
+        _verify_archived_hardware_evidence(
+            root / names["evidence"],
+            "p2-ec",
+            BOARD_SPECS["p2-ec"]["slug"],
+            {
+                "build_status_sha256": board_manifest["p2-ec"][
+                    "build_status_sha256"
+                ],
+                "elf_sha256": elf_digests["p2-ec"],
+                "raw_binary_sha256": hashlib.sha256(
+                    raw_images["p2-ec"]
+                ).hexdigest(),
+                "nuttx_commit": board_manifest["p2-ec"]["nuttx_commit"],
+                "apps_commit": board_manifest["p2-ec"]["apps_commit"],
             },
         )
     if names["bundle"] in checksums:
@@ -1161,6 +1190,11 @@ def main(argv=None) -> int:
     )
     package_parser.add_argument(
         "--ec32mb-hardware-status",
+        choices=("HIL-REQUIRED", "HIL-VERIFIED"),
+        default="HIL-REQUIRED",
+    )
+    package_parser.add_argument(
+        "--ec-revd-hardware-status",
         choices=("HIL-REQUIRED", "HIL-VERIFIED"),
         default="HIL-REQUIRED",
     )

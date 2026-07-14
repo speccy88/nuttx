@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
 import struct
 import subprocess
 import sys
@@ -181,7 +182,12 @@ class ReleaseFixture:
                     },
                     "stages": [
                         {"name": name, "status": "PASS"}
-                        for name in release_bundle.REQUIRED_SHOWCASE_HIL_STAGES
+                        for name in (
+                            release_bundle.REQUIRED_SHOWCASE_HIL_STAGES
+                            + release_bundle.BOARD_SHOWCASE_HIL_STAGES[
+                                "p2-ec32mb"
+                            ]
+                        )
                     ],
                     "raw_serial_bytes": len(hil_logs["console.raw"]),
                     "raw_serial_sha256": hashlib.sha256(
@@ -199,12 +205,43 @@ class ReleaseFixture:
             encoding="utf-8",
         )
 
+        self.revd_hil = self.temp / "ec-revd-hil"
+        shutil.copytree(self.hil, self.revd_hil)
+        revd_status_path = self.revd_hil / "status.json"
+        revd_status = json.loads(revd_status_path.read_text(encoding="utf-8"))
+        revd_status["board"] = "p2-ec"
+        revd_status["gates"]["P2_ALLOW_PSRAM_WRITE"] = False
+        revd_status["build"].update(
+            {
+                "board": "p2-ec",
+                "status_sha256": hashlib.sha256(
+                    (self.ec_revd / "status.json").read_bytes()
+                ).hexdigest(),
+                "elf_sha256": hashlib.sha256(
+                    (self.ec_revd / "nuttx").read_bytes()
+                ).hexdigest(),
+                "binary_sha256": hashlib.sha256(
+                    (self.ec_revd / "nuttx.bin").read_bytes()
+                ).hexdigest(),
+                "raw_binary_sha256": hashlib.sha256(
+                    (self.ec_revd / "nuttx.bin").read_bytes()
+                ).hexdigest(),
+            }
+        )
+        for stage in revd_status["stages"]:
+            if stage["name"] == "optional p2psram volatile write/read proof":
+                stage["name"] = "Rev D no-PSRAM runtime contract"
+        revd_status_path.write_text(
+            json.dumps(revd_status) + "\n", encoding="utf-8"
+        )
+
     def tearDown(self):
         self.temporary.cleanup()
 
-    def package(self, output: pathlib.Path) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            [
+    def package(
+        self, output: pathlib.Path, revd_verified: bool = False
+    ) -> subprocess.CompletedProcess:
+        command = [
                 sys.executable,
                 str(TOOLS / "release_bundle.py"),
                 "package",
@@ -226,7 +263,16 @@ class ReleaseFixture:
                 "HIL-VERIFIED",
                 "--output",
                 str(output),
-            ],
+            ]
+        if revd_verified:
+            command[command.index("--output"):command.index("--output")] = [
+                "--ec-revd-evidence",
+                str(self.revd_hil),
+                "--ec-revd-hardware-status",
+                "HIL-VERIFIED",
+            ]
+        return subprocess.run(
+            command,
             cwd=ROOT,
             text=True,
             capture_output=True,
@@ -235,6 +281,18 @@ class ReleaseFixture:
 
 
 class ReleaseBundleTests(ReleaseFixture, unittest.TestCase):
+    def test_package_accepts_revd_hil_verified_evidence(self):
+        output = self.temp / "release-revd-verified"
+        result = self.package(output, revd_verified=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((output / "release-manifest.json").read_text())
+        self.assertEqual(
+            manifest["boards"]["p2-ec"]["hardware_status"], "HIL-VERIFIED"
+        )
+        self.assertTrue(
+            manifest["boards"]["p2-ec"]["hardware_evidence_included"]
+        )
+
     def test_package_rejects_loader_without_explicit_address_filespec(self):
         data = self.loader.read_bytes().replace(b"@ADDR=file", b"@ADDR+file")
         self.loader.write_bytes(data)

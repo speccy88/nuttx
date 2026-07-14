@@ -5,8 +5,9 @@ Status: the production target-C arbiter is **HOST-TESTED**.  Onboard flash,
 microSD, and 1,000 alternating flash/SD transactions are **HIL-VERIFIED**.
 The P2-EC32MB Rev B exact current-candidate SD write and raw-card inspection
 and its no-loader SD-only ROM reset are **HIL-VERIFIED**.  The complete
-development-image SD path remains useful historical evidence.  P2-EC Rev D
-remains **HIL-REQUIRED**.  True power-loss recovery remains **BLOCKED** without
+development-image SD path remains useful historical evidence.  The exact
+P2-EC Rev D release passed RAM storage probing, reset-only SPI-flash boot, and
+host-installed SD-only ROM boot.  True power-loss recovery remains **BLOCKED** without
 a power-cycle control.
 
 The board storage owner serializes P58-P61 with one timed mutex and the states
@@ -154,7 +155,10 @@ The P2-EC Rev D build has no PSRAM.  Its 386,752-byte raw image has SHA-256
 ``596b0f022c28fa4462a6e13692ad54ecab095f17d6532d441e60e0dee481c230``
 and its 476,768-byte ELF has SHA-256
 ``2d1e4f2d84455b6cd15edc31571796d9cc1505fae49de7f65245856b70f5bea7``.
-All Rev-D runtime storage and boot claims remain **HIL-REQUIRED**.
+Rev D physical evidence is **PASS** for RAM storage probe, exact-image SPI
+flash reset boot, and exact-image SD-only ROM boot.  The bundled serial SD
+writer timed out on the attached card; the accepted SD proof used a verified
+macOS host copy of the board-specific ``_BOOT_P2.BIX``.
 
 The required candidate evidence is preserved in the local release evidence
 archive.  Its ``/tmp`` location remains provisional until the exact asset is

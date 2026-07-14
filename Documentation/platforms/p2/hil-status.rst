@@ -208,7 +208,11 @@ are:
   build-status/config SHA-256
   ``0f27ae1662c18ab051372d157ac030aa3f66bebb104a68ef3597462878737608`` /
   ``ce66616aa712d9834372ef0bb7810f50262e55cfc2991aea22c43ea940c6a1ff``.
-  Rev D has no PSRAM and remains **HIL-REQUIRED** for every runtime claim.
+  Rev D has no PSRAM.  Its exact release RAM showcase is **PASS** at
+  ``/tmp/p2-revd-final.14cadad-r1/revd-showcase-hil-pass``; all applicable
+  stages plus runtime absence of ``/dev/psram0`` passed in 26.188148 seconds.
+  Exact-image SPI-flash reset boot and SD-only ROM boot are also **PASS** at
+  ``revd-release-flash-reset`` and ``revd-sd-only-pass`` respectively.
 
 Both candidate builds are flat UP; SMP is deliberately not enabled.
 
@@ -284,8 +288,9 @@ Explicit blockers and non-claims
 * P2-EC32MB Rev B switch positions used by the accepted boot evidence are
   physically confirmed: serial/flash is ``(ON,OFF,OFF)`` and SD-only is
   ``(OFF,OFF,ON)`` in ``(FLASH,up,down)`` order.
-* P2-EC Rev D is build- and statically verified, but equivalent RAM, flash,
-  and SD-boot physical campaigns remain **HIL-REQUIRED** on that board.
+* P2-EC Rev D is build-, static-, and physically HIL-verified for exact-image
+  RAM, SPI flash, and SD-only boot.  The bundled serial SD writer timed out on
+  the attached card; the accepted SD boot used an exact hash-verified host copy.
 * **DEFERRED / OUT OF SCOPE:** NuttX SMP is not implemented.
   ``CONFIG_SMP`` is deliberately rejected; the accepted architecture is flat
   UP plus measured deterministic service cogs.  A future two-CPU project
