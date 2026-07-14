@@ -24,6 +24,7 @@ Parallax Propeller 2 (P2) cloud first draft
    smp-evaluation
    ostest-matrix
    release-notes-v0.2.0
+   release-notes-v0.1.1
    goal-status-table
    final-hil-report
    hil-status

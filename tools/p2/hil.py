@@ -30,17 +30,13 @@ from bringup_protocol import BRINGUP_FAILURE_PATTERNS as APP_BRINGUP_FAILURE_PAT
 from bringup_protocol import BRINGUP_MARKERS as APP_BRINGUP_MARKERS
 from i2c_protocol import FAILURE_PATTERNS as I2C_FAILURE_PATTERNS
 from i2c_protocol import marker_patterns as i2c_marker_patterns
-from i2c_protocol import (
-    parse_i2c,
-)
+from i2c_protocol import parse_i2c
 from psram_protocol import FAILURE_PATTERNS as PSRAM_FAILURE_PATTERNS
 from psram_protocol import command_bytes as psram_command_bytes
 from psram_protocol import expected_fnv1a as psram_expected_fnv1a
 from psram_protocol import marker_patterns as psram_marker_patterns
 from psram_protocol import normalize_sequence as normalize_psram_sequence
-from psram_protocol import (
-    parse_psram,
-)
+from psram_protocol import parse_psram
 from schedstress_protocol import FAILURE_PATTERNS as SCHEDSTRESS_FAILURE_PATTERNS
 from schedstress_protocol import (
     HEAP_CONCURRENCY_COUNT as SCHEDSTRESS_HEAP_CONCURRENCY_COUNT,
@@ -54,28 +50,19 @@ from schedstress_protocol import (
 from schedstress_protocol import STAGES as SCHEDSTRESS_STAGES
 from schedstress_protocol import TOTAL_EVENTS as SCHEDSTRESS_TOTAL_EVENTS
 from schedstress_protocol import marker_patterns as schedstress_marker_patterns
-from schedstress_protocol import (
-    parse_schedstress,
-)
+from schedstress_protocol import parse_schedstress
 from smartpins_protocol import FAILURE_PATTERNS as SMARTPINS_FAILURE_PATTERNS
 from smartpins_protocol import hil_marker_patterns as smartpins_marker_patterns
-from smartpins_protocol import (
-    parse_smartpins,
-)
+from smartpins_protocol import parse_smartpins
 from smartpins_protocol import stages_from_kconfig as smartpins_stages_from_kconfig
 from storage_protocol import ALTERNATE_TRANSACTIONS as STORAGE_ALTERNATE_TRANSACTIONS
 from storage_protocol import BOARD_MARKER_PATTERNS as STORAGE_BOARD_MARKER_PATTERNS
 from storage_protocol import FAILURE_PATTERNS as STORAGE_ACTION_FAILURE_PATTERNS
-from storage_protocol import (
-    FLASH_WRITABLE_ACTIONS,
-    SD_DESTRUCTIVE_ACTIONS,
-)
+from storage_protocol import FLASH_WRITABLE_ACTIONS, SD_DESTRUCTIVE_ACTIONS
 from storage_protocol import command_bytes as storage_command_bytes
 from storage_protocol import first_error as storage_first_error
 from storage_protocol import normalize_sequence as normalize_storage_sequence
-from storage_protocol import (
-    parse_storage_response,
-)
+from storage_protocol import parse_storage_response
 from storage_protocol import (
     response_marker_patterns as storage_response_marker_patterns,
 )

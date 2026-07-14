@@ -89,7 +89,10 @@ jobs:
   # complete; PR events don't produce identical markers.
   identical:
     needs: [changes-filter, load-targets]
-    if: needs.changes-filter.outputs.source == 'false' && github.event_name == 'push'
+    if: >
+      github.repository == 'apache/nuttx' &&
+      needs.changes-filter.outputs.source == 'false' &&
+      github.event_name == 'push'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -131,7 +134,9 @@ jobs:
   # already installed.
   analyze:
     needs: [changes-filter, load-targets]
-    if: needs.changes-filter.outputs.source == 'true'
+    if: >
+      github.repository == 'apache/nuttx' &&
+      needs.changes-filter.outputs.source == 'true'
     runs-on: ubuntu-latest
     env:
       DOCKER_BUILDKIT: 1
