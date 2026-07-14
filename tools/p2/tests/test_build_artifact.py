@@ -17,6 +17,27 @@ import build_artifact
 
 
 class BuildArtifactTests(unittest.TestCase):
+    def test_validate_toolchain_source_commits(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lock = pathlib.Path(temporary) / "toolchain.lock"
+            lock.write_text(
+                "nuttx_commit={}\nnuttx_apps_commit={}\n".format(
+                    "1" * 40, "2" * 40
+                ),
+                encoding="utf-8",
+            )
+
+            build_artifact.validate_toolchain_source_commits(
+                lock, "1" * 40, "2" * 40
+            )
+            with self.assertRaisesRegex(
+                build_artifact.BuildArtifactError,
+                "toolchain lock apps_commit .* does not match source",
+            ):
+                build_artifact.validate_toolchain_source_commits(
+                    lock, "1" * 40, "3" * 40
+                )
+
     def test_finalize_validate_and_detect_tampering(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)

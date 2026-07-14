@@ -84,6 +84,7 @@ nuttx_commit=$(git -C "$ROOT" rev-parse HEAD)
 apps_branch=$(git -C "$apps" branch --show-current)
 apps_commit=$(git -C "$apps" rev-parse HEAD)
 compiler=$("$P2LLVM_ROOT/bin/clang" --version | head -1)
+toolchain_lock=${P2_TOOLCHAIN_LOCK:-$ROOT/tools/p2/toolchain.lock}
 build_command="$ROOT/tools/p2/build.sh $requested"
 git -C "$ROOT" status --porcelain=v1 --untracked-files=all \
   > "$art/nuttx-source-status-before.txt"
@@ -103,7 +104,6 @@ finish()
     cp "$ROOT/.config" "$art/config"
   fi
 
-  local toolchain_lock=${P2_TOOLCHAIN_LOCK:-$ROOT/tools/p2/toolchain.lock}
   if [[ -f "$toolchain_lock" ]]; then
     cp "$toolchain_lock" "$art/toolchain.lock"
   fi
@@ -162,6 +162,10 @@ cd "$ROOT"
   echo "P2LLVM_ROOT=$P2LLVM_ROOT"
   echo "compiler=$compiler"
   echo "jobs=$jobs"
+  "$python" ./tools/p2/build_artifact.py \
+    --verify-toolchain-lock "$toolchain_lock" \
+    --nuttx-commit "$nuttx_commit" \
+    --apps-commit "$apps_commit"
   ./tools/configure.sh -E -a "$apps_arg" "$target"
   make olddefconfig
   make -j"$jobs" V=1

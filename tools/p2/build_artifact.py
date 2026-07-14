@@ -144,6 +144,25 @@ def _toolchain_source_commits(path: pathlib.Path) -> Dict[str, str]:
     return found
 
 
+def validate_toolchain_source_commits(
+    path: pathlib.Path, nuttx_commit: str, apps_commit: str
+) -> None:
+    """Require a bootstrap lock for the exact source revisions being built."""
+
+    locked_commits = _toolchain_source_commits(path)
+    expected = {
+        "nuttx_commit": nuttx_commit,
+        "apps_commit": apps_commit,
+    }
+    for key, value in expected.items():
+        if locked_commits[key] != value:
+            raise BuildArtifactError(
+                "toolchain lock {} {} does not match source {}".format(
+                    key, locked_commits[key], value
+                )
+            )
+
+
 def finalize_from_environment() -> None:
     env = os.environ
     root = pathlib.Path(env["P2_BUILD_ARTIFACT"]).resolve()
@@ -270,14 +289,16 @@ def load(
                     "build artifact {} proves the tree was dirty".format(name)
                 )
 
-    locked_commits = _toolchain_source_commits(root / "toolchain.lock")
-    for key in ("nuttx_commit", "apps_commit"):
-        if locked_commits[key] != status.get(key):
-            raise BuildArtifactError(
-                "embedded toolchain lock {} {} does not match artifact {}".format(
-                    key, locked_commits[key], status.get(key)
-                )
-            )
+    try:
+        validate_toolchain_source_commits(
+            root / "toolchain.lock",
+            str(status.get("nuttx_commit")),
+            str(status.get("apps_commit")),
+        )
+    except BuildArtifactError as exc:
+        raise BuildArtifactError(
+            str(exc).replace("toolchain lock", "embedded toolchain lock", 1)
+        ) from exc
 
     profile = status.get("profile")
     clock_hz = status.get("board_clock_hz")
@@ -327,10 +348,26 @@ def main(argv=None) -> int:
     parser.add_argument("--artifact", type=pathlib.Path)
     parser.add_argument("--image", type=pathlib.Path)
     parser.add_argument("--require-clean", action="store_true")
+    parser.add_argument("--verify-toolchain-lock", type=pathlib.Path)
+    parser.add_argument("--nuttx-commit")
+    parser.add_argument("--apps-commit")
     args = parser.parse_args(argv)
     try:
         if args.finalize_environment:
             finalize_from_environment()
+            return 0
+        if args.verify_toolchain_lock is not None:
+            if args.nuttx_commit is None or args.apps_commit is None:
+                parser.error(
+                    "--nuttx-commit and --apps-commit are required with "
+                    "--verify-toolchain-lock"
+                )
+            validate_toolchain_source_commits(
+                args.verify_toolchain_lock,
+                args.nuttx_commit,
+                args.apps_commit,
+            )
+            print("toolchain_lock_sources=verified")
             return 0
         if args.artifact is None:
             parser.error("--artifact is required when validating")
