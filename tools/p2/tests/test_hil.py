@@ -281,6 +281,14 @@ GOOD_NSH_AFTER_SLEEP = (
 ).replace(b"nsh> ", b"nsh> \x1b[K")
 
 GOOD_NSH_RESPONSE = GOOD_NSH_BEFORE_SLEEP + GOOD_NSH_AFTER_SLEEP
+CLE_NSH_PROMPT = b"\x1b[2Knsh> \x1b[?25l\x1b[K\x1b[?25h"
+
+
+def with_cle_nsh_prompts(output):
+    """Render every fixture prompt like the observed CONFIG_NSH_CLE console."""
+
+    without_legacy_erase = output.replace(b"nsh> \x1b[K", b"nsh> ")
+    return without_legacy_erase.replace(b"nsh> ", CLE_NSH_PROMPT)
 
 
 def full_ostest_config(assertions=False, priority_inheritance=True):
@@ -1909,6 +1917,41 @@ class HilTests(unittest.TestCase):
         self.assertEqual(markers["reset_count"], 1)
         for marker in hil.NSH_COMMAND_MARKERS:
             self.assertIn(marker.label, markers["found"])
+
+    def test_nsh_protocol_accepts_observed_cle_prompt_and_preserves_raw(self):
+        boot = GOOD_BOOT_OUTPUT + b"NuttShell (NSH)\r\n" + CLE_NSH_PROMPT
+        before_sleep = with_cle_nsh_prompts(GOOD_NSH_BEFORE_SLEEP)
+        after_sleep = with_cle_nsh_prompts(GOOD_NSH_AFTER_SLEEP)
+        expected_raw = boot + before_sleep + after_sleep
+        session = FakeSession(
+            self.clock,
+            [boot, before_sleep, 1.0, after_sleep],
+        )
+        factory = SessionFactory([session])
+        lock = RecordingLock()
+        argv = self.argv("nsh-cle") + ["--protocol", "nsh", "--timeout", "2"]
+
+        rc = self.invoke(argv, self.env(), factory, lock)
+
+        self.assertEqual(rc, hil.EXIT_OK)
+        self.assertEqual(session.writes, [hil.NSH_COMMAND_BYTES])
+        cycle = self.directory / "nsh-cle" / "cycle-001"
+        self.assertEqual((cycle / "console.raw").read_bytes(), expected_raw)
+        markers = json.loads((cycle / "markers.json").read_text())
+        self.assertTrue(markers["complete"])
+
+    def test_nsh_prompt_marker_still_accepts_plain_prompt(self):
+        prompt = next(
+            marker for marker in hil.NSH_MARKERS if marker.label == "nsh> prompt"
+        )
+        parser = hil.MarkerParser(
+            (prompt,),
+            reset_pattern=re.compile(r"P2BOOT:ENTRY"),
+        )
+
+        parser.feed("NuttShell (NSH)\r\nnsh> ")
+
+        self.assertTrue(parser.complete)
 
     def test_nsh_command_echo_without_specific_output_is_not_success(self):
         command_echo_only = b"help\r\nnsh> echo P2NSH:HELP=OK\r\n"

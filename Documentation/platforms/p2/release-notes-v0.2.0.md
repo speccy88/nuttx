@@ -15,8 +15,8 @@ Both images run flat, uniprocessor NuttX on cog 0 at 180 MHz.
 
 ## Included
 
-- NSH command-line editing, Tab completion, eight-entry history, and corrected
-  CR/LF, Backspace, arrow-key, and Ctrl-C handling for a serial terminal.
+- NSH command-line editing, eight-entry history, and corrected CR/LF,
+  Backspace, arrow-key, and Ctrl-C handling for a serial terminal.
 - The `vi` editor configured for an 80-by-24 terminal.
 - Compact Berry with 32-bit integers, single-precision floating point, the
   script compiler, filesystem support, bytecode saving, and a corrected raw
@@ -48,10 +48,8 @@ flow control and run:
 
 ```text
 nsh> help
-nsh> uname -a
-nsh> free
-nsh> mount
 nsh> ls -l /dev
+nsh> ls -l /mnt
 nsh> berry /etc/berry-p2/core_smoke.be
 ```
 

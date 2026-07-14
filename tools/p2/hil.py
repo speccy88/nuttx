@@ -117,7 +117,11 @@ NSH_SLEEP_START_LABEL = "NSH sleep 1 command echo"
 NSH_SLEEP_DONE_LABEL = "NSH sleep 1 returned and sentinel prompt"
 NSH_SLEEP_MIN_SECONDS = 0.75
 NSH_SLEEP_MAX_SECONDS = 3.0
-NSH_PROMPT_PATTERN = r"nsh> (?:\x1b\[K)?"
+ANSI_CSI_PATTERN = r"\x1b\[[0-?]*[ -/]*[@-~]"
+NSH_PROMPT_PATTERN = (
+    r"(?:" + ANSI_CSI_PATTERN + r")*nsh> " + r"(?:" + ANSI_CSI_PATTERN + r")*"
+)
+NSH_PROMPT_LINE_PATTERN = r"(?:^|[\r\n])" + NSH_PROMPT_PATTERN
 
 EXIT_OK = 0
 EXIT_SAFETY = 2
@@ -368,7 +372,7 @@ STORAGE_MARKERS = BOOT_MARKERS + (
         "P2STORAGE:MMCSD=/dev/mmcsd0",
         re.compile(r"P2STORAGE:MMCSD=/dev/mmcsd0"),
     ),
-    MarkerSpec("nsh> prompt", re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE)),
+    MarkerSpec("nsh> prompt", re.compile(NSH_PROMPT_LINE_PATTERN, re.MULTILINE)),
 )
 
 STORAGE_ACTION_BOOT_MARKERS = (
@@ -379,7 +383,7 @@ STORAGE_ACTION_BOOT_MARKERS = (
     + (
         MarkerSpec(
             "nsh> prompt",
-            re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE),
+            re.compile(NSH_PROMPT_LINE_PATTERN, re.MULTILINE),
             repeatable=True,
         ),
     )
@@ -464,7 +468,7 @@ NSH_COMMAND_MARKERS = (
 
 NSH_MARKERS = (
     BOOT_MARKERS
-    + (MarkerSpec("nsh> prompt", re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE)),)
+    + (MarkerSpec("nsh> prompt", re.compile(NSH_PROMPT_LINE_PATTERN, re.MULTILINE)),)
     + NSH_COMMAND_MARKERS
 )
 
@@ -1918,7 +1922,7 @@ def exact_protocol_markers(
         markers.append(
             MarkerSpec(
                 "nsh> prompt",
-                re.compile(r"(?:^|[\r\n])nsh> ", re.MULTILINE),
+                re.compile(NSH_PROMPT_LINE_PATTERN, re.MULTILINE),
                 repeatable=True,
             )
         )

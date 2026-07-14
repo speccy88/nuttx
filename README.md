@@ -93,10 +93,8 @@ At the prompt, run:
 
 ```text
 nsh> help
-nsh> uname -a
-nsh> free
-nsh> mount
 nsh> ls -l /dev
+nsh> ls -l /mnt
 nsh> berry /etc/berry-p2/core_smoke.be
 ```
 
@@ -401,7 +399,7 @@ clear **(10) = Line Feed**, leave **(13) = New Line** checked, then click
 **Enable**. Those PST settings make NuttX's `CR` advance the display while PST
 ignores the following `LF`, avoiding double-spaced output. PST is convenient
 for the prompt, line-oriented commands, and sensor output; use tio, screen,
-minicom, picocom, or PuTTY when testing raw Tab, arrow-history, or Ctrl-C key
+minicom, picocom, or PuTTY when testing arrow-history or Ctrl-C key
 sequences. Parallax's
 [PST setup guide](https://learn.parallax.com/kickstarts/using-the-parallax-serial-terminal/)
 shows the COM/baud/Enable workflow. Click **Disable**, then close PST when
@@ -417,35 +415,33 @@ Start by seeing what this compact image includes:
 
 ```text
 nsh> help
-nsh> uname -a
-nsh> uptime
-nsh> ps
-nsh> free
+nsh> pwd
 nsh> ls -l /dev
-nsh> mount
+nsh> ls -l /mnt
+nsh> berry /etc/berry-p2/core_smoke.be
 ```
 
-The base configuration enables eight-entry command history and completion.
-Type the first four letters below, press Tab, then type ` -a` and Enter:
+The base configuration enables cursor editing and eight-entry command history.
+For a visible cursor-editing check, type the text below without pressing Enter,
+press Left-arrow once, insert the missing `O`, and then press Enter:
 
 ```text
-nsh> unam<Tab> -a
+nsh> echo P2CLE:EDIT=GOD<Left-arrow>O<Enter>
 ```
 
-Use `unam<Tab>`, not `una<Tab>`: `una` is ambiguous with `unalias`. To check
-history, run a visible marker and then press Up-arrow and Enter:
+The result should be `P2CLE:EDIT=GOOD`. To check history, run a visible marker
+and then press Up-arrow and Enter:
 
 ```text
 nsh> echo P2HISTORY:PASS
 ```
 
-The shell is configured so Ctrl-C interrupts the foreground command and
-returns the prompt. A safe manual check is to run `sleep 30`, press Ctrl-C, and
-confirm that `nsh>` returns before 30 seconds.
+For a safe foreground Ctrl-C check, run `berry`, wait for its `>` prompt, press
+Ctrl-C, and confirm that `nsh>` returns.
 
 Useful low-footprint commands include `cat`, `cp`, `echo`, `hexdump`, `kill`,
-`ls`, `mkdir`, `mount`, `mv`, `ps`, `rm`, `rmdir`, `sleep`, `umount`, and the
-included `berry`, `vi`, `leds`, and non-destructive `p2storage` commands. The
+`ls`, `mkdir`, `mount`, `pwd`, `rm`, `test`, `umount`, and the included
+`berry`, `vi`, `leds`, and non-destructive `p2storage` commands. The
 larger floating-point `dd` statistics path is deliberately not in this image;
 use normal file commands and `hexdump` instead.
 
