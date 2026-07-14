@@ -306,8 +306,8 @@ host/static checks, clean dual-board builds, flash programming, and ten-cycle
 reset-only flash-boot proof are complete.  Exact-candidate SD writing and
 raw-card inspection plus its no-loader SD-only ROM reset are also complete.
 The local 20-file package, all six installer dry-runs, extracted-bundle
-verification, one fresh GitHub pre-publication draft download, normal release,
-and both fork-master fast-forwards are complete.  The superseded draft PR is
+verification, one fresh post-publication GitHub download, normal release, and
+both fork-master fast-forwards are complete.  The superseded draft PR is
 closed.  The flat-UP release closure is complete.
 Fixture-dependent gaps remain named rather than being converted into support
 claims; the explicitly deferred SMP work is not part of this finish gate.
