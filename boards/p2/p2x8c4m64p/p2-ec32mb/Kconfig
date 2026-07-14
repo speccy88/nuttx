@@ -3,6 +3,14 @@ if ARCH_BOARD_P2_EC32MB || ARCH_BOARD_P2_EC
 config BOARD_LOOPSPERMSEC
 	int
 	default 18000
+
+config P2_EDGE_BASE_IMAGE
+	bool "Identify the Berry/CLE/vi base image"
+	default n
+	help
+		Emit the P2BASE boot marker used to qualify the common flat base image
+		for P2-EC32MB Rev B and P2-EC Rev D.
+
 config P2_EC32MB_STORAGE_BINDINGS
 	bool "Bind the onboard flash and microSD drivers during late init"
 	default y
@@ -14,6 +22,17 @@ config P2_EC32MB_STORAGE_BINDINGS
 		is bound only to the board's data partition.  The MMC/SD SPI driver
 		registers /dev/mmcsd0 even when no card responds.  This option does
 		not automatically format or mount either medium.
+
+config P2_EC32MB_SDCARD_AUTOMOUNT
+	bool "Mount the existing microSD FAT filesystem at /mnt/sd"
+	default n
+	depends on P2_EC32MB_STORAGE_BINDINGS && MMCSD_SPI && FS_FAT
+	depends on ETC_ROMFS && SYSTEM_NSH
+	help
+		Mount /dev/mmcsd0 as vfat at /mnt/sd from the board rcS script.
+		The card must be inserted at boot because this socket has no
+		card-detect GPIO.  Mount failure is reported and never triggers
+		automatic formatting.
 
 config P2_EC32MB_W25_PROBE_FREQUENCY
 	int "W25 wake and JEDEC probe frequency"

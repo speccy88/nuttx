@@ -56,7 +56,8 @@
       defined(CONFIG_FSUTILS_MKSMARTFS) || defined(CONFIG_FSUTILS_MKFATFS)
 #    error "P2 flashboot image must not contain destructive storage tools"
 #  endif
-#  ifndef CONFIG_TESTING_P2STORAGE_FLASH_PREMOUNTED
+#  if defined(CONFIG_TESTING_P2STORAGE) && \
+      !defined(CONFIG_TESTING_P2STORAGE_FLASH_PREMOUNTED)
 #    error "P2 flashboot verification requires the premounted read path"
 #  endif
 #  ifndef CONFIG_BOARDCTL_RESET

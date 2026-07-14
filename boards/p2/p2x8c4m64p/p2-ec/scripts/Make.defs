@@ -25,7 +25,11 @@ ARCHSCRIPT += $(P2_EDGE_SHARED)$(DELIM)scripts$(DELIM)ld.script
 
 ARCHCPUFLAGS = --target=p2 -fno-jump-tables -fno-builtin -fno-common -ffunction-sections -fdata-sections
 ARCHWARNINGS = -Wall -Wextra -Wshadow -Wundef -Wstrict-prototypes
+ifeq ($(CONFIG_DEBUG_CUSTOMOPT),y)
+ARCHOPTIMIZATION = $(CONFIG_DEBUG_OPTLEVEL)
+else
 ARCHOPTIMIZATION ?= -Os
+endif
 ARCHINCLUDES = -I$(TOPDIR)$(DELIM)include
 CFLAGS = $(ARCHCPUFLAGS) $(ARCHWARNINGS) $(ARCHOPTIMIZATION) $(ARCHINCLUDES) $(EXTRAFLAGS)
 CXXFLAGS = $(ARCHCPUFLAGS) $(ARCHWARNINGS) $(ARCHOPTIMIZATION) $(ARCHINCLUDES) $(EXTRAFLAGS)

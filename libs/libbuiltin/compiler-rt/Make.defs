@@ -86,12 +86,31 @@ FLAGS += ${INCDIR_PREFIX}$(CURDIR)/compiler-rt/compiler-rt/lib/builtins
 
 FLAGS += -Wno-undef -Wno-macro-redefined
 
+ifeq ($(CONFIG_ARCH_P2),y)
+
+# P2LLVM does not install a target compiler-rt archive.  Build only the
+# single-precision helpers emitted by the current P2 backend; the port already
+# provides its integer and 64-bit shift/divide helpers in p2_softarith.c.
+
+P2_COMPILER_RT_SRCS = addsf3.c comparesf2.c divsf3.c extendsfdf2.c
+P2_COMPILER_RT_SRCS += fixsfsi.c floatsisf.c floatunsisf.c mulsf3.c
+P2_COMPILER_RT_SRCS += fp_mode.c subsf3.c truncdfsf2.c
+P2_COMPILER_RT_PATHS = $(addprefix compiler-rt/compiler-rt/lib/builtins/,$(P2_COMPILER_RT_SRCS))
+CSRCS += $(P2_COMPILER_RT_PATHS)
+FLAGS += -D__ELF__
+
+$(P2_COMPILER_RT_PATHS): compiler-rt
+
+else
+
 CSRCS += $(wildcard compiler-rt/compiler-rt/lib/builtins/*.c)
 
 ifneq ($(ARCH),)
 FLAGS += ${INCDIR_PREFIX}$(CURDIR)/compiler-rt/compiler-rt/lib/builtins/${ARCH}
 ASRCS += $(wildcard compiler-rt/compiler-rt/lib/builtins/$(ARCH)/*.S)
 CSRCS += $(wildcard compiler-rt/compiler-rt/lib/builtins/$(ARCH)/*.c)
+endif
+
 endif
 
 ifeq ($(CONFIG_LIB_COMPILER_RT_HAS_BFLOAT16),)

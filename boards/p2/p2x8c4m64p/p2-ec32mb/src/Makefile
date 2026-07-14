@@ -48,6 +48,10 @@ endif
 
 ifeq ($(CONFIG_ETC_ROMFS),y)
 RCSRCS = etc/init.d/rc.sysinit etc/init.d/rcS
+
+ifeq ($(CONFIG_INTERPRETERS_BERRY),y)
+RCRAWS += etc/berry-p2/core_smoke.be
+endif
 endif
 
 include $(TOPDIR)/boards/Board.mk

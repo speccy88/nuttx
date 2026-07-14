@@ -19,7 +19,7 @@ choice
 
 config BUILTIN_COMPILER_RT
 	bool "Builtin LLVM libclang_rt.builtins"
-	depends on ARCH_TOOLCHAIN_GNU
+	depends on ARCH_TOOLCHAIN_GNU || ARCH_P2
 	select LIB_BUILTIN
 	select LIB_COMPILER_RT
 	---help---

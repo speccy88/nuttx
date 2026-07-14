@@ -385,13 +385,14 @@ static void spi_exchange(FAR struct spi_dev_s *dev,
              *dest++ = (uint8_t)(datain >> 8);
 #endif
             }
-#else
-          *dest++ = (uint8_t)datain;
+          else
 #endif
+            {
+              *dest++ = (uint8_t)datain;
+            }
         }
     }
 }
-
 /****************************************************************************
  * Name: spi_sndblock
  *
@@ -558,4 +559,3 @@ void spi_destroy_bitbang(FAR struct spi_dev_s *dev)
   DEBUGASSERT(dev);
   kmm_free(dev);
 }
-

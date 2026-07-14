@@ -112,7 +112,7 @@ ensure_checkout()
 
 ensure_apps_checkout()
 {
-  if [[ ! -d "$APPS_DIR/.git" ]]; then
+  if ! git -C "$APPS_DIR" rev-parse --git-dir >/dev/null 2>&1; then
     ensure_checkout nuttx-apps "$APPS_URL" "$APPS_DIR" "$APPS_REF"
     return
   fi
@@ -447,6 +447,47 @@ p2llvm_bool_memory_valid()
   rm -rf "$probe_dir"
 }
 
+p2llvm_conditional_branch_valid()
+{
+  local probe_dir
+  local source=$ROOT/tools/p2/probes/p2llvm-tj-fallthrough.ll
+  local object
+  local disassembly
+  local optimization
+
+  p2llvm_tools_valid || return 1
+  [[ -f "$source" ]] || return 1
+  probe_dir=$(mktemp -d "$CACHE/p2-conditional-branch-probe.XXXXXX") ||
+    return 1
+
+  for optimization in O0 Os O2
+  do
+    object=$probe_dir/probe-$optimization.o
+    disassembly=$probe_dir/probe-$optimization.dis
+
+    if ! "$P2LLVM_ROOT/bin/clang" --target=p2 -"$optimization" \
+         -fno-jump-tables -ffunction-sections -fdata-sections \
+         -x ir -c "$source" -o "$object" ||
+       ! "$P2LLVM_ROOT/bin/llvm-objdump" -d "$object" \
+         > "$disassembly" ||
+       grep -Eq 'tjnz[[:space:]]+r[0-9]+,[[:space:]]+#0([[:space:]]|$)' \
+         "$disassembly";
+    then
+      rm -rf "$probe_dir"
+      return 1
+    fi
+
+    if [[ "$optimization" != O0 ]] &&
+       ! grep -Eq 'tjnz[[:space:]]+r[0-9]+,' "$disassembly";
+    then
+      rm -rf "$probe_dir"
+      return 1
+    fi
+  done
+
+  rm -rf "$probe_dir"
+}
+
 p2llvm_compare64_valid()
 {
   p2llvm_tools_valid || return 1
@@ -460,6 +501,7 @@ p2llvm_valid()
   p2llvm_preemption_valid || return 1
   p2llvm_linker_aug20_valid || return 1
   p2llvm_bool_memory_valid || return 1
+  p2llvm_conditional_branch_valid || return 1
   p2llvm_compare64_valid || return 1
   [[ -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]] || return 1
   [[ -f "$P2LLVM_ROOT/libp2/include/propeller2.h" ]] || return 1
@@ -567,7 +609,8 @@ build_p2llvm()
     die "p2llvm compiler and LLVM tools did not satisfy their postconditions"
 
   if ! p2llvm_preemption_valid || ! p2llvm_linker_aug20_valid ||
-     ! p2llvm_bool_memory_valid || ! p2llvm_compare64_valid;
+     ! p2llvm_bool_memory_valid || ! p2llvm_conditional_branch_valid ||
+     ! p2llvm_compare64_valid;
   then
     (
       cd "$P2LLVM_SRC"
@@ -583,6 +626,8 @@ build_p2llvm()
     die "p2llvm linker does not safely reject offset-zero R_P2_AUG20"
   p2llvm_bool_memory_valid ||
     die "p2llvm does not correctly select global/static i1 memory operations"
+  p2llvm_conditional_branch_valid ||
+    die "p2llvm loses the fallthrough of conditional TJZ/TJNZ branches"
   "$PYTHON" "$ROOT/tools/p2/compare64_codegen.py" \
     --toolchain-root "$P2LLVM_ROOT" ||
     die "p2llvm does not correctly lower 64-bit comparisons"
@@ -663,6 +708,7 @@ write_lock()
     echo "p2llvm_preempt_safe_integer=verified q-free Hub libcalls and limb-expanded mulh"
     echo "p2llvm_linker_aug20_guard=verified offset-zero rejection and explicit-AUGS link"
     echo "p2llvm_bool_memory=verified global/static i1 loads and stores at O0 Os O2"
+    echo "p2llvm_conditional_branch=verified TJZ/TJNZ fallthrough at O0 Os O2"
     echo "p2llvm_compare64=verified high-first signed/unsigned limb comparisons at O0 Os O2"
     echo "p2llvm_preempt_patch=$(basename "$P2LLVM_PATCH")"
     echo "p2llvm_darwin_cmake=-DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_LIBXML2=OFF -DCMAKE_DISABLE_FIND_PACKAGE_Backtrace:BOOL=TRUE"

@@ -23,6 +23,27 @@ fi
 
 #endif
 
+#ifdef CONFIG_P2_EC32MB_SDCARD_AUTOMOUNT
+
+if [ -e /dev/mmcsd0 ]
+then
+  mkdir -p /mnt/sd
+  if mount -t vfat /dev/mmcsd0 /mnt/sd
+  then
+    echo P2STORAGE:SD=/dev/mmcsd0@/mnt/sd:MOUNTED:AUTOFORMAT=NO
+  else
+    echo P2STORAGE:SD=/dev/mmcsd0@/mnt/sd:FAIL:AUTOFORMAT=NO
+  fi
+else
+  echo P2STORAGE:SD=UNAVAILABLE
+fi
+
+#endif
+
 #ifdef CONFIG_SYSTEM_P2HELP
 echo P2SHOWCASE:READY:BOARD=p2-ec32mb:RUN=p2help
+#endif
+
+#ifdef CONFIG_P2_EDGE_BASE_IMAGE
+echo P2BASE:READY:BOARD=p2-ec32mb:APPS=berry,vi
 #endif

@@ -4,6 +4,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+caller_apps=${NUTTX_APPS_DIR:-}
 
 if [[ -f "$HOME/.p2-nuttx-env" ]]; then
   # shellcheck disable=SC1091
@@ -13,6 +14,14 @@ fi
 if [[ -f "$ROOT/.p2-hil.env" ]]; then
   # shellcheck disable=SC1091
   source "$ROOT/.p2-hil.env"
+fi
+
+# An explicit per-build apps checkout must win over convenience defaults from
+# the persistent environment files.  This keeps isolated release worktrees
+# paired with the intended nuttx-apps revision.
+
+if [[ -n "$caller_apps" ]]; then
+  NUTTX_APPS_DIR=$caller_apps
 fi
 
 requested=${1:-bringup}
@@ -188,13 +197,65 @@ rm -f "$unsafe_relocs"
 
 cp nuttx nuttx.map System.map "$art/"
 "$P2LLVM_ROOT/bin/llvm-objcopy" -O binary nuttx nuttx.bin
+./tools/p2/report-memory.sh nuttx.map nuttx.bin | tee "$art/memory.txt"
 
-if [[ "$cfg" == "flashboot" || "$cfg" == "showcase" ]] &&
+if [[ "$cfg" == "flashboot" || "$cfg" == "showcase" || "$cfg" == "base" ]] &&
    ! LC_ALL=C grep -aFq \
      'P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash:MOUNTED:AUTOFORMAT=NO:DESTRUCTIVE_HANDLERS=ABSENT' \
      nuttx.bin; then
   echo "ERROR: $target flashboot image does not contain the startup mount marker" >&2
   exit 1
+fi
+
+if [[ "$cfg" == "base" ]]; then
+  sd_boot_max=491516
+  minimum_heap=81920
+  image_bytes=$(wc -c < nuttx.bin | tr -d '[:space:]')
+  heap_bytes=$(sed -n \
+    's/^P2MEM:HEAP=.*:BYTES=\([0-9][0-9]*\):.*/\1/p' \
+    "$art/memory.txt")
+
+  if (( image_bytes > sd_boot_max )); then
+    echo "ERROR: $target image is $image_bytes bytes; serial SD writer limit is $sd_boot_max" >&2
+    exit 1
+  fi
+  if [[ ! "$heap_bytes" =~ ^[0-9]+$ ]] || (( heap_bytes < minimum_heap )); then
+    echo "ERROR: $target leaves ${heap_bytes:-unknown} Hub heap bytes; base minimum is $minimum_heap" >&2
+    exit 1
+  fi
+  if ! LC_ALL=C grep -aFq \
+       "P2BASE:READY:BOARD=$board:APPS=berry,vi" nuttx.bin; then
+    echo "ERROR: $target image does not contain its board-specific base marker" >&2
+    exit 1
+  fi
+
+  for required in \
+    CONFIG_INTERPRETERS_BERRY=y \
+    CONFIG_NSH_CLE=y \
+    CONFIG_SYSTEM_CLE=y \
+    CONFIG_SYSTEM_VI=y \
+    CONFIG_P2_EC32MB_SDCARD_AUTOMOUNT=y
+  do
+    LC_ALL=C grep -Fqx "$required" .config ||
+      { echo "ERROR: $target is missing $required" >&2; exit 1; }
+  done
+
+  for forbidden in \
+    CONFIG_ELF=y \
+    CONFIG_MODULES=y \
+    CONFIG_NSH_FILE_APPS=y \
+    CONFIG_NSH_READLINE=y \
+    CONFIG_GRAPHICS_LVGL=y \
+    CONFIG_LCD=y \
+    CONFIG_VIDEO=y \
+    CONFIG_INPUT=y \
+    CONFIG_INTERPRETERS_BERRY_LVGL=y
+  do
+    if LC_ALL=C grep -Fqx "$forbidden" .config; then
+      echo "ERROR: $target unexpectedly enables $forbidden" >&2
+      exit 1
+    fi
+  done
 fi
 
 if [[ "$cfg" == "showcase" ]]; then
