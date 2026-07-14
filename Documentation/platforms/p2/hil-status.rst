@@ -244,10 +244,10 @@ the target reproduced FNV-1a ``D0D0F215``.  Independent SD-only reset boot is
 entry/data/BSS/NuttX, W25-off, microSD, SmartFS-unavailable, showcase, and NSH
 markers.  The boot status SHA-256 is
 ``61534212bd8bcf9f4ca996d36731c0e612951d7d9554c96ff360aaf607a3e758``.
-The release package, extracted-bundle verification, one fresh GitHub
-pre-publication draft download, and publication are **PASS**.  The public,
-normal ``p2-edge-flat-up-v0.1.0`` release contains all 20 byte-matched assets;
-all 19 recorded checksums and the bundled verifier passed after restoring the
+The release package, extracted-bundle verification, one fresh GitHub release
+download, and publication are **PASS**.  The public, normal
+``p2-edge-flat-up-v0.1.1`` release contains all 20 byte-matched assets; all 19
+recorded checksums and the bundled verifier passed after restoring the
 standalone-download executable mode bits.
 
 The fresh ABI run is **PASS** at

@@ -42,8 +42,8 @@ RAM showcase HIL, flash-programming HIL, and ten completed hash-bound
 reset-only flash boots.  Its exact SD write and read-only ROM-layout inspection
 plus its final no-loader SD-only ROM reset are also PASS.  The 20-file local
 package, all six installer dry-runs, extracted-bundle verification, one fresh
-GitHub pre-publication draft download, and publication are also PASS.  The
-public, normal ``p2-edge-flat-up-v0.1.0`` release contains all 20 assets.  Both
+GitHub release download, and publication are also PASS.  The public, normal
+``p2-edge-flat-up-v0.1.1`` release contains all 20 assets.  Both
 fork masters contain the completed paired work, and the superseded draft PR is
 closed.
 
@@ -1712,8 +1712,8 @@ acceptance blockers.
      - Add controlled power removal during a bounded data-partition write and
        verify recovery plus unchanged boot CRC
    * - GitHub publication
-     - **PASS**; the public, normal ``p2-edge-flat-up-v0.1.0`` release has
-       exactly 20 assets, and one fresh pre-publication draft download passed
+     - **PASS**; the public, normal ``p2-edge-flat-up-v0.1.1`` release has
+       exactly 20 assets, and one fresh release download passed
        byte comparison, all 19 checksums, and the verifier after executable
        modes were restored
      - No further closure is required for this release goal

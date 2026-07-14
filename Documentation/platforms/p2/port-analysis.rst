@@ -118,14 +118,14 @@ SHA-256
 ``ba91f6134733cfd5d0e02725d4ed64af1786f4b30e11ebe18a548dc4160e95a0``.
 The toolchain lock has SHA-256
 ``66871ac6bb8a96fbea5b5fc405e6a1a3743fa6c441775737cab80066678250aa``.
-The authoritative paired-tree host suite passed 316 tests in 19.629 seconds.
+The final P2 host suite passed 318 tests in 20.688 seconds.
 The 20-file local release package and extracted-bundle verification are
 **PASS**; its bundle SHA-256 is
-``07604e5f5977570c9ea1c2fd9c7696a62be03035fb69496aefabee84c3f03358``.
-The public, normal ``p2-edge-flat-up-v0.1.0`` release contains all 20 assets.
-One fresh pre-publication draft download matched every local asset byte for
-byte, passed all 19 recorded checksums, and passed the bundled verifier after
-restoring the standalone-download executable mode bits.
+``ca479efcb599d5fce60720d1a9ffaff696468be71f36c6b779a610f905a29e45``.
+The public, normal ``p2-edge-flat-up-v0.1.1`` release contains all 20 assets.
+One fresh release download matched every local asset byte for byte, passed all
+19 recorded checksums, and passed the bundled verifier after restoring the
+standalone-download executable mode bits.
 
 Unsupported or incomplete areas
 -------------------------------
