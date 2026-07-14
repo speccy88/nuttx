@@ -15,6 +15,17 @@ config P2_EC32MB_STORAGE_BINDINGS
 		registers /dev/mmcsd0 even when no card responds.  This option does
 		not automatically format or mount either medium.
 
+config P2_EC32MB_SDCARD_AUTOMOUNT
+	bool "Mount the existing microSD FAT filesystem at /mnt/sd"
+	default n
+	depends on P2_EC32MB_STORAGE_BINDINGS && MMCSD_SPI && FS_FAT
+	depends on ETC_ROMFS && SYSTEM_NSH
+	help
+		Mount /dev/mmcsd0 as vfat at /mnt/sd from the board rcS script.
+		The card must be inserted at boot because this socket has no
+		card-detect GPIO.  Mount failure is reported and never triggers
+		automatic formatting.
+
 config P2_EC32MB_W25_PROBE_FREQUENCY
 	int "W25 wake and JEDEC probe frequency"
 	default 400000
@@ -265,8 +276,105 @@ config P2_EC32MB_SPI_CS_PIN
 config P2_EC32MB_SPI_MAX_FREQUENCY
 	int "General-purpose SPI maximum frequency"
 	default 100000
-	range 1000 100000
+	range 1000 5000000
 	depends on P2_EC32MB_SPI
+	help
+		Limit the requested bit-bang clock.  The loopback profiles retain the
+		conservative 100-kHz default; the ILI9341 profile uses 2 MHz.
+
+config P2_EC32MB_ILI9341_XPT2046
+	bool "Bind the P6-P13 ILI9341/XPT2046 display module"
+	default n
+	depends on P2_EC32MB_SPI
+	depends on LCD_ILI9341 && LCD_DEV
+	depends on INPUT_ADS7843E
+	select SYSTEMTICK_HOOK
+	help
+		Bind a 240x320 ILI9341 SPI LCD as /dev/lcd0 and its shared-bus
+		XPT2046-compatible resistive touchscreen as /dev/input0.  Profiles may
+		also enable LCD_FRAMEBUFFER and VIDEO_FB to expose /dev/fb0.  CLK, MOSI,
+		and MISO use the configurable SPI pins.  The default remaining wiring
+		is RESET=P9, DC=P10, LCD CS=P11 (the primary SPI CS), touch CS=P12,
+		and active-low PEN=P13.  BLK is externally tied to 3.3 V and is not
+		driven by a P2 pin.
+
+config P2_EC32MB_ILI9341_RESET_PIN
+	int "ILI9341 reset pin"
+	default 9
+	range 0 37 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
+	depends on P2_EC32MB_ILI9341_XPT2046
+
+config P2_EC32MB_ILI9341_DC_PIN
+	int "ILI9341 data/command pin"
+	default 10
+	range 0 37 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
+	depends on P2_EC32MB_ILI9341_XPT2046
+
+config P2_EC32MB_ILI9341_FREQUENCY
+	int "ILI9341 SPI frequency"
+	default 2000000
+	range 100000 5000000
+	depends on P2_EC32MB_ILI9341_XPT2046
+
+config P2_EC32MB_XPT2046_CS_PIN
+	int "XPT2046 chip-select pin"
+	default 12
+	range 0 37 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
+	depends on P2_EC32MB_ILI9341_XPT2046
+
+config P2_EC32MB_XPT2046_PEN_PIN
+	int "XPT2046 active-low PEN pin"
+	default 13
+	range 0 37 if ARCH_BOARD_P2_EC32MB
+	range 0 55 if ARCH_BOARD_P2_EC
+	depends on P2_EC32MB_ILI9341_XPT2046
+
+config P2_EC32MB_TOUCHPEN_GPIO_ONLY
+	bool "Disable the PENIRQ-driven ADS7843E worker"
+	default n
+	depends on P2_EC32MB_ILI9341_XPT2046
+	help
+		Claim and configure the PEN pin as a GPIO input without registering
+		the ADS7843E worker or /dev/input0.  This supports the SPI-free
+		p2touchcal --pen diagnostic and direct XPT2046 pressure polling by the
+		P2 LVGL demo.
+
+config P2_EC32MB_TOUCHPEN_FLOAT_INPUT
+	bool "Leave diagnostic PEN input electrically floating"
+	default n
+	depends on P2_EC32MB_TOUCHPEN_GPIO_ONLY
+	help
+		Disable the P2's internal PEN pull-up.  The pin is sampled with DIR low
+		and WRPIN zero so only the module or external wiring determines its
+		level.
+
+config P2_EC32MB_LVGL_AUTOSTART
+	bool "Start the small P2 LVGL demo from rcS"
+	default n
+	depends on P2_EC32MB_ILI9341_XPT2046 && EXAMPLES_P2LVGL && ETC_ROMFS
+	help
+		Start p2lvgl in the background after NSH initialization.  The NSH
+		console remains available at 230400 baud.
+
+config P2_EC32MB_TOUCHCAL_AUTOSTART
+	bool "Start the P2 framebuffer touch calibrator from rcS"
+	default n
+	depends on P2_EC32MB_ILI9341_XPT2046 && EXAMPLES_P2TOUCHCAL && ETC_ROMFS
+	help
+		Start the four-corner p2touchcal utility after NSH initialization.
+		Use this in a dedicated calibration image, not concurrently with the
+		LVGL demo.
+
+config P2_EC32MB_TOUCHPEN_AUTOSTART
+	bool "Start the P2 GPIO-only touch PEN diagnostic from rcS"
+	default n
+	depends on P2_EC32MB_ILI9341_XPT2046 && EXAMPLES_P2TOUCHCAL && ETC_ROMFS
+	help
+		Start p2touchcal --pen after NSH initialization.  This diagnostic reads
+		only the configured PEN GPIO and performs no XPT2046 SPI transactions.
 
 config P2_EC32MB_I2C
 	bool "Register the P24/P25 open-drain I2C controller"

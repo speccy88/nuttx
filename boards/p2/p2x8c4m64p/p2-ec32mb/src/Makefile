@@ -33,6 +33,10 @@ ifeq ($(CONFIG_P2_EC32MB_SPI),y)
 CSRCS += p2_ec32mb_spi.c
 endif
 
+ifeq ($(CONFIG_P2_EC32MB_ILI9341_XPT2046),y)
+CSRCS += p2_ec32mb_lcd.c p2_ec32mb_touch.c
+endif
+
 ifeq ($(CONFIG_P2_EC32MB_I2C),y)
 CSRCS += p2_ec32mb_i2c.c
 endif
@@ -48,6 +52,12 @@ endif
 
 ifeq ($(CONFIG_ETC_ROMFS),y)
 RCSRCS = etc/init.d/rc.sysinit etc/init.d/rcS
+
+ifneq ($(filter y,$(CONFIG_INTERPRETERS_BERRY_LVGL) $(CONFIG_SYSTEM_P2BANK)),)
+RCRAWS += etc/berry-p2/core_smoke.be
+RCRAWS += etc/berry-p2/lvgl_bars.be
+RCRAWS += etc/berry-p2/lvgl_widgets.be
+endif
 endif
 
 include $(TOPDIR)/boards/Board.mk

@@ -1,5 +1,9 @@
 CMN_ASRCS += p2_context.S p2_serial_rx.S
 
+ifeq ($(CONFIG_ARCH_SETJMP_H),y)
+CMN_ASRCS += p2_setjmp.S
+endif
+
 CMN_CSRCS += p2_initialize.c p2_irq.c p2_timer.c p2_serial.c p2_delay.c
 CMN_CSRCS += p2_initialstate.c p2_switchcontext.c p2_allocateheap.c
 CMN_CSRCS += p2_stack.c p2_registerdump.c p2_asserts.c p2_softarith.c

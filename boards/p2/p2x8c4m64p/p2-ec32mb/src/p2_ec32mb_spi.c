@@ -45,6 +45,7 @@
 #define P2_SPI_CLAIM_MOSI          (1u << 1)
 #define P2_SPI_CLAIM_SCK           (1u << 2)
 #define P2_SPI_CLAIM_CS            (1u << 3)
+#define P2_SPI_CLAIM_TOUCH_CS      (1u << 4)
 
 #if CONFIG_P2_EC32MB_SPI_MOSI_PIN == CONFIG_P2_EC32MB_SPI_MISO_PIN || \
     CONFIG_P2_EC32MB_SPI_MOSI_PIN == CONFIG_P2_EC32MB_SPI_SCK_PIN || \
@@ -53,6 +54,15 @@
     CONFIG_P2_EC32MB_SPI_MISO_PIN == CONFIG_P2_EC32MB_SPI_CS_PIN || \
     CONFIG_P2_EC32MB_SPI_SCK_PIN == CONFIG_P2_EC32MB_SPI_CS_PIN
 #  error "P2 general-purpose SPI pins must be distinct"
+#endif
+
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+#  if CONFIG_P2_EC32MB_XPT2046_CS_PIN == CONFIG_P2_EC32MB_SPI_MOSI_PIN || \
+      CONFIG_P2_EC32MB_XPT2046_CS_PIN == CONFIG_P2_EC32MB_SPI_MISO_PIN || \
+      CONFIG_P2_EC32MB_XPT2046_CS_PIN == CONFIG_P2_EC32MB_SPI_SCK_PIN || \
+      CONFIG_P2_EC32MB_XPT2046_CS_PIN == CONFIG_P2_EC32MB_SPI_CS_PIN
+#    error "P2 XPT2046 chip select must be distinct from the SPI pins"
+#  endif
 #endif
 
 #if CONFIG_P2_EC32MB_SPI_MAX_FREQUENCY <= 0
@@ -142,6 +152,20 @@ static void p2_spi_pin_write(unsigned int pin, bool high)
     }
 }
 
+static bool p2_spi_device_supported(uint32_t devid)
+{
+  if (devid == SPIDEV_USER(0))
+    {
+      return true;
+    }
+
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+  return devid == SPIDEV_DISPLAY(0) || devid == SPIDEV_TOUCHSCREEN(0);
+#else
+  return false;
+#endif
+}
+
 static bool p2_spi_pin_read(unsigned int pin)
 {
   unsigned int value;
@@ -175,14 +199,21 @@ static void p2_spi_release(FAR struct p2_spi_lower_s *priv)
 {
   if (priv->outputs_enabled)
     {
-      /* Deassert the unconnected chip select before disabling any source.
-       * Release the P6 source before the directly-jumpered P7 input.
+      /* Deassert every chip select before disabling the shared sources.
+       * In the display profile the pin manager restores chip selects high;
+       * the loopback profile retains its historical floating safe state.
        */
 
       p2_sp_out_high(CONFIG_P2_EC32MB_SPI_CS_PIN);
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+      p2_sp_out_high(CONFIG_P2_EC32MB_XPT2046_CS_PIN);
+#endif
       p2_sp_dir_low(CONFIG_P2_EC32MB_SPI_MOSI_PIN);
       p2_sp_dir_low(CONFIG_P2_EC32MB_SPI_SCK_PIN);
       p2_sp_dir_low(CONFIG_P2_EC32MB_SPI_CS_PIN);
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+      p2_sp_dir_low(CONFIG_P2_EC32MB_XPT2046_CS_PIN);
+#endif
       priv->outputs_enabled = false;
     }
 
@@ -203,6 +234,14 @@ static void p2_spi_release(FAR struct p2_spi_lower_s *priv)
       p2_pin_release(CONFIG_P2_EC32MB_SPI_CS_PIN,
                      P2_PIN_OWNER_SPI);
     }
+
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+  if ((priv->claims & P2_SPI_CLAIM_TOUCH_CS) != 0)
+    {
+      p2_pin_release(CONFIG_P2_EC32MB_XPT2046_CS_PIN,
+                     P2_PIN_OWNER_SPI);
+    }
+#endif
 
   if ((priv->claims & P2_SPI_CLAIM_MISO) != 0)
     {
@@ -234,12 +273,22 @@ static int p2_spi_activate(FAR struct p2_spi_lower_s *priv)
     .smartpin_mode = P2_SMARTPIN_MODE_DISABLED,
   };
 
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+  static const struct p2_pin_config_s chip_select =
+  {
+    .direction = P2_PIN_DIRECTION_OUTPUT,
+    .drive = P2_PIN_DRIVE_PUSH_PULL,
+    .event = P2_PIN_EVENT_NONE,
+    .safe = P2_PIN_SAFE_HIGH,
+    .smartpin_mode = P2_SMARTPIN_MODE_DISABLED,
+  };
+#endif
+
   bool clock_high;
   int ret;
 
-  /* Claims do not drive a pin.  Claim and configure the P7 receiver before
-   * the P6 source, then prepare the deliberately-unconnected P8 clock and
-   * P9 chip select.
+  /* Claims do not drive a pin.  Claim and configure the receiver before
+   * the source, then prepare the clock and all chip selects.
    */
 
   ret = p2_spi_claim(priv, CONFIG_P2_EC32MB_SPI_MISO_PIN,
@@ -270,6 +319,15 @@ static int p2_spi_activate(FAR struct p2_spi_lower_s *priv)
       goto fail;
     }
 
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+  ret = p2_spi_claim(priv, CONFIG_P2_EC32MB_XPT2046_CS_PIN,
+                     P2_SPI_CLAIM_TOUCH_CS);
+  if (ret < 0)
+    {
+      goto fail;
+    }
+#endif
+
   ret = p2_pin_configure(CONFIG_P2_EC32MB_SPI_MISO_PIN,
                          P2_PIN_OWNER_SPI, &input);
   if (ret < 0)
@@ -292,11 +350,25 @@ static int p2_spi_activate(FAR struct p2_spi_lower_s *priv)
     }
 
   ret = p2_pin_configure(CONFIG_P2_EC32MB_SPI_CS_PIN,
-                         P2_PIN_OWNER_SPI, &output);
+                         P2_PIN_OWNER_SPI,
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+                         &chip_select);
+#else
+                         &output);
+#endif
   if (ret < 0)
     {
       goto fail;
     }
+
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+  ret = p2_pin_configure(CONFIG_P2_EC32MB_XPT2046_CS_PIN,
+                         P2_PIN_OWNER_SPI, &chip_select);
+  if (ret < 0)
+    {
+      goto fail;
+    }
+#endif
 
   /* Keep every pin floating until all ownership/configuration operations
    * have succeeded.  Preload output latches before enabling direction, and
@@ -307,14 +379,23 @@ static int p2_spi_activate(FAR struct p2_spi_lower_s *priv)
   p2_sp_disable(CONFIG_P2_EC32MB_SPI_MOSI_PIN);
   p2_sp_disable(CONFIG_P2_EC32MB_SPI_SCK_PIN);
   p2_sp_disable(CONFIG_P2_EC32MB_SPI_CS_PIN);
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+  p2_sp_disable(CONFIG_P2_EC32MB_XPT2046_CS_PIN);
+#endif
 
   clock_high = priv->mode == SPIDEV_MODE2 ||
                priv->mode == SPIDEV_MODE3;
   p2_spi_pin_write(CONFIG_P2_EC32MB_SPI_CS_PIN, true);
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+  p2_spi_pin_write(CONFIG_P2_EC32MB_XPT2046_CS_PIN, true);
+#endif
   p2_spi_pin_write(CONFIG_P2_EC32MB_SPI_SCK_PIN, clock_high);
   p2_spi_pin_write(CONFIG_P2_EC32MB_SPI_MOSI_PIN, false);
 
   p2_sp_dir_high(CONFIG_P2_EC32MB_SPI_CS_PIN);
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+  p2_sp_dir_high(CONFIG_P2_EC32MB_XPT2046_CS_PIN);
+#endif
   p2_sp_dir_high(CONFIG_P2_EC32MB_SPI_SCK_PIN);
   p2_sp_dir_high(CONFIG_P2_EC32MB_SPI_MOSI_PIN);
   priv->outputs_enabled = true;
@@ -343,7 +424,7 @@ static void p2_spi_select(FAR struct spi_bitbang_s *dev, uint32_t devid,
       return;
     }
 
-  if (devid != SPIDEV_USER(0) || !priv->mode_valid)
+  if (!p2_spi_device_supported(devid) || !priv->mode_valid)
     {
       priv->faulted = true;
       return;
@@ -356,7 +437,17 @@ static void p2_spi_select(FAR struct spi_bitbang_s *dev, uint32_t devid,
       return;
     }
 
-  p2_sp_out_low(CONFIG_P2_EC32MB_SPI_CS_PIN);
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+  if (devid == SPIDEV_TOUCHSCREEN(0))
+    {
+      p2_sp_out_low(CONFIG_P2_EC32MB_XPT2046_CS_PIN);
+    }
+  else
+#endif
+    {
+      p2_sp_out_low(CONFIG_P2_EC32MB_SPI_CS_PIN);
+    }
+
   priv->selected = true;
 }
 
@@ -411,8 +502,9 @@ static uint16_t p2_spi_exchange(FAR struct spi_bitbang_s *dev,
   FAR struct p2_spi_lower_s *priv = p2_spi_lower(dev);
   bool clock_high;
   bool phase;
-  uint8_t datain = 0;
-  uint8_t mask;
+  uint16_t datain = 0;
+  uint16_t mask;
+  unsigned int nbits = 8;
 
   if (!priv->selected || priv->faulted || !priv->mode_valid)
     {
@@ -423,7 +515,17 @@ static uint16_t p2_spi_exchange(FAR struct spi_bitbang_s *dev,
                priv->mode == SPIDEV_MODE3;
   phase = priv->mode == SPIDEV_MODE1 || priv->mode == SPIDEV_MODE3;
 
-  for (mask = 0x80; mask != 0; mask >>= 1)
+#ifdef CONFIG_SPI_BITBANG_VARWIDTH
+  nbits = dev->nbits;
+#endif
+
+  if (nbits == 0 || nbits > 16)
+    {
+      priv->faulted = true;
+      return UINT16_MAX;
+    }
+
+  for (mask = (uint16_t)(1u << (nbits - 1)); mask != 0; mask >>= 1)
     {
       if (!phase)
         {
@@ -462,7 +564,7 @@ static uint8_t p2_spi_status(FAR struct spi_bitbang_s *dev,
                              uint32_t devid)
 {
   (void)dev;
-  return devid == SPIDEV_USER(0) ? SPI_STATUS_PRESENT : 0;
+  return p2_spi_device_supported(devid) ? SPI_STATUS_PRESENT : 0;
 }
 
 #ifdef CONFIG_SPI_CMDDATA
@@ -470,8 +572,16 @@ static int p2_spi_cmddata(FAR struct spi_bitbang_s *dev, uint32_t devid,
                           bool cmd)
 {
   (void)dev;
-  (void)cmd;
-  return devid == SPIDEV_USER(0) ? -ENOSYS : -ENODEV;
+
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+  if (devid == SPIDEV_DISPLAY(0))
+    {
+      p2_spi_pin_write(CONFIG_P2_EC32MB_ILI9341_DC_PIN, !cmd);
+      return 0;
+    }
+#endif
+
+  return p2_spi_device_supported(devid) ? -ENOSYS : -ENODEV;
 }
 #endif
 
@@ -503,4 +613,9 @@ int p2_spi_initialize(void)
     }
 
   return 0;
+}
+
+FAR struct spi_dev_s *p2_spi_getdev(void)
+{
+  return g_p2_spi;
 }

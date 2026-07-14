@@ -44,6 +44,8 @@
 #define P2_SMARTPIN_MODE_DISABLED    0x00
 #define P2_SMARTPIN_MODE_MAX         0x3e
 
+struct spi_dev_s;
+
 /****************************************************************************
  * Public Types
  ****************************************************************************/
@@ -170,6 +172,9 @@ int p2_capture_initialize(void);
 int p2_adc_initialize(void);
 int p2_dac_initialize(void);
 int p2_spi_initialize(void);
+struct spi_dev_s *p2_spi_getdev(void);
+int p2_touch_initialize(void);
+void p2_touch_poll(void);
 int p2_i2c_initialize(void);
 
 #ifdef P2_PIN_MANAGER_HOST_TEST

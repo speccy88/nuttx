@@ -14,15 +14,121 @@ then
   if mount -t smartfs /dev/smart0 /mnt/flash
   then
     echo P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash:MOUNTED:AUTOFORMAT=NO:DESTRUCTIVE_HANDLERS=ABSENT
+#ifdef CONFIG_INTERPRETERS_BERRY_LVGL
+    if [ ! -d /mnt/flash/berry ]
+    then
+      mkdir /mnt/flash/berry
+    fi
+    if [ -e /mnt/flash/berry/berry ]
+    then
+      echo P2BERRY:MODULE=READY:PATH=/mnt/flash/berry/berry
+    else
+      echo P2BERRY:MODULE=MISSING:PATH=/mnt/flash/berry/berry
+    fi
+#endif
+#ifdef CONFIG_SYSTEM_P2BANK
+    if [ ! -d /mnt/flash/banks ]
+    then
+      mkdir /mnt/flash/banks
+    fi
+    if [ -e /mnt/flash/banks/berry.bin ]
+    then
+      echo P2BANK:BERRY=READY:PATH=/mnt/flash/banks/berry.bin
+    else
+      echo P2BANK:BERRY=MISSING:PATH=/mnt/flash/banks/berry.bin
+    fi
+#endif
   else
     echo P2FLASHBOOT:SMARTFS=/dev/smart0@/mnt/flash:FAIL:AUTOFORMAT=NO
+#ifdef CONFIG_INTERPRETERS_BERRY_LVGL
+    echo P2BERRY:MODULE=MISSING:PATH=/mnt/flash/berry/berry:REASON=FLASH_MOUNT_FAILED
+#endif
+#ifdef CONFIG_SYSTEM_P2BANK
+    echo P2BANK:BERRY=MISSING:PATH=/mnt/flash/banks/berry.bin:REASON=FLASH_MOUNT_FAILED
+#endif
   fi
 else
   echo P2FLASHBOOT:SMARTFS=UNAVAILABLE:CHECK_FLASH_SWITCH
+#ifdef CONFIG_INTERPRETERS_BERRY_LVGL
+  echo P2BERRY:MODULE=MISSING:PATH=/mnt/flash/berry/berry:REASON=FLASH_UNAVAILABLE
+#endif
+#ifdef CONFIG_SYSTEM_P2BANK
+  echo P2BANK:BERRY=MISSING:PATH=/mnt/flash/banks/berry.bin:REASON=FLASH_UNAVAILABLE
+#endif
+fi
+
+#endif
+
+#ifdef CONFIG_P2_EC32MB_SDCARD_AUTOMOUNT
+
+if [ -e /dev/mmcsd0 ]
+then
+  mkdir -p /mnt/sd
+  if mount -t vfat /dev/mmcsd0 /mnt/sd
+  then
+    echo P2STORAGE:SD=/dev/mmcsd0@/mnt/sd:MOUNTED:AUTOFORMAT=NO
+#if defined(CONFIG_INTERPRETERS_BERRY_LVGL) || defined(CONFIG_SYSTEM_P2BANK)
+    if [ ! -d /mnt/sd/berry-p2 ]
+    then
+      mkdir /mnt/sd/berry-p2
+    fi
+    if [ ! -e /mnt/sd/berry-p2/core_smoke.be ]
+    then
+      cp /etc/berry-p2/core_smoke.be /mnt/sd/berry-p2/core_smoke.be
+    fi
+    if [ ! -e /mnt/sd/berry-p2/lvgl_bars.be ]
+    then
+      cp /etc/berry-p2/lvgl_bars.be /mnt/sd/berry-p2/lvgl_bars.be
+    fi
+    if [ ! -e /mnt/sd/berry-p2/lvgl_widgets.be ]
+    then
+      cp /etc/berry-p2/lvgl_widgets.be /mnt/sd/berry-p2/lvgl_widgets.be
+    fi
+    if [ -e /mnt/sd/berry-p2/core_smoke.be ]
+    then
+      if [ -e /mnt/sd/berry-p2/lvgl_bars.be ]
+      then
+        if [ -e /mnt/sd/berry-p2/lvgl_widgets.be ]
+        then
+          echo P2BERRY:SD_EXAMPLES=READY:DIR=/mnt/sd/berry-p2:OVERWRITE=NO
+        else
+          echo P2BERRY:SD_EXAMPLES=MISSING:DIR=/mnt/sd/berry-p2
+        fi
+      else
+        echo P2BERRY:SD_EXAMPLES=MISSING:DIR=/mnt/sd/berry-p2
+      fi
+    else
+      echo P2BERRY:SD_EXAMPLES=MISSING:DIR=/mnt/sd/berry-p2
+    fi
+#endif
+  else
+    echo P2STORAGE:SD=/dev/mmcsd0@/mnt/sd:FAIL:AUTOFORMAT=NO
+  fi
+else
+  echo P2STORAGE:SD=UNAVAILABLE
 fi
 
 #endif
 
 #ifdef CONFIG_SYSTEM_P2HELP
 echo P2SHOWCASE:READY:BOARD=p2-ec32mb:RUN=p2help
+#endif
+
+#ifdef CONFIG_P2_EC32MB_LVGL_AUTOSTART
+echo P2LVGL:STARTING:FB=/dev/fb0:LCD=/dev/lcd0:TOUCH=XPT2046_Z1:PEN=IGNORED
+p2lvgl &
+#endif
+
+#ifdef CONFIG_P2_EC32MB_TOUCHCAL_AUTOSTART
+echo P2TOUCHCAL:STARTING:FB=/dev/fb0:TOUCH=/dev/input0
+p2touchcal
+#endif
+
+#ifdef CONFIG_P2_EC32MB_TOUCHPEN_AUTOSTART
+#ifdef CONFIG_P2_EC32MB_TOUCHPEN_FLOAT_INPUT
+echo P2TOUCHPEN:STARTING:MODE=GPIO_ONLY:BIAS=FLOAT:SPI_WORKER=OFF
+#else
+echo P2TOUCHPEN:STARTING:MODE=GPIO_ONLY:BIAS=PULL_UP:SPI_WORKER=OFF
+#endif
+p2touchcal --pen
 #endif

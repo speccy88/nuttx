@@ -42,9 +42,11 @@
 #include <nuttx/fs/fs.h>
 #include <nuttx/irq.h>
 #include <nuttx/mutex.h>
+#include <nuttx/sched.h>
 #include <nuttx/signal.h>
 
 #include <arch/board/board.h>
+#include <arch/board/p2_ec32mb_bank.h>
 #include <arch/board/p2_ec32mb_psram.h>
 
 #include "p2_ec32mb_pins.h"
@@ -125,9 +127,11 @@ struct p2_psram_service_s
   volatile uint32_t max_ce_cycles;
   volatile uint32_t start_allowed;
   uint32_t next_sequence;
+  pid_t bank_owner;
   int hardware_lock;
   bool registered;
   bool failed;
+  bool bank_reserved;
 };
 
 struct p2_psram_worker_request_s
@@ -137,6 +141,12 @@ struct p2_psram_worker_request_s
   uint32_t address;
   FAR uint8_t *buffer;
   uint32_t length;
+};
+
+struct p2_psram_bank_boot_s
+{
+  volatile uint32_t external_address;
+  volatile uint32_t image_size;
 };
 
 /****************************************************************************
@@ -155,6 +165,7 @@ static off_t p2_psram_seek(FAR struct file *filep, off_t offset,
  ****************************************************************************/
 
 int p2_psram_cog_start(void);
+int p2_psram_bank_cog_start(void);
 void p2_psram_timing_leaf(void);
 void p2_psram_service_worker(void);
 
@@ -170,6 +181,7 @@ void p2_psram_service_worker(void);
 volatile struct p2_psram_wire_s g_p2_psram_wire;
 uint32_t g_p2_psram_service_stack[P2_PSRAM_STACK_ARRAY_WORDS]
   aligned_data(16);
+volatile struct p2_psram_bank_boot_s g_p2_psram_bank_boot;
 
 /****************************************************************************
  * Private Data
@@ -893,6 +905,21 @@ void p2_psram_service_worker(void)
           break;
         }
 
+      if (request.operation == P2_PSRAM_OPERATION_BOOT_BANK)
+        {
+          /* Publish the two words which the COGEXEC loader consumes before
+           * stopping the NuttX cog.  A successful self-COGINIT never returns;
+           * preserve an explicit failure path for impossible launch errors.
+           */
+
+          g_p2_psram_bank_boot.external_address = request.address;
+          g_p2_psram_bank_boot.image_size = request.length;
+          p2_psram_compiler_barrier();
+          ret = p2_psram_bank_cog_start();
+          p2_psram_complete(request.sequence, ret < 0 ? ret : -EIO);
+          continue;
+        }
+
       ret = p2_psram_execute(&request);
       if (ret == -EIO)
         {
@@ -958,6 +985,8 @@ int p2_psram_initialize(void)
   g_p2_psram.max_ce_cycles = 0;
   g_p2_psram.start_allowed = 0;
   g_p2_psram.next_sequence = 0;
+  g_p2_psram.bank_owner = 0;
+  g_p2_psram.bank_reserved = false;
   g_p2_psram_service_stack[0] = P2_PSRAM_STACK_GUARD;
   g_p2_psram_service_stack[P2_PSRAM_STACK_ARRAY_WORDS - 1] =
     P2_PSRAM_STACK_GUARD;
@@ -1087,6 +1116,72 @@ out_unlock:
   return ret;
 }
 
+int p2_psram_bank_reserve(void)
+{
+  pid_t owner = nxsched_gettid();
+  int ret;
+
+  if (owner < 0)
+    {
+      return -ESRCH;
+    }
+
+  ret = nxmutex_lock(&g_p2_psram.mutex);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (!g_p2_psram.registered || g_p2_psram.failed)
+    {
+      ret = -ENODEV;
+    }
+  else if (g_p2_psram.bank_reserved)
+    {
+      ret = -EBUSY;
+    }
+  else
+    {
+      g_p2_psram.bank_owner = owner;
+      g_p2_psram.bank_reserved = true;
+      ret = 0;
+    }
+
+  nxmutex_unlock(&g_p2_psram.mutex);
+  return ret;
+}
+
+int p2_psram_bank_release(void)
+{
+  pid_t owner = nxsched_gettid();
+  int ret;
+
+  if (owner < 0)
+    {
+      return -ESRCH;
+    }
+
+  ret = nxmutex_lock(&g_p2_psram.mutex);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (!g_p2_psram.bank_reserved || g_p2_psram.bank_owner != owner)
+    {
+      ret = -EPERM;
+    }
+  else
+    {
+      g_p2_psram.bank_owner = 0;
+      g_p2_psram.bank_reserved = false;
+      ret = 0;
+    }
+
+  nxmutex_unlock(&g_p2_psram.mutex);
+  return ret;
+}
+
 ssize_t p2_psram_transfer(enum p2_psram_operation_e operation,
                           uint32_t external_address, FAR void *hub_buffer,
                           size_t length, uint32_t timeout_ticks)
@@ -1131,6 +1226,13 @@ ssize_t p2_psram_transfer(enum p2_psram_operation_e operation,
       return -ENODEV;
     }
 
+  if (g_p2_psram.bank_reserved &&
+      g_p2_psram.bank_owner != nxsched_gettid())
+    {
+      nxmutex_unlock(&g_p2_psram.mutex);
+      return -EBUSY;
+    }
+
   sequence = p2_psram_next_sequence();
   flags = p2_psram_task_lock();
   request->completion_sequence = 0;
@@ -1148,4 +1250,73 @@ ssize_t p2_psram_transfer(enum p2_psram_operation_e operation,
   ret = p2_psram_wait(sequence, timeout_ticks);
   nxmutex_unlock(&g_p2_psram.mutex);
   return ret < 0 ? ret : (ssize_t)length;
+}
+
+int p2_psram_boot_bank(uint32_t external_address, size_t image_size)
+{
+  FAR struct p2_psram_request_s *request = &g_p2_psram.request;
+  irqstate_t flags;
+  uint32_t sequence;
+  size_t transfer_size;
+  int ret;
+
+  if (image_size == 0 || image_size > P2_BANK_HUB_IMAGE_LIMIT ||
+      (external_address & (P2_PSRAM_NATURAL_WORD_BYTES - 1u)) != 0)
+    {
+      return -EINVAL;
+    }
+
+  transfer_size = (image_size + P2_PSRAM_NATURAL_WORD_BYTES - 1u) &
+                  ~(P2_PSRAM_NATURAL_WORD_BYTES - 1u);
+  if (!p2_psram_range_valid(external_address, transfer_size))
+    {
+      return -EINVAL;
+    }
+
+  ret = nxmutex_lock(&g_p2_psram.mutex);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (!g_p2_psram.registered || g_p2_psram.failed)
+    {
+      nxmutex_unlock(&g_p2_psram.mutex);
+      return -ENODEV;
+    }
+
+  if (!g_p2_psram.bank_reserved)
+    {
+      nxmutex_unlock(&g_p2_psram.mutex);
+      return -EPERM;
+    }
+
+  if (g_p2_psram.bank_owner != nxsched_gettid())
+    {
+      nxmutex_unlock(&g_p2_psram.mutex);
+      return -EBUSY;
+    }
+
+  sequence = p2_psram_next_sequence();
+  flags = p2_psram_task_lock();
+  request->completion_sequence = 0;
+  g_p2_psram.cancel_sequence = 0;
+  request->sequence = sequence;
+  request->operation = P2_PSRAM_OPERATION_BOOT_BANK;
+  request->external_address = external_address;
+  request->hub_buffer = 0;
+  request->length = image_size;
+  request->status = -EINPROGRESS;
+  request->timeout_ticks = CONFIG_P2_EC32MB_PSRAM_TIMEOUT_TICKS;
+  request->completion = P2_PSRAM_COMPLETION_SUBMITTED;
+  p2_psram_task_unlock(flags);
+
+  /* On success the service cog stops this cog and replaces Hub, so this wait
+   * cannot complete.  It remains the bounded fail-closed path if the service
+   * cog cannot accept or launch the destructive request.
+   */
+
+  ret = p2_psram_wait(sequence, CONFIG_P2_EC32MB_PSRAM_TIMEOUT_TICKS);
+  nxmutex_unlock(&g_p2_psram.mutex);
+  return ret < 0 ? ret : -EIO;
 }

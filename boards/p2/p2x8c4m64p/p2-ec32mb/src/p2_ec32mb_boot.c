@@ -30,6 +30,12 @@
 #include <stdbool.h>
 
 #include <nuttx/board.h>
+#ifdef CONFIG_VIDEO_FB
+#  include <nuttx/video/fb.h>
+#endif
+#ifdef CONFIG_LCD_DEV
+#  include <nuttx/lcd/lcd_dev.h>
+#endif
 #if defined(CONFIG_FS_PROCFS) || defined(CONFIG_P2_SMARTPIN) || \
     defined(CONFIG_P2_EC32MB_STORAGE_BINDINGS) || \
     defined(CONFIG_USERLED_LOWER)
@@ -56,7 +62,8 @@
       defined(CONFIG_FSUTILS_MKSMARTFS) || defined(CONFIG_FSUTILS_MKFATFS)
 #    error "P2 flashboot image must not contain destructive storage tools"
 #  endif
-#  ifndef CONFIG_TESTING_P2STORAGE_FLASH_PREMOUNTED
+#  if defined(CONFIG_TESTING_P2STORAGE) && \
+      !defined(CONFIG_TESTING_P2STORAGE_FLASH_PREMOUNTED)
 #    error "P2 flashboot verification requires the premounted read path"
 #  endif
 #  ifndef CONFIG_BOARDCTL_RESET
@@ -289,6 +296,81 @@ void board_late_initialize(void)
     }
 #endif
 
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+  int lcd_init_ret;
+#ifdef CONFIG_VIDEO_FB
+  int fb_ret;
+#endif
+  int lcddev_ret;
+  int touch_ret;
+
+  lcd_init_ret = board_lcd_initialize();
+  if (lcd_init_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: Failed to initialize P2 ILI9341: %d\n",
+             lcd_init_ret);
+    }
+  else
+    {
+#ifdef CONFIG_VIDEO_FB
+      fb_ret = fb_register(0, 0);
+      if (fb_ret < 0)
+        {
+          syslog(LOG_ERR,
+                 "ERROR: Failed to register P2 ILI9341 /dev/fb0: %d\n",
+                 fb_ret);
+        }
+      else
+        {
+          syslog(LOG_NOTICE, "P2DISPLAY:ILI9341=/dev/fb0:READY\n");
+        }
+#endif
+
+      lcddev_ret = lcddev_register(0);
+      if (lcddev_ret < 0)
+        {
+          syslog(LOG_ERR,
+                 "ERROR: Failed to register P2 ILI9341 /dev/lcd0: %d\n",
+                 lcddev_ret);
+        }
+      else
+        {
+          syslog(LOG_NOTICE, "P2DISPLAY:ILI9341=/dev/lcd0:READY\n");
+        }
+    }
+
+  touch_ret = p2_touch_initialize();
+  if (touch_ret < 0)
+    {
+#ifdef CONFIG_P2_EC32MB_TOUCHPEN_GPIO_ONLY
+      syslog(LOG_ERR,
+             "ERROR: Failed to initialize P2 XPT2046 GPIO-only touch: %d\n",
+             touch_ret);
+#else
+      syslog(LOG_ERR,
+             "ERROR: Failed to register P2 XPT2046 /dev/input0: %d\n",
+             touch_ret);
+#endif
+    }
+  else
+    {
+#ifdef CONFIG_P2_EC32MB_TOUCHPEN_GPIO_ONLY
+#  if defined(CONFIG_EXAMPLES_P2LVGL) || \
+      defined(CONFIG_INTERPRETERS_BERRY_LVGL_P2_TOUCH)
+      syslog(LOG_NOTICE,
+             "P2TOUCH:XPT2046=PRESSURE_POLLED:SPI_WORKER=OFF:PEN=IGNORED\n");
+#  elif defined(CONFIG_P2_EC32MB_TOUCHPEN_FLOAT_INPUT)
+      syslog(LOG_NOTICE,
+             "P2TOUCH:PEN_GPIO=READY:BIAS=FLOAT:SPI_WORKER=OFF\n");
+#  else
+      syslog(LOG_NOTICE, "P2TOUCH:PEN_GPIO=READY:SPI_WORKER=OFF\n");
+#  endif
+#else
+      syslog(LOG_NOTICE, "P2TOUCH:XPT2046=/dev/input0:READY\n");
+#endif
+    }
+#endif
+
 #ifdef CONFIG_P2_EC32MB_I2C
   int i2c_ret;
 
@@ -413,6 +495,9 @@ void board_timerhook(void)
 #endif
 #ifdef CONFIG_P2_EC32MB_UART1
   p2_uart1_poll();
+#endif
+#ifdef CONFIG_P2_EC32MB_ILI9341_XPT2046
+  p2_touch_poll();
 #endif
 }
 #endif
