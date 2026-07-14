@@ -302,7 +302,15 @@ exact program/erase ranges for an input.  ``tools/p2/flash.sh`` requires an
 explicit port, image, ``--execute``, ``P2_HIL=1``, and
 ``P2_ALLOW_FLASH_WRITE=1`` before invoking the pinned loader.  It also requires
 ``P2_ALLOW_SD_WRITE=1`` because the flash loader drives shared P60/P61 in a way
-that can select and clock an installed microSD card.  The target requires
+that can select and clock an installed microSD card.  That variable authorizes
+the risk; it does not electrically isolate or protect the card.  Remove the
+microSD card before every W25 programming operation.  With a card installed,
+2026-07-14 manager-flash HIL changed its sector-zero MBR while the FAT32 VBR,
+FSInfo, and files remained intact.  The guarded ``p2storage sd-mbr-repair``
+operation recovered that exact NuttX-produced layout, and the subsequent
+read-only ``p2storage sd-rom-verify`` passed.  The repair is not a generic FAT
+recovery tool and refuses cards whose validated backup structures do not match
+the expected layout.  The target requires
 256-byte blocks, 4 KiB erase blocks, 4096 erase blocks, and capacity ID
 ``0x18`` before registering the private child.  This is software containment
 through the MTD partition, not unsupported W25 hardware locking.  JEDEC

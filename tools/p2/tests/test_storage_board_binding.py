@@ -59,8 +59,8 @@ class StorageBoardBindingTests(unittest.TestCase):
             "#  define P2STORAGE_SD_PARTITION_START   UINT32_C(2048)",
             "#  define P2STORAGE_FAT32_PARTITION_TYPE 0x0c",
             "entry[0] = 0x80;",
-            "g_io_buffer[P2STORAGE_MBR_SIGNATURE_OFFSET] = 0x55;",
-            "g_io_buffer[P2STORAGE_MBR_SIGNATURE_OFFSET + 1] = 0xaa;",
+            "sector[P2STORAGE_MBR_SIGNATURE_OFFSET] = 0x55;",
+            "sector[P2STORAGE_MBR_SIGNATURE_OFFSET + 1] = 0xaa;",
             "register_blockpartition(P2STORAGE_SD_PARTITION_DEVPATH, 0660,",
             "format.ff_hidsec = P2STORAGE_SD_PARTITION_START;",
             "mkfatfs(P2STORAGE_SD_PARTITION_DEVPATH, &format)",
@@ -69,6 +69,69 @@ class StorageBoardBindingTests(unittest.TestCase):
             self.assertIn(requirement, source)
 
         self.assertNotIn("mkfatfs(medium->devpath, &format)", source)
+
+    def test_sd_mbr_repair_is_unmounted_strict_and_single_open(self):
+        source = P2STORAGE.read_text()
+        repair_start = source.index("static int p2storage_sd_repair_mbr(")
+        repair_end = source.index(
+            "static int p2storage_sd_verify_rom_layout(", repair_start
+        )
+        repair = source[repair_start:repair_end]
+
+        unmount = repair.index("p2storage_ensure_unmounted(medium)")
+        opened = repair.index("fd = open(medium->devpath, O_RDWR);")
+        validate = repair.index("p2storage_sd_validate_mkfatfs(")
+        write = repair.index("p2storage_sd_write_mbr_fd(")
+        readback = repair.index("p2storage_sd_verify_rom_layout_fd(")
+        self.assertLess(unmount, opened)
+        self.assertLess(opened, validate)
+        self.assertLess(validate, write)
+        self.assertLess(write, readback)
+        self.assertEqual(repair.count("open("), 1)
+        self.assertEqual(repair.count("close(fd)"), 1)
+        self.assertNotIn("p2storage_sd_write_mbr(medium", repair)
+
+        validator_start = source.index(
+            "static int p2storage_sd_validate_mkfatfs("
+        )
+        validator_end = source.index(
+            "static int p2storage_sd_verify_rom_layout_fd(",
+            validator_start,
+        )
+        validator = source[validator_start:validator_end]
+        for requirement in (
+            'memcmp(&primary[3], "NUTTX   ", 8)',
+            "P2STORAGE_FAT32_RESERVED_SECTORS",
+            "P2STORAGE_FAT32_FSINFO_SECTOR",
+            "P2STORAGE_FAT32_BACKUP_SECTOR",
+            "P2STORAGE_FAT32_VOLUME_ID",
+            "P2STORAGE_FAT32_MIN_CLUSTERS",
+            "P2STORAGE_FAT32_MAX_CLUSTERS",
+            "cluster_count + 3 > fat_entries",
+            "UINT32_C(0x41615252)",
+            "UINT32_C(0x61417272)",
+            "UINT32_C(0xaa550000)",
+            'memcmp(&primary[82], "FAT32   ", 8)',
+        ):
+            self.assertIn(requirement, validator)
+
+        writer_start = source.index("static int p2storage_sd_write_mbr_fd(")
+        writer_end = source.index(
+            "static int p2storage_sd_write_mbr(", writer_start
+        )
+        writer = source[writer_start:writer_end]
+        for requirement in (
+            "p2storage_sd_geometry_unchanged(fd, nsectors)",
+            "if (revalidate_vbr)",
+            "P2STORAGE_SD_PARTITION_START, current_vbr",
+            "memcmp(vbr_snapshot, current_vbr",
+            "position = lseek(fd, 0, SEEK_SET);",
+            "p2storage_write_all(fd, expected, P2STORAGE_SD_SECTOR_SIZE)",
+            "fsync(fd)",
+            "p2storage_sd_read_sector_into(fd, nsectors, 0, g_io_buffer)",
+            "memcmp(g_io_buffer, expected, P2STORAGE_SD_SECTOR_SIZE)",
+        ):
+            self.assertIn(requirement, writer)
 
     def test_sd_rom_verifier_is_raw_read_only_and_checks_the_rom_contract(self):
         source = P2STORAGE.read_text()

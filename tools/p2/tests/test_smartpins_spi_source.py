@@ -31,6 +31,7 @@ BOARD_SOURCE = (
     / "src"
     / "p2_ec32mb_spi.c"
 )
+GENERIC_SOURCE = ROOT / "drivers" / "spi" / "spi_bitbang.c"
 APP = ROOT.parent / "apps" / "testing" / "p2smartpins"
 
 
@@ -52,6 +53,7 @@ class SmartpinsSpiSourceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = BOARD_SOURCE.read_text(encoding="utf-8")
+        cls.generic_source = GENERIC_SOURCE.read_text(encoding="utf-8")
         cls.app_source = (APP / "p2smartpins_main.c").read_text(encoding="utf-8")
         cls.app_kconfig = (APP / "Kconfig").read_text(encoding="utf-8")
 
@@ -62,7 +64,9 @@ class SmartpinsSpiSourceTests(unittest.TestCase):
             "spi_create_bitbang(&g_p2_spi_ops, &g_p2_spi_lower)", self.source
         )
         self.assertIn("spi_register(g_p2_spi, 0)", self.source)
-        self.assertIn("devid != SPIDEV_USER(0)", self.source)
+        self.assertIn("devid == SPIDEV_USER(0)", self.source)
+        self.assertIn("SPIDEV_DISPLAY(0)", self.source)
+        self.assertIn("SPIDEV_TOUCHSCREEN(0)", self.source)
         self.assertNotIn("P2_STORAGE", self.source)
 
     def test_receiver_is_claimed_and_configured_before_source_is_enabled(self):
@@ -98,6 +102,16 @@ class SmartpinsSpiSourceTests(unittest.TestCase):
         self.assertIn("if (priv->selected || priv->faulted)", select)
         self.assertIn("priv->faulted = true;", select)
         self.assertIn("return UINT16_MAX;", exchange)
+
+    def test_generic_variable_width_exchange_stores_eight_bit_receive_data(self):
+        exchange = function_body(
+            self.generic_source, "static void spi_exchange"
+        )
+        self.assertIn("if (priv->nbits > 8)", exchange)
+        self.assertIn(
+            "else\n#endif\n            {\n              *dest++ = (uint8_t)datain;",
+            exchange,
+        )
 
     def test_application_uses_exact_standard_transfer_and_evidence(self):
         self.assertIn("SPIIOC_TRANSFER", self.app_source)

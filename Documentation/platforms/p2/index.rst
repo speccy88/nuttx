@@ -15,6 +15,7 @@ Parallax Propeller 2 (P2) cloud first draft
    context-frame
    interrupts
    memory-map
+   banked-runtime
    pin-map
    hil-wiring
    storage-arbitration
