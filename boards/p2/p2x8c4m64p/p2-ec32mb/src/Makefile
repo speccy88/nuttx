@@ -37,9 +37,17 @@ ifeq ($(CONFIG_P2_EC32MB_I2C),y)
 CSRCS += p2_ec32mb_i2c.c
 endif
 
-ifeq ($(CONFIG_P2_EC32MB_PSRAM),y)
+ifeq ($(CONFIG_P2_EC32MB_PSRAM_SERVICE),y)
 CSRCS += p2_ec32mb_psram.c
 ASRCS += p2_ec32mb_psram_service.S
+endif
+
+ifeq ($(CONFIG_P2_EC32MB_PSRAM_UNIFIED),y)
+CSRCS += p2_ec32mb_xmem.c
+endif
+
+ifeq ($(CONFIG_P2_EC32MB_PSRAM_UNIFIED_SELFTEST),y)
+CSRCS += p2_ec32mb_xmem_selftest.c
 endif
 
 ifeq ($(CONFIG_P2_STORAGE),y)

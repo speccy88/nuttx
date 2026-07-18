@@ -46,6 +46,7 @@
 
 #include <arch/board/board.h>
 #include <arch/board/p2_ec32mb_psram.h>
+#include <arch/chip/chip.h>
 
 #include "p2_ec32mb_pins.h"
 #include "p2_ec32mb_psram_logic.h"
@@ -81,6 +82,13 @@
 #define P2_PSRAM_PIN_COUNT         \
   (P2_PSRAM_CE_PIN - P2_PSRAM_DATA_FIRST_PIN + 1)
 
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+#  define P2_PSRAM_UNIFIED_TIMEOUT_CYCLES \
+  (UINT32_C(2) * CONFIG_P2_SYSCLK_HZ)
+#  define P2_PSRAM_UNIFIED_GRACE_CYCLES \
+  (CONFIG_P2_SYSCLK_HZ / UINT32_C(10))
+#endif
+
 #if CONFIG_P2_SYSCLK_HZ != 180000000
 #  error "P2 PSRAM timing leaf is qualified only at 180 MHz"
 #endif
@@ -99,6 +107,24 @@
 #if CONFIG_P2_EC32MB_PSRAM_MAX_REQUEST < 4096 || \
     CONFIG_P2_EC32MB_PSRAM_MAX_REQUEST > 65536
 #  error "P2 PSRAM request bound must be between 4 KiB and 64 KiB"
+#endif
+
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+#  ifdef CONFIG_SMP
+#    error "P2 unified PSRAM requires a uniprocessor NuttX build"
+#  endif
+#  ifndef CONFIG_BUILD_FLAT
+#    error "P2 unified PSRAM currently requires CONFIG_BUILD_FLAT"
+#  endif
+#  ifndef CONFIG_MM_KERNEL_HEAP
+#    error "P2 unified PSRAM requires a dedicated Hub kernel heap"
+#  endif
+#  if CONFIG_MM_REGIONS != 2
+#    error "P2 unified PSRAM requires exactly two user-heap regions"
+#  endif
+#  ifndef CONFIG_ARCH_HAVE_EXTRA_HEAPS
+#    error "P2 unified PSRAM requires the extra-heaps initialization hook"
+#  endif
 #endif
 
 /****************************************************************************
@@ -128,6 +154,9 @@ struct p2_psram_service_s
   int hardware_lock;
   bool registered;
   bool failed;
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK
+  volatile uint32_t inject_raw_lock_stall;
+#endif
 };
 
 struct p2_psram_worker_request_s
@@ -143,12 +172,14 @@ struct p2_psram_worker_request_s
  * Private Function Prototypes
  ****************************************************************************/
 
+#ifndef CONFIG_P2_EC32MB_PSRAM_UNIFIED
 static ssize_t p2_psram_read(FAR struct file *filep, FAR char *buffer,
                              size_t buflen);
 static ssize_t p2_psram_write(FAR struct file *filep,
                               FAR const char *buffer, size_t buflen);
 static off_t p2_psram_seek(FAR struct file *filep, off_t offset,
                            int whence);
+#endif
 
 /****************************************************************************
  * Public Function Prototypes
@@ -175,6 +206,7 @@ uint32_t g_p2_psram_service_stack[P2_PSRAM_STACK_ARRAY_WORDS]
  * Private Data
  ****************************************************************************/
 
+#ifndef CONFIG_P2_EC32MB_PSRAM_UNIFIED
 static const struct file_operations g_p2_psram_fops =
 {
   .open = NULL,
@@ -187,6 +219,7 @@ static const struct file_operations g_p2_psram_fops =
   .truncate = NULL,
   .poll = NULL,
 };
+#endif
 
 static struct p2_psram_service_s g_p2_psram =
 {
@@ -228,19 +261,36 @@ static inline void p2_psram_compiler_barrier(void)
   __asm__ __volatile__("" : : : "memory");
 }
 
-static inline void p2_psram_raw_lock(void)
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+static inline uint32_t p2_psram_counter(void)
+{
+  uint32_t value;
+
+  __asm__ __volatile__("getct %0" : "=r" (value));
+  return value;
+}
+#endif
+
+static inline bool p2_psram_raw_trylock(void)
 {
   unsigned int acquired;
 
-  do
+  __asm__ __volatile__("locktry %1 wc\n\twrc %0"
+                       : "=r" (acquired)
+                       : "r" (g_p2_psram.hardware_lock));
+  if (acquired != 0)
     {
-      __asm__ __volatile__("locktry %1 wc\n\twrc %0"
-                           : "=r" (acquired)
-                           : "r" (g_p2_psram.hardware_lock));
+      p2_psram_compiler_barrier();
     }
-  while (acquired == 0);
 
-  p2_psram_compiler_barrier();
+  return acquired != 0;
+}
+
+static inline void p2_psram_raw_lock(void)
+{
+  while (!p2_psram_raw_trylock())
+    {
+    }
 }
 
 static inline void p2_psram_raw_unlock(void)
@@ -341,10 +391,20 @@ static void p2_psram_force_safe(void)
   __asm__ __volatile__("dirl %0" : : "r" (P2_PSRAM_CE_PIN));
 }
 
-static void p2_psram_stop_failed_cog_locked(void)
+static void p2_psram_stop_failed_cog(void)
 {
-  uint32_t cog = g_p2_psram.service_cog;
+  irqstate_t flags;
+  uint32_t cog;
 
+  /* A failed service cog may be parked while it owns hardware_lock.
+   * Recovery must therefore never acquire that lock before COGSTOP.  Exclude
+   * every NuttX-side observer first, stop and forget the exact known cog
+   * under the independent pin-manager transaction, and only then
+   * release/return the orphaned hardware lock and publish terminal state.
+   */
+
+  flags = up_irq_save();
+  cog = g_p2_psram.service_cog;
   if (cog < P2_PIN_COG_COUNT)
     {
       int released;
@@ -356,7 +416,6 @@ static void p2_psram_stop_failed_cog_locked(void)
 
       released = p2_pin_stop_and_forget_cog(cog, P2_PIN_OWNER_PSRAM,
                                              p2_psram_force_safe);
-      DEBUGASSERT(released >= 0);
       if (released < 0)
         {
           /* Invalid pin-manager state must not leave a failed service cog
@@ -372,6 +431,7 @@ static void p2_psram_stop_failed_cog_locked(void)
       p2_psram_force_safe();
     }
 
+  p2_psram_lockfree();
   g_p2_psram.service_cog = P2_PSRAM_COG_NONE;
   g_p2_psram.start_allowed = 0;
   g_p2_psram.cancel_sequence = 0;
@@ -380,16 +440,8 @@ static void p2_psram_stop_failed_cog_locked(void)
     {
       g_p2_psram.ready = -ETIMEDOUT;
     }
-}
 
-static void p2_psram_stop_failed_cog(void)
-{
-  irqstate_t flags;
-
-  flags = p2_psram_task_lock();
-  p2_psram_stop_failed_cog_locked();
-  p2_psram_task_unlock(flags);
-  p2_psram_lockfree();
+  up_irq_restore(flags);
 }
 
 static int p2_psram_track_pin(unsigned int pin,
@@ -625,6 +677,19 @@ static bool p2_psram_take_request(
       worker->length = request->length;
       request->completion = P2_PSRAM_COMPLETION_ACTIVE;
       available = true;
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK
+      if (g_p2_psram.inject_raw_lock_stall != 0)
+        {
+          /* Deliberately retain hardware_lock.  The parent timeout path must
+           * remain independent of this lock, COGSTOP this worker, and
+           * reclaim the orphaned lock before it reports terminal failure.
+           */
+
+          g_p2_psram.inject_raw_lock_stall = 0;
+          p2_psram_compiler_barrier();
+          p2_psram_park_failed_cog();
+        }
+#endif
     }
 
   p2_psram_raw_unlock();
@@ -661,6 +726,7 @@ static uint32_t p2_psram_next_sequence(void)
   return g_p2_psram.next_sequence;
 }
 
+#ifndef CONFIG_P2_EC32MB_PSRAM_UNIFIED
 static int p2_psram_wait(uint32_t sequence, uint32_t timeout_ticks)
 {
   FAR struct p2_psram_request_s *request = &g_p2_psram.request;
@@ -675,53 +741,68 @@ static int p2_psram_wait(uint32_t sequence, uint32_t timeout_ticks)
       clock_t now = clock_systime_ticks();
       irqstate_t flags;
       bool complete = false;
-      bool force_stop = false;
+      bool locked;
 
       /* Completion and the transition to cancellation share one critical
        * section.  A completion which wins this lock cannot be followed by a
-       * stale late cancel for the same sequence.
+       * stale late cancel for the same sequence.  Never wait for this lock:
+       * the service cog is one possible owner, so a wedged owner must not
+       * stop the timeout clock or prevent the parent from issuing COGSTOP.
        */
 
-      flags = p2_psram_task_lock();
-      if (request->completion_sequence == sequence &&
-          request->completion == P2_PSRAM_COMPLETION_DONE)
+      flags = up_irq_save();
+      locked = p2_psram_raw_trylock();
+      if (locked)
         {
-          status = request->status;
-          if (g_p2_psram.cancel_sequence == sequence)
+          if (request->completion_sequence == sequence &&
+              request->completion == P2_PSRAM_COMPLETION_DONE)
             {
-              g_p2_psram.cancel_sequence = 0;
+              status = request->status;
+              if (g_p2_psram.cancel_sequence == sequence)
+                {
+                  g_p2_psram.cancel_sequence = 0;
+                }
+
+              complete = true;
+            }
+          else if (!timed_out && clock_compare(deadline, now))
+            {
+              g_p2_psram.cancel_sequence = sequence;
+              timed_out = true;
+              grace_deadline = now +
+                CONFIG_P2_EC32MB_PSRAM_CANCEL_GRACE_TICKS;
+            }
+          else if (timed_out &&
+                   g_p2_psram.cancel_sequence != sequence)
+            {
+              g_p2_psram.cancel_sequence = sequence;
             }
 
-          complete = true;
-        }
-      else if (!timed_out && clock_compare(deadline, now))
-        {
-          g_p2_psram.cancel_sequence = sequence;
-          timed_out = true;
-          grace_deadline = now +
-            CONFIG_P2_EC32MB_PSRAM_CANCEL_GRACE_TICKS;
-        }
-      else if (timed_out && clock_compare(grace_deadline, now))
-        {
-          /* COGSTOP while this lock still excludes completion publication.
-           * Once force_stop is set, DONE cannot win in the unlock-to-cleanup
-           * window.
-           */
-
-          p2_psram_stop_failed_cog_locked();
-          force_stop = true;
+          p2_psram_raw_unlock();
         }
 
-      p2_psram_task_unlock(flags);
+      up_irq_restore(flags);
 
       if (complete)
         {
           return timed_out ? -ETIMEDOUT : status;
         }
 
-      if (force_stop)
+      if (!timed_out && clock_compare(deadline, now))
         {
-          p2_psram_lockfree();
+          /* The raw lock was unavailable at the deadline.  Start the bounded
+           * grace interval anyway and publish cancellation on a later
+           * successful try-lock, if one occurs.
+           */
+
+          timed_out = true;
+          grace_deadline = now +
+            CONFIG_P2_EC32MB_PSRAM_CANCEL_GRACE_TICKS;
+        }
+
+      if (timed_out && clock_compare(grace_deadline, now))
+        {
+          p2_psram_stop_failed_cog();
           return -ETIMEDOUT;
         }
 
@@ -827,6 +908,7 @@ static off_t p2_psram_seek(FAR struct file *filep, off_t offset, int whence)
   filep->f_pos = (off_t)position;
   return filep->f_pos;
 }
+#endif
 
 /****************************************************************************
  * Public Functions
@@ -914,7 +996,11 @@ void p2_psram_service_worker(void)
 
 int p2_psram_initialize(void)
 {
+#ifndef CONFIG_P2_EC32MB_PSRAM_UNIFIED
   clock_t deadline;
+#else
+  uint32_t waited;
+#endif
   irqstate_t flags;
   int ready;
   int ret;
@@ -958,6 +1044,9 @@ int p2_psram_initialize(void)
   g_p2_psram.max_ce_cycles = 0;
   g_p2_psram.start_allowed = 0;
   g_p2_psram.next_sequence = 0;
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK
+  g_p2_psram.inject_raw_lock_stall = 0;
+#endif
   g_p2_psram_service_stack[0] = P2_PSRAM_STACK_GUARD;
   g_p2_psram_service_stack[P2_PSRAM_STACK_ARRAY_WORDS - 1] =
     P2_PSRAM_STACK_GUARD;
@@ -1002,12 +1091,19 @@ int p2_psram_initialize(void)
   g_p2_psram.start_allowed = 1;
   p2_psram_task_unlock(flags);
 
+  ready = 0;
+#ifndef CONFIG_P2_EC32MB_PSRAM_UNIFIED
   deadline = clock_systime_ticks() + P2_PSRAM_READY_WAIT_TICKS;
   for (; ; )
     {
-      flags = p2_psram_task_lock();
-      ready = g_p2_psram.ready;
-      p2_psram_task_unlock(flags);
+      flags = up_irq_save();
+      if (p2_psram_raw_trylock())
+        {
+          ready = g_p2_psram.ready;
+          p2_psram_raw_unlock();
+        }
+
+      up_irq_restore(flags);
       if (ready != 0 ||
           clock_compare(deadline, clock_systime_ticks()))
         {
@@ -1016,6 +1112,30 @@ int p2_psram_initialize(void)
 
       nxsig_usleep(P2_PSRAM_POLL_USEC);
     }
+#else
+  /* The extra-heaps hook runs before up_initialize() has installed the P2
+   * timer interrupt.  Wait with the free-running hardware counter instead of
+   * depending on scheduler ticks or a signal sleep.
+   */
+
+  for (waited = 0; waited < 2000000; waited += P2_PSRAM_POLL_USEC)
+    {
+      flags = up_irq_save();
+      if (p2_psram_raw_trylock())
+        {
+          ready = g_p2_psram.ready;
+          p2_psram_raw_unlock();
+        }
+
+      up_irq_restore(flags);
+      if (ready != 0)
+        {
+          break;
+        }
+
+      up_udelay(P2_PSRAM_POLL_USEC);
+    }
+#endif
 
   if (ready <= 0)
     {
@@ -1031,6 +1151,7 @@ int p2_psram_initialize(void)
       goto out_unlock;
     }
 
+#ifndef CONFIG_P2_EC32MB_PSRAM_UNIFIED
   ret = register_driver(P2_PSRAM_DEVICE_PATH, &g_p2_psram_fops,
                         0660, NULL);
   if (ret < 0)
@@ -1038,6 +1159,7 @@ int p2_psram_initialize(void)
       p2_psram_stop_failed_cog();
       goto out_unlock;
     }
+#endif
 
   g_p2_psram.registered = true;
   ret = 0;
@@ -1047,8 +1169,168 @@ out_unlock:
   return ret;
 }
 
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+#  ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK
+int p2_psram_unified_arm_raw_lock_stall(void)
+{
+  irqstate_t flags;
+  int ret = 0;
+
+  flags = p2_psram_task_lock();
+  if (!g_p2_psram.registered || g_p2_psram.failed ||
+      g_p2_psram.ready != 1)
+    {
+      ret = -ENODEV;
+    }
+  else
+    {
+      g_p2_psram.inject_raw_lock_stall = 1;
+    }
+
+  p2_psram_task_unlock(flags);
+  return ret;
+}
+#  endif
+
+int p2_psram_unified_transfer(enum p2_psram_operation_e operation,
+                              uint32_t external_address,
+                              FAR void *hub_buffer, uint32_t length)
+{
+  FAR struct p2_psram_request_s *request = &g_p2_psram.request;
+  uint32_t grace_deadline = 0;
+  uint32_t sequence;
+  uint32_t deadline;
+  irqstate_t flags;
+  bool timed_out = false;
+  int status;
+
+  if ((operation != P2_PSRAM_OPERATION_READ &&
+       operation != P2_PSRAM_OPERATION_WRITE) ||
+      (hub_buffer == NULL && length != 0) ||
+      !p2_psram_range_valid(external_address, length) ||
+      length > CONFIG_P2_EC32MB_PSRAM_MAX_REQUEST)
+    {
+      return -EINVAL;
+    }
+
+  if (length == 0)
+    {
+      return 0;
+    }
+
+  if ((uintptr_t)hub_buffer >= BOARD_P2_HUB_USABLE_END ||
+      length > BOARD_P2_HUB_USABLE_END - (uintptr_t)hub_buffer)
+    {
+      return -EINVAL;
+    }
+
+  /* On the supported UP port, masking interrupts excludes task switches and
+   * nested IRQ accesses on the sole NuttX cog.  The service cog remains live
+   * and consumes the Hub descriptor while this caller spins.  No semaphore,
+   * mutex, scheduler tick, or signal service is used on this path.
+   */
+
+  flags = up_irq_save();
+  if (!g_p2_psram.registered || g_p2_psram.failed ||
+      g_p2_psram.ready != 1)
+    {
+      up_irq_restore(flags);
+      return -ENODEV;
+    }
+
+  sequence = p2_psram_next_sequence();
+  deadline = p2_psram_counter() + P2_PSRAM_UNIFIED_TIMEOUT_CYCLES;
+  while (!p2_psram_raw_trylock())
+    {
+      if ((int32_t)(p2_psram_counter() - deadline) >= 0)
+        {
+          p2_psram_stop_failed_cog();
+          up_irq_restore(flags);
+          return -ETIMEDOUT;
+        }
+    }
+
+  if (request->completion == P2_PSRAM_COMPLETION_SUBMITTED ||
+      request->completion == P2_PSRAM_COMPLETION_ACTIVE)
+    {
+      p2_psram_raw_unlock();
+      up_irq_restore(flags);
+      return -EBUSY;
+    }
+
+  request->completion_sequence = 0;
+  g_p2_psram.cancel_sequence = 0;
+  request->sequence = sequence;
+  request->operation = operation;
+  request->external_address = external_address;
+  request->hub_buffer = (uintptr_t)hub_buffer;
+  request->length = length;
+  request->status = -EINPROGRESS;
+  request->timeout_ticks = 0;
+  request->completion = P2_PSRAM_COMPLETION_SUBMITTED;
+  p2_psram_raw_unlock();
+
+  deadline = p2_psram_counter() + P2_PSRAM_UNIFIED_TIMEOUT_CYCLES;
+  for (; ; )
+    {
+      uint32_t now = p2_psram_counter();
+      bool complete = false;
+
+      if (p2_psram_raw_trylock())
+        {
+          complete = request->completion_sequence == sequence &&
+                     request->completion == P2_PSRAM_COMPLETION_DONE;
+          status = complete ? request->status : -EINPROGRESS;
+          if (!complete && !timed_out &&
+              (int32_t)(now - deadline) >= 0)
+            {
+              g_p2_psram.cancel_sequence = sequence;
+              grace_deadline = now + P2_PSRAM_UNIFIED_GRACE_CYCLES;
+              timed_out = true;
+            }
+          else if (!complete && timed_out &&
+                   g_p2_psram.cancel_sequence != sequence)
+            {
+              g_p2_psram.cancel_sequence = sequence;
+            }
+
+          p2_psram_raw_unlock();
+        }
+
+      if (complete)
+        {
+          up_irq_restore(flags);
+          return timed_out ? -ETIMEDOUT : status;
+        }
+
+      if (!timed_out && (int32_t)(now - deadline) >= 0)
+        {
+          /* The service lock was unavailable at the deadline.  Advance to a
+           * bounded grace period without it; cancellation is published on
+           * the next successful try-lock, if the service makes progress.
+           */
+
+          grace_deadline = now + P2_PSRAM_UNIFIED_GRACE_CYCLES;
+          timed_out = true;
+        }
+
+      if (timed_out && (int32_t)(now - grace_deadline) >= 0)
+        {
+          /* The caller's Hub buffer may be its stack.  Stop the worker
+           * before returning so it cannot complete into a dead stack frame.
+           */
+
+          p2_psram_stop_failed_cog();
+          up_irq_restore(flags);
+          return -ETIMEDOUT;
+        }
+    }
+}
+#endif
+
 int p2_psram_get_geometry(FAR struct p2_psram_geometry_s *geometry)
 {
+  struct p2_psram_geometry_s snapshot;
   irqstate_t flags;
   int ret;
 
@@ -1070,17 +1352,26 @@ int p2_psram_get_geometry(FAR struct p2_psram_geometry_s *geometry)
     }
 
   flags = p2_psram_task_lock();
-  geometry->size_bytes = P2_PSRAM_SIZE_BYTES;
-  geometry->chip_count = P2_PSRAM_CHIP_COUNT;
-  geometry->chip_size_bytes = P2_PSRAM_CHIP_SIZE_BYTES;
-  geometry->natural_word_bytes = P2_PSRAM_NATURAL_WORD_BYTES;
-  geometry->max_request_bytes = CONFIG_P2_EC32MB_PSRAM_MAX_REQUEST;
-  geometry->qpi_clock_hz = P2_PSRAM_QPI_CLOCK_HZ;
-  geometry->ce_low_limit_cycles = P2_PSRAM_CE_LOW_LIMIT_CYCLES;
-  geometry->max_ce_low_cycles = g_p2_psram.max_ce_cycles;
-  geometry->service_cog = g_p2_psram.service_cog;
+  snapshot.size_bytes = P2_PSRAM_SIZE_BYTES;
+  snapshot.chip_count = P2_PSRAM_CHIP_COUNT;
+  snapshot.chip_size_bytes = P2_PSRAM_CHIP_SIZE_BYTES;
+  snapshot.natural_word_bytes = P2_PSRAM_NATURAL_WORD_BYTES;
+  snapshot.max_request_bytes = CONFIG_P2_EC32MB_PSRAM_MAX_REQUEST;
+  snapshot.qpi_clock_hz = P2_PSRAM_QPI_CLOCK_HZ;
+  snapshot.ce_low_limit_cycles = P2_PSRAM_CE_LOW_LIMIT_CYCLES;
+  snapshot.max_ce_low_cycles = g_p2_psram.max_ce_cycles;
+  snapshot.service_cog = g_p2_psram.service_cog;
   p2_psram_task_unlock(flags);
-  ret = 0;
+
+  /* In unified mode, geometry may itself be a tagged PSRAM object.  The
+   * aggregate assignment below is compiler-lowered into the xmem copy ABI.
+   * Release both service locks first so that transfer can acquire the raw
+   * hardware lock without recursively deadlocking this caller.
+   */
+
+  nxmutex_unlock(&g_p2_psram.mutex);
+  *geometry = snapshot;
+  return 0;
 
 out_unlock:
   nxmutex_unlock(&g_p2_psram.mutex);
@@ -1091,6 +1382,14 @@ ssize_t p2_psram_transfer(enum p2_psram_operation_e operation,
                           uint32_t external_address, FAR void *hub_buffer,
                           size_t length, uint32_t timeout_ticks)
 {
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+  int ret;
+
+  (void)timeout_ticks;
+  ret = p2_psram_unified_transfer(operation, external_address, hub_buffer,
+                                  (uint32_t)length);
+  return ret < 0 ? ret : (ssize_t)length;
+#else
   FAR struct p2_psram_request_s *request = &g_p2_psram.request;
   irqstate_t flags;
   uint32_t sequence;
@@ -1148,4 +1447,5 @@ ssize_t p2_psram_transfer(enum p2_psram_operation_e operation,
   ret = p2_psram_wait(sequence, timeout_ticks);
   nxmutex_unlock(&g_p2_psram.mutex);
   return ret < 0 ? ret : (ssize_t)length;
+#endif
 }

@@ -1,23 +1,31 @@
 PSRAM service-cog design
 ========================
 
-Status: the explicit PSRAM service and ``/dev/psram0`` interface are
-**HIL-VERIFIED** for two consecutive full-device starts.  PSRAM remains
-external storage, never native Hub address space.
+Status: the legacy explicit PSRAM service and ``/dev/psram0`` interface are
+**HIL-VERIFIED** for two consecutive full-device starts.  Those results do
+not qualify the separate ``unified`` profile, which is **HIL-REQUIRED**.
+PSRAM remains external to native Hub address space in both profiles.
 
 Interface and geometry
 ----------------------
 
-``CONFIG_P2_EC32MB_PSRAM`` starts one non-scheduler cog and registers a
-seekable character device at ``/dev/psram0``.  Applications use ``read()``,
-``write()``, and ``lseek()``, or the board ``p2_psram_transfer()`` API, with a
-Hub-RAM buffer.  The logical geometry is 33,554,432 bytes made from four
+The legacy ``CONFIG_P2_EC32MB_PSRAM`` interface starts one non-scheduler cog
+and registers a seekable character device at ``/dev/psram0``.  Applications
+use ``read()``, ``write()``, and ``lseek()``, or the board
+``p2_psram_transfer()`` API, with a Hub-RAM buffer.  The logical geometry is
+33,554,432 bytes made from four
 8,388,608-byte APS6404L devices.  Consecutive logical byte lanes are
 interleaved across the four chips, giving a natural four-byte wire word.
 
 This interface is intentionally not a heap, stack, executable-memory, mmap,
 or ordinary C-pointer facility.  Request buffers and all synchronization
 objects stay in coherent Hub RAM.
+
+The ``p2-ec32mb:unified`` profile reuses the internal transfer service but
+does not register this character device.  It exposes ordinary dynamically
+allocated user objects through a compiler/runtime pointer ABI instead; see
+:doc:`unified-memory`.  The hardware evidence below predates that ABI and
+cannot be transferred to it.
 
 Service protocol
 ----------------

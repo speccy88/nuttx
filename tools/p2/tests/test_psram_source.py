@@ -209,7 +209,7 @@ class PsramSourceTests(unittest.TestCase):
             source.index("static ssize_t p2_psram_file_transfer(")
         ]
         self.assertLess(
-            wait.index("flags = p2_psram_task_lock();"),
+            wait.index("locked = p2_psram_raw_trylock();"),
             wait.index("request->completion_sequence == sequence"),
         )
         self.assertLess(
@@ -218,15 +218,42 @@ class PsramSourceTests(unittest.TestCase):
         )
         self.assertLess(
             wait.index("g_p2_psram.cancel_sequence = sequence;"),
-            wait.index("p2_psram_task_unlock(flags);"),
+            wait.index("p2_psram_raw_unlock();"),
         )
-        self.assertLess(
-            wait.index("p2_psram_stop_failed_cog_locked();"),
-            wait.index("p2_psram_task_unlock(flags);"),
-        )
+        self.assertNotIn("p2_psram_raw_lock();", wait)
+        self.assertNotIn("p2_psram_task_lock();", wait)
+        self.assertIn("p2_psram_stop_failed_cog();", wait)
         self.assertIn("clock_compare(deadline, now)", wait)
         self.assertIn("clock_compare(grace_deadline, now)", wait)
         self.assertNotIn("(int32_t)(now -", wait)
+
+        stop = source[
+            source.index("static void p2_psram_stop_failed_cog(void)") :
+            source.index("static int p2_psram_track_pin(")
+        ]
+        self.assertNotIn("p2_psram_raw_lock();", stop)
+        self.assertNotIn("p2_psram_task_lock();", stop)
+        self.assertLess(
+            stop.index("p2_pin_stop_and_forget_cog("),
+            stop.index("p2_psram_lockfree();"),
+        )
+        self.assertLess(
+            stop.index("p2_psram_lockfree();"),
+            stop.index("g_p2_psram.failed = true;"),
+        )
+
+        unified = source[
+            source.index("int p2_psram_unified_transfer(") :
+            source.index(
+                "#endif", source.index("int p2_psram_unified_transfer(")
+            )
+        ]
+        self.assertGreaterEqual(
+            unified.count("p2_psram_raw_trylock()"), 2
+        )
+        self.assertIn("p2_psram_counter() - deadline", unified)
+        self.assertIn("now - grace_deadline", unified)
+        self.assertNotIn("p2_psram_raw_lock();", unified)
 
         worker = source[
             source.index("void p2_psram_service_worker(void)\n{") :
@@ -254,6 +281,18 @@ class PsramSourceTests(unittest.TestCase):
         self.assertNotIn("p2_psram_raw_unlock();", cancelled)
         self.assertIn(
             "PSRAM cancellation word must remain long-aligned", source
+        )
+
+        self.assertIn(
+            "CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK",
+            source,
+        )
+        self.assertIn("inject_raw_lock_stall", source)
+        self.assertLess(
+            source.index("inject_raw_lock_stall = 0;"),
+            source.index("p2_psram_park_failed_cog();", source.index(
+                "inject_raw_lock_stall = 0;"
+            )),
         )
 
         startup_failure = worker[

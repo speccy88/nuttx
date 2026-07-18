@@ -62,6 +62,13 @@
 #define BOARD_PSRAM_LAST_PIN 57
 #define BOARD_HAVE_PSRAM 1
 
+/* The pinned loadp2 RAM loader owns the physical Hub tail above this
+ * exclusive board runtime limit.  Keep this value synchronized with linker
+ * P2_HUB_END.
+ */
+
+#define BOARD_P2_HUB_USABLE_END 0x0007c000
+
 #define LED_STARTED           0
 #define LED_HEAPALLOCATE      1
 #define LED_IRQSENABLED       2

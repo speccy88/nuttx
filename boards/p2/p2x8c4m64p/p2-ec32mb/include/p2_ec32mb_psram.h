@@ -46,6 +46,16 @@
 #define P2_PSRAM_CHIP_SIZE_BYTES      UINT32_C(8388608)
 #define P2_PSRAM_NATURAL_WORD_BYTES   4u
 
+/* Unified memory uses a deliberately unmapped tag window.  These are pointer
+ * values consumed by the p2llvm lowering pass, not byte-addressable P2 Hub
+ * addresses.
+ */
+
+#define P2_PSRAM_UNIFIED_BASE         UINT32_C(0x10000000)
+#define P2_PSRAM_UNIFIED_SIZE         P2_PSRAM_SIZE_BYTES
+#define P2_PSRAM_UNIFIED_END          \
+  (P2_PSRAM_UNIFIED_BASE + P2_PSRAM_UNIFIED_SIZE)
+
 /****************************************************************************
  * Public Types
  ****************************************************************************/
@@ -107,5 +117,39 @@ int p2_psram_get_geometry(FAR struct p2_psram_geometry_s *geometry);
 ssize_t p2_psram_transfer(enum p2_psram_operation_e operation,
                           uint32_t external_address, FAR void *hub_buffer,
                           size_t length, uint32_t timeout_ticks);
+
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+int p2_psram_unified_transfer(enum p2_psram_operation_e operation,
+                              uint32_t external_address,
+                              FAR void *hub_buffer, uint32_t length);
+
+#  ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK
+int p2_psram_unified_arm_raw_lock_stall(void);
+#  endif
+
+uint8_t __p2_xmem_load8(FAR const void *address);
+uint16_t __p2_xmem_load16(FAR const void *address);
+uint32_t __p2_xmem_load32(FAR const void *address);
+uint64_t __p2_xmem_load64(FAR const void *address);
+
+void __p2_xmem_store8(FAR void *address, uint8_t value);
+void __p2_xmem_store16(FAR void *address, uint16_t value);
+void __p2_xmem_store32(FAR void *address, uint32_t value);
+void __p2_xmem_store64(FAR void *address, uint64_t value);
+
+void __p2_xmem_memcpy(FAR void *destination, FAR const void *source,
+                      uint32_t length);
+void __p2_xmem_memmove(FAR void *destination, FAR const void *source,
+                       uint32_t length);
+void __p2_xmem_memset(FAR void *destination, uint8_t value,
+                      uint32_t length);
+
+#  ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_SELFTEST
+int p2_psram_unified_selftest(void);
+#    ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_SELFTEST_FULL
+int p2_psram_unified_fulltest(void);
+#    endif
+#  endif
+#endif
 
 #endif /* __BOARDS_P2_P2X8C4M64P_P2_EC32MB_INCLUDE_P2_EC32MB_PSRAM_H */

@@ -26,6 +26,7 @@
 
 #include <nuttx/config.h>
 
+#include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -39,6 +40,31 @@ extern uint8_t _sheap[];
 extern uint8_t _eheap[];
 
 /****************************************************************************
+ * Private Functions
+ ****************************************************************************/
+
+#ifdef CONFIG_MM_KERNEL_HEAP
+static uintptr_t p2_kernel_heap_end(void)
+{
+  uintptr_t start = (uintptr_t)_sheap;
+  uintptr_t end = (start + CONFIG_MM_KERNEL_HEAPSIZE + 15u) &
+                  ~(uintptr_t)15;
+
+  /* Both allocators require a real initial Hub region.  Unified PSRAM is
+   * added to kumm only after these heaps and the service cog are
+   * initialized.
+   */
+
+  if (end <= start || end >= (uintptr_t)_eheap)
+    {
+      PANIC();
+    }
+
+  return end;
+}
+#endif
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -48,7 +74,29 @@ extern uint8_t _eheap[];
 
 void up_allocate_heap(void **heap_start, size_t *heap_size)
 {
+#ifdef CONFIG_MM_KERNEL_HEAP
+  uintptr_t start = p2_kernel_heap_end();
+
+  *heap_start = (void *)start;
+  *heap_size = (size_t)((uintptr_t)_eheap - start);
+#else
   *heap_start = _sheap;
   *heap_size  = (size_t)(_eheap - _sheap);
+#endif
   p2_boot_trace("P2K:HEAP");
 }
+
+#ifdef CONFIG_MM_KERNEL_HEAP
+/****************************************************************************
+ * Name: up_allocate_kheap
+ ****************************************************************************/
+
+void up_allocate_kheap(void **heap_start, size_t *heap_size)
+{
+  uintptr_t end = p2_kernel_heap_end();
+
+  *heap_start = _sheap;
+  *heap_size = (size_t)(end - (uintptr_t)_sheap);
+  p2_boot_trace("P2K:KHEAP");
+}
+#endif

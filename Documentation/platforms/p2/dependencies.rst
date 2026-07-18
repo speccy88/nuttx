@@ -1,10 +1,14 @@
 Pinned dependencies
 ===================
 
-Status: the macOS local toolchain is **COMPILED**, hash-pinned, and used by the
-recorded builds and HIL campaigns.  ``tools/p2/toolchain.lock`` is the
-authoritative local record; ``tools/p2/dependencies.lock`` is a historical
-cloud snapshot and may still contain old ``BLOCKED_missing`` entries.
+Status: the legacy macOS local toolchain is **COMPILED**, hash-pinned, and was
+used by the recorded builds and HIL campaigns.  The tracked
+``tools/p2/toolchain.lock`` remains the authoritative record for those legacy
+artifacts, but it does not claim the opt-in unified-memory compiler pass.  A
+``unified`` or ``unified-hil`` build must use a newly generated exact lock for
+the rebuilt compiler; ``tools/p2/build.sh`` rejects the legacy compiler before
+configuration.  ``tools/p2/dependencies.lock`` is a historical cloud snapshot
+and may still contain old ``BLOCKED_missing`` entries.
 
 Pinned source revisions
 -----------------------
@@ -31,22 +35,48 @@ configuration, and copied lock used for that image.
 Executable identities
 ---------------------
 
-The current lock records these SHA-256 identities:
+The tracked legacy lock records these SHA-256 executable identities:
 
 * clang: ``cc89d3c27b75c9e059093d1e5c6cc7a392b74d977e30d90ca9994f97001224f7``;
 * ld.lld: ``d49992169271c83f92e96e775ba0531f9260014960eab57bc7d4a761b260d6b1``;
 * kconfig-conf: ``8ee692c50735715d1259b0775b75bf231b9703f6c4f233254facaec9c5d2bcf8``;
-* FlexProp loadp2: ``543c7d522d27f429120e6a35e32ea19394fa85412fb07f41784748094a03c2aa``;
+* FlexProp loadp2: ``543c7d522d27f429120e6a35e32ea19394fa85412fb07f41784748094a03c2aa``.
+
+The unified worktree's compiler patch-source identities, which a fresh
+unified lock must also pin, are:
+
+* the regenerated preemption-safe p2llvm patch:
+  ``3d4c7a031bc9d260ba9ebe93a93e287d27f6142ccb081eb3a544fa7875cb8d27``;
   and
-* the required p2llvm patch:
-  ``5881c8b635bcad1d2f95eea18f9c6aaae5285052ac4658fb57e2cbb583ea3b38``.
+* the opt-in unified-memory p2llvm patch:
+  ``9a11e6a10ae8d66a970c0db94a0bacb543d4adfe023fead010a947be5181af32``.
 
 ``tools/p2/bootstrap-local.sh`` checks pinned repositories, applies only the
-required preemption-safe integer patch, builds missing tools, runs backend
-postconditions, installs a hash-locked Python environment, writes
-``~/.p2-nuttx-env``, and regenerates ``toolchain.lock``.  The Python HIL
-requirements are pyserial 3.5 and pyelftools 0.32 with hashes in
+exact preemption-safe and unified-memory patch series, builds missing tools,
+runs both the existing backend postconditions and the unified-memory codegen
+contract, installs a hash-locked Python environment, writes
+``~/.p2-nuttx-env``, and regenerates the selected runtime lock.  Patch-state
+validation uses an isolated temporary index and object database, accepts only
+an exact series prefix for safe upgrades, and never resets the compiler
+worktree.  Set ``P2_BOOTSTRAP_PATCH_SELFTEST=only`` to exercise clean,
+prefix-upgrade, exact, and tampered states in a sparse temporary clone.  The
+Python HIL requirements are pyserial 3.5 and pyelftools 0.32 with hashes in
 ``tools/p2/requirements-hil.txt``.
+
+``tools/p2/bootstrap-cloud.sh`` enforces the same exact p2llvm outer commit,
+llvm-project gitlink/checkout, and two-patch source state before building.  An
+existing checkout at another commit, with outer-tree changes, or with an
+unexpected llvm-project checkout is rejected without resetting it.  Once the
+unified code-generation postcondition passes, the cloud bootstrap writes the
+selected ``P2_TOOLCHAIN_LOCK`` (default ``$P2_CACHE/toolchain.lock``) with the
+exact NuttX, apps, p2llvm, and llvm-project commits plus SHA-256 entries for
+clang/clang++, ld.lld, llc, the LLVM archive, symbol, object-copy,
+disassembly, ELF-inspection, size, and strip utilities, and both compiler
+patches.  The local bootstrap pins the same complete set.  The unified build
+rejects a lock missing any of those exact paths and hashes before
+configuration.  The cloud bootstrap exports that lock through
+``~/.p2-nuttx-env`` so ``tools/p2/build.sh unified`` consumes the same record;
+if loadp2 was built, its exact executable is included for RAM-load HIL as well.
 
 The bootstrap deliberately skips p2llvm libc.  NuttX supplies the runtime
 environment and architecture helpers; libp2 headers/archive are installed for

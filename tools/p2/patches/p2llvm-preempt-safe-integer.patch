@@ -2,7 +2,10 @@ diff --git a/lld/ELF/Arch/P2.cpp b/lld/ELF/Arch/P2.cpp
 index f98ce05a4ce1..90a5633b781e 100644
 --- a/lld/ELF/Arch/P2.cpp
 +++ b/lld/ELF/Arch/P2.cpp
-@@ -83,0 +84,13 @@ namespace lld {
+@@ -81,6 +81,19 @@ namespace lld {
+                     break;
+                 }
+                 case R_P2_AUG20: {
 +                    // This relocation rewrites the instruction immediately
 +                    // before the relocation site.  rel.offset is relative to
 +                    // the input section, so an offset below four has no
@@ -16,11 +19,17 @@ index f98ce05a4ce1..90a5633b781e 100644
 +                        return;
 +                    }
 +
+                     // special relocation where we modify 2 instructions to perform an immediate load of a 20-bit (or greater) immediate.
+                     // by invoking the augd or augs instruction
+                     uint32_t inst = read32le(loc);
 diff --git a/llvm/lib/Target/P2/MCTargetDesc/P2MCCodeEmitter.cpp b/llvm/lib/Target/P2/MCTargetDesc/P2MCCodeEmitter.cpp
 index 20cc45d8f578..9fa498c8238a 100644
 --- a/llvm/lib/Target/P2/MCTargetDesc/P2MCCodeEmitter.cpp
 +++ b/llvm/lib/Target/P2/MCTargetDesc/P2MCCodeEmitter.cpp
-@@ -272,19 +272,6 @@ bool P2MCCodeEmitter::is_rtlib(const MCSymbol &sym) const {
+@@ -269,26 +269,13 @@ unsigned P2MCCodeEmitter::getMemEncoding(const MCInst &MI, unsigned OpNo, SmallV
+ }
+ 
+ bool P2MCCodeEmitter::is_rtlib(const MCSymbol &sym) const {
 -    auto name = sym.getName();
 -
 -    const char* libcallRoutineNames[] = {
@@ -46,7 +55,9 @@ index 20cc45d8f578..9fa498c8238a 100644
 +    // the q-free integer helpers.  This NuttX-qualified compiler deliberately
 +    // uses normal Hub CALLA relocations for all external calls.
 +    (void)sym;
-@@ -294 +281 @@ bool P2MCCodeEmitter::is_rtlib(const MCSymbol &sym) const {
+     return false;
+ }
+ 
 -#include "P2GenMCCodeEmitter.inc"
 \ No newline at end of file
 +#include "P2GenMCCodeEmitter.inc"
@@ -54,11 +65,20 @@ diff --git a/llvm/lib/Target/P2/P2ISelLowering.cpp b/llvm/lib/Target/P2/P2ISelLo
 index 071f60eb46c2..2f9b20703a0e 100644
 --- a/llvm/lib/Target/P2/P2ISelLowering.cpp
 +++ b/llvm/lib/Target/P2/P2ISelLowering.cpp
-@@ -75,3 +74,0 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+@@ -72,9 +72,6 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+     // See https://llvm.org/doxygen/TargetLowering_8h_source.html#l00192 for the various actions
+     setOperationAction(ISD::GlobalAddress, MVT::i32, Custom);
+ 
 -    setOperationAction(ISD::MULHS, MVT::i32, Expand);
 -    setOperationAction(ISD::MULHU, MVT::i32, Expand);
 -
-@@ -92,3 +89,4 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+     setOperationAction(ISD::VASTART, MVT::Other, Custom);
+     setOperationAction(ISD::VAARG, MVT::Other, Custom);
+     setOperationAction(ISD::VACOPY, MVT::Other, Expand);
+@@ -89,9 +86,10 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+ 
+     setOperationAction(ISD::CTTZ, MVT::i32, Expand);
+ 
 -    // can expand mul instead of a libcall and it will just become mullo/hi, which we've already created
 -    // a lowering for
 -    setOperationAction(ISD::MUL, MVT::i32, Expand);
@@ -66,7 +86,13 @@ index 071f60eb46c2..2f9b20703a0e 100644
 +    // operating system can save.  Lower integer multiply to a software
 +    // helper so timer preemption cannot split QMUL from GETQX/GETQY.
 +    setOperationAction(ISD::MUL, MVT::i32, LibCall);
-@@ -111,3 +109,20 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+ 
+     for (MVT VT : MVT::integer_valuetypes()) {
+         setOperationAction(ISD::ATOMIC_SWAP, VT, Expand);
+@@ -108,9 +106,26 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+     setOperationAction(ISD::JumpTable, MVT::i32, Custom);
+     setOperationAction(ISD::BSWAP, MVT::i32, Expand);
+ 
 -    setOperationAction(ISD::SDIV, MVT::i32, Expand);
 -    setOperationAction(ISD::SREM, MVT::i32, Expand);
 -    setOperationAction(ISD::SDIVREM, MVT::i32, Expand);
@@ -90,12 +116,30 @@ index 071f60eb46c2..2f9b20703a0e 100644
 +                    ISD::SMUL_LOHI}) {
 +        setOperationAction(Op, MVT::i32, Expand);
 +    }
-@@ -143 +157,0 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+ 
+     // 64 bit support
+     setTruncStoreAction(MVT::i64, MVT::i8, Expand);
+@@ -140,7 +155,6 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+     setOperationAction(ISD::CTTZ, MVT::i64, Expand);
+     setOperationAction(ISD::CTLZ, MVT::i64, Expand);
+     setOperationAction(ISD::CTPOP, MVT::i64, Expand);
 -    setOperationAction(ISD::MULHU, MVT::i64, Expand);
-@@ -162,0 +177,2 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+     setOperationAction(ISD::ROTL, MVT::i64, Expand);
+     setOperationAction(ISD::ROTR, MVT::i64, Expand);
+ 
+@@ -160,6 +174,8 @@ P2TargetLowering::P2TargetLowering(const P2TargetMachine &TM) : TargetLowering(T
+     setOperationAction(ISD::SREM, MVT::i64, LibCall);
+     setOperationAction(ISD::UDIV, MVT::i64, LibCall);
+     setOperationAction(ISD::UREM, MVT::i64, LibCall);
 +    setOperationAction(ISD::SDIVREM, MVT::i64, LibCall);
 +    setOperationAction(ISD::UDIVREM, MVT::i64, LibCall);
-@@ -231,0 +248,158 @@ SDValue P2TargetLowering::lowerLibcall64(RTLIB::Libcall lc, SDValue Op, Selectio
+ }
+ 
+ SDValue P2TargetLowering::lowerGlobalAddress(SDValue Op, SelectionDAG &DAG) const {
+@@ -229,6 +245,164 @@ SDValue P2TargetLowering::lowerLibcall64(RTLIB::Libcall lc, SDValue Op, Selectio
+     auto r = makeLibCall(DAG, lc, VT, {op1, op2}, CallOptions, DL);
+     return r.first;
+ }
 +
 +static SDValue p2BuildMULHU32(SDValue Left, SDValue Right, const SDLoc &DL,
 +                              SelectionDAG &DAG) {
@@ -254,7 +298,13 @@ index 071f60eb46c2..2f9b20703a0e 100644
 +                                   RightMask64, Left));
 +}
 +
-@@ -310,0 +485,13 @@ SDValue P2TargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
+ SDValue P2TargetLowering::lowerSRL64(SDValue Op, SelectionDAG &DAG) const {
+     return lowerLibcall64(RTLIB::SRL_I64, Op, DAG);
+ }
+@@ -308,6 +482,19 @@ SDValue P2TargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
+         case ISD::SELECT:
+             if (Op->getValueType(0) == MVT::i64)
+                 return lowerSelect64(Op, DAG);
 +            break;
 +        case ISD::MULHU:
 +            if (Op->getValueType(0) == MVT::i32)
@@ -268,7 +318,13 @@ index 071f60eb46c2..2f9b20703a0e 100644
 +            if (Op->getValueType(0) == MVT::i64)
 +                return lowerMULHS64(Op, DAG);
 +            break;
-@@ -862 +1049 @@ std::pair<unsigned, const TargetRegisterClass *> P2TargetLowering::getRegForInli
+     }
+ 
+     return SDValue();
+@@ -859,4 +1046,4 @@ std::pair<unsigned, const TargetRegisterClass *> P2TargetLowering::getRegForInli
+     }
+ 
+     return TargetLowering::getRegForInlineAsmConstraint(TRI, Constraint, VT);
 -}
 \ No newline at end of file
 +}
@@ -276,7 +332,10 @@ diff --git a/llvm/lib/Target/P2/P2ISelLowering.h b/llvm/lib/Target/P2/P2ISelLowe
 index 9914d0d45b24..f6fa0095742d 100644
 --- a/llvm/lib/Target/P2/P2ISelLowering.h
 +++ b/llvm/lib/Target/P2/P2ISelLowering.h
-@@ -69,0 +70,9 @@ namespace llvm {
+@@ -67,6 +67,15 @@ namespace llvm {
+             return false;
+         }
+ 
 +        // P2 high-half multiply is expanded into several software low
 +        // multiplies.  Preserve power-of-two folds, but prefer the direct
 +        // software divide helper to magic-number division for other constants.
@@ -286,13 +345,23 @@ index 9914d0d45b24..f6fa0095742d 100644
 +            return true;
 +        }
 +
-@@ -128,0 +138,5 @@ namespace llvm {
+     private:
+ 
+         // Inline asm support
+@@ -126,9 +135,14 @@ namespace llvm {
+         SDValue lowerSRA64(SDValue Op, SelectionDAG &DAG) const;
+         SDValue lowerSHL64(SDValue Op, SelectionDAG &DAG) const;
+ 
 +        SDValue lowerMULHU32(SDValue Op, SelectionDAG &DAG) const;
 +        SDValue lowerMULHS32(SDValue Op, SelectionDAG &DAG) const;
 +        SDValue lowerMULHU64(SDValue Op, SelectionDAG &DAG) const;
 +        SDValue lowerMULHS64(SDValue Op, SelectionDAG &DAG) const;
 +
-@@ -134 +148 @@ namespace llvm {
+         SDValue lowerLibcall64(RTLIB::Libcall lc, SDValue Op, SelectionDAG &DAG) const;
+         SDValue lowerSelect64(SDValue Op, SelectionDAG &DAG) const;
+     };
+ }
+ 
 -#endif // P2ISELLOWERING_H
 \ No newline at end of file
 +#endif // P2ISELLOWERING_H
@@ -300,63 +369,98 @@ diff --git a/llvm/lib/Target/P2/P2InstrInfo.cpp b/llvm/lib/Target/P2/P2InstrInfo
 index 7cea8a4af5cc..97e8e1407bc9 100644
 --- a/llvm/lib/Target/P2/P2InstrInfo.cpp
 +++ b/llvm/lib/Target/P2/P2InstrInfo.cpp
-@@ -502 +501,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+@@ -499,7 +499,6 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+     unsigned movt_op = P2::MOVrr;
+     unsigned movf_op = P2::MOVrr;
+     unsigned cmp_op;
 -    unsigned cmp_op_hi;
-@@ -521 +519,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+ 
+     if (f.isImm()) {
+         movf_op = P2::MOVri;
+@@ -518,10 +517,8 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+         case P2::SETUGE:
+             if (rhs.isImm()) {
+                 cmp_op = P2::CMPri;
 -                cmp_op_hi = P2::CMPXri;
-@@ -524 +521,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+             } else {
+                 cmp_op = P2::CMPrr;
 -                cmp_op_hi = P2::CMPXrr;
-@@ -536 +532,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+             }
+             break;
+ 
+@@ -533,10 +530,8 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+         case P2::SETGE:
+             if (rhs.isImm()) {
+                 cmp_op = P2::CMPSri;
 -                cmp_op_hi = P2::CMPSXri;
-@@ -539 +534,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+             } else {
+                 cmp_op = P2::CMPSrr;
 -                cmp_op_hi = P2::CMPSXrr;
-@@ -593,5 +588,6 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
--        // 64 bit compare
--        // 1. compare low words, writing cz.
+             }
+             break;
+         default:
+@@ -590,37 +585,38 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+             .add(rhs)
+             .addImm(P2::ALWAYS).addImm(P2::WCZ);
+     } else {
+-        // 64 bit compare 
+-        // 1. compare low words, writing cz. 
 -        // 2. compare high words, with extended op, writing cz
 -        //
--        // then, the moves can be correctly executed based on the flags
+-        // then, the moves can be correctly executed based on the flags 
 +        // Compare the high words first, signed or unsigned according to the
 +        // condition.  If they are equal, compare the low words as unsigned.
 +        // A conditional low-word CMP leaves the high-word flags intact when
 +        // the high words differ and gives the correct lexicographic flags
 +        // when they match.  This avoids relying on the P2 CMP[S]X carry
 +        // convention, which does not implement a general two-limb compare.
-@@ -601,6 +596,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+         LLVM_DEBUG(errs() << "64 bit condition\n");
+ 
+         if (rhs.isImm()) {
 -            // low compare
 -            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(cmp_op), P2::SW)
 -                .addReg(RI.getSubReg(lhs.getReg(), P2::sub0))
 -                .addImm(rhs.getImm() & 0xffffffff)
 -                .addImm(P2::ALWAYS).addImm(P2::WCZ);
 -
-@@ -608 +598 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+             // high compare
 -            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(cmp_op_hi), P2::SW)
 +            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(cmp_op), P2::SW)
-@@ -612,6 +601,0 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+                 .addReg(RI.getSubReg(lhs.getReg(), P2::sub1))
+                 .addImm(rhs.getImm() >> 32)
+                 .addImm(P2::ALWAYS).addImm(P2::WCZ);
 -        } else {
 -            // low compare
 -            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(cmp_op), P2::SW)
 -                .addReg(RI.getSubReg(lhs.getReg(), P2::sub0))
 -                .addReg(RI.getSubReg(rhs.getReg(), P2::sub0))
 -                .addImm(P2::ALWAYS).addImm(P2::WCZ);
-@@ -618,0 +603,6 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+ 
 +            // low compare, only when the high words match
 +            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(P2::CMPri), P2::SW)
 +                .addReg(RI.getSubReg(lhs.getReg(), P2::sub0))
 +                .addImm(rhs.getImm() & 0xffffffff)
 +                .addImm(P2::IF_Z).addImm(P2::WCZ);
 +        } else {
-@@ -620 +610 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+             // high compare
 -            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(cmp_op_hi), P2::SW)
 +            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(cmp_op), P2::SW)
-@@ -623,0 +614,6 @@ void P2InstrInfo::expand_SELECTCC(MachineInstr &MI) const {
+                 .addReg(RI.getSubReg(lhs.getReg(), P2::sub1))
+                 .addReg(RI.getSubReg(rhs.getReg(), P2::sub1))
+                 .addImm(P2::ALWAYS).addImm(P2::WCZ);
 +
 +            // low compare, only when the high words match
 +            BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(P2::CMPrr), P2::SW)
 +                .addReg(RI.getSubReg(lhs.getReg(), P2::sub0))
 +                .addReg(RI.getSubReg(rhs.getReg(), P2::sub0))
 +                .addImm(P2::IF_Z).addImm(P2::WCZ);
-@@ -714 +710 @@ unsigned P2InstrInfo::insertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TB
+         }
+     }
+ 
+@@ -711,4 +707,4 @@ unsigned P2InstrInfo::insertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TB
+         .addImm(1)  // implicit condition that reads the status word, don't care about the value for unconditional jumps
+         .addImm(P2::ALWAYS);    // the actual condition 
+     return 1;
 -}
 \ No newline at end of file
 +}
@@ -364,14 +468,35 @@ diff --git a/llvm/lib/Target/P2/P2InstrInfo.td b/llvm/lib/Target/P2/P2InstrInfo.
 index 02a18c61238b..4ba0cc9a81fa 100644
 --- a/llvm/lib/Target/P2/P2InstrInfo.td
 +++ b/llvm/lib/Target/P2/P2InstrInfo.td
-@@ -314 +314 @@ let DecoderMethod = "DecodeJumpInstruction", isBarrier = 1, isBranch = 1, isTerm
+@@ -311,7 +311,7 @@ let DecoderMethod = "DecodeJumpInstruction", isBarrier = 1, isBranch = 1, isTerm
+     def JMPa    : P2InstRA<0b1101100, 0b0, (outs), (ins absjmptarget:$d, P2Implicit:$cmp), "jmp $d">; // absolute address jump.
+ }
+ 
 -let DecoderMethod = "DecodeTJInstruction", isBranch = 1, isBarrier = 1, isTerminator = 1 in {
 +let DecoderMethod = "DecodeTJInstruction", isBranch = 1, isTerminator = 1 in {
-@@ -496 +496 @@ def : Pat<(zextloadi1 imm:$s), (ZEROXri (RDBYTEri imm:$s, always, noeff), 0, alw
+     // don't use multiclass here because we don't want to use the imm operand type
+     def TJZrr   : P2InstIDS<0b101110010, 0b0, (outs), (ins P2GPR:$d, P2GPR:$s), "tjz $d, $s">;
+     def TJZri   : P2InstIDS<0b101110010, 0b1, (outs), (ins P2GPR:$d, jmp9target:$s), "tjz $d, $s">;
+@@ -493,7 +493,7 @@ def WRDLONG     : Pseudo<(outs), (ins P2GPRPair:$reg, P2GPR:$addr), "wrdlong $re
+ def : Pat<(i64 (load addr:$s)), (RDDLONG P2GPR:$s)>;
+ 
+ def : Pat<(zextloadi1 imm:$s), (ZEROXri (RDBYTEri imm:$s, always, noeff), 0, always, noeff)>;
 -def : Pat<(zextloadi1 addr:$s), (ZEROXri (RDBYTEri imm:$s, always, noeff), 0, always, noeff)>;
 +def : Pat<(zextloadi1 addr:$s), (ZEROXri (RDBYTErr P2GPR:$s, always, noeff), 0, always, noeff)>;
-@@ -514,0 +515,2 @@ def : Pat<(store i64:$d, addr:$s), (WRDLONG P2GPRPair:$d, P2GPR:$s)>;
+ def : Pat<(zextloadi8 imm:$s), (RDBYTEri imm:$s, always, noeff)>;
+ def : Pat<(zextloadi8 addr:$s), (RDBYTErr P2GPR:$s, always, noeff)>;
+ def : Pat<(zextloadi16 imm:$s), (RDWORDri imm:$s, always, noeff)>;
+@@ -512,6 +512,8 @@ def : Pat<(store P2GPR:$d, addr:$s), (WRLONGrr P2GPR:$d, P2GPR:$s, always)>;
+ def : Pat<(store i32immleaf:$d, addr:$s), (WRLONGir imm:$d, P2GPR:$s, always)>;
+ def : Pat<(store i64:$d, addr:$s), (WRDLONG P2GPRPair:$d, P2GPR:$s)>;
+ 
 +def : Pat<(extloadi1 imm:$s), (ZEROXri (RDBYTEri imm:$s, always, noeff), 0, always, noeff)>;
 +def : Pat<(extloadi1 addr:$s), (ZEROXri (RDBYTErr P2GPR:$s, always, noeff), 0, always, noeff)>;
-@@ -722 +723,0 @@ def PUSHBii     : InstAlias<"$cc pushb $d", (WRLONGii i32imm:$d, 0b111100001, P2
+ def : Pat<(extloadi8 addr:$s), (RDBYTErr P2GPR:$s, always, noeff)>;
+ def : Pat<(extloadi16 addr:$s), (RDWORDrr P2GPR:$s, always, noeff)>;
+ 
+@@ -719,4 +721,3 @@ def PUSHAii     : InstAlias<"$cc pusha $d", (WRLONGii i32imm:$d, 0b101100001, P2
+ def PUSHBri     : InstAlias<"$cc pushb $d", (WRLONGri P2GPR:$d, 0b111100001, P2Cond:$cc)>;
+ def PUSHBii     : InstAlias<"$cc pushb $d", (WRLONGii i32imm:$d, 0b111100001, P2Cond:$cc)>;
+ 
 -

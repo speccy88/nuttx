@@ -60,6 +60,51 @@ static void p2_stack_color(void *stackbase, size_t nbytes)
 }
 #endif
 
+static int p2_stack_attach(struct tcb_s *tcb, void *stack,
+                           size_t stack_size)
+{
+  uintptr_t base;
+  uintptr_t top;
+
+  DEBUGASSERT(tcb != NULL && stack != NULL);
+  if (tcb == NULL || stack == NULL)
+    {
+      return -EINVAL;
+    }
+
+#ifdef CONFIG_TLS_ALIGNED
+  DEBUGASSERT(stack_size <= TLS_MAXSTACK);
+  if (stack_size > TLS_MAXSTACK)
+    {
+      stack_size = TLS_MAXSTACK;
+    }
+#endif
+
+  if (tcb->stack_alloc_ptr != NULL &&
+      (tcb->flags & TCB_FLAG_FREE_STACK) != 0)
+    {
+      up_release_stack(tcb, tcb->flags & TCB_FLAG_TTYPE_MASK);
+    }
+
+  base = STACKFRAME_ALIGN_UP((uintptr_t)stack);
+  top = STACKFRAME_ALIGN_DOWN((uintptr_t)stack + stack_size);
+  if (top <= base)
+    {
+      return -EINVAL;
+    }
+
+  tcb->stack_alloc_ptr = stack;
+  tcb->stack_base_ptr = (void *)base;
+  tcb->adj_stack_size = top - base;
+  tcb->flags &= ~TCB_FLAG_FREE_STACK;
+
+#ifdef CONFIG_STACK_COLORATION
+  p2_stack_color(tcb->stack_base_ptr, tcb->adj_stack_size);
+#endif
+
+  return OK;
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -133,65 +178,48 @@ void *up_stack_frame(struct tcb_s *tcb, size_t frame_size)
 
 int up_use_stack(struct tcb_s *tcb, void *stack, size_t stack_size)
 {
-  uintptr_t base;
-  uintptr_t top;
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+  uintptr_t base = (uintptr_t)stack;
+  uintptr_t hub_end = BOARD_P2_HUB_USABLE_END;
 
-  DEBUGASSERT(tcb != NULL && stack != NULL);
-  if (tcb == NULL || stack == NULL)
-    {
-      return -EINVAL;
-    }
+  /* A caller-provided stack is valid when its complete range is physical Hub
+   * RAM (for example, a static application buffer).  Reject PSRAM tags,
+   * out-of-range addresses, and wrapped ranges because PTRA cannot address
+   * them.  up_create_stack() always allocates automatic stacks from kmm.
+   */
 
-#ifdef CONFIG_TLS_ALIGNED
-  DEBUGASSERT(stack_size <= TLS_MAXSTACK);
-  if (stack_size > TLS_MAXSTACK)
+  if (base >= hub_end || stack_size > hub_end - base)
     {
-      stack_size = TLS_MAXSTACK;
+      return -ENOTSUP;
     }
 #endif
 
-  if (tcb->stack_alloc_ptr != NULL &&
-      (tcb->flags & TCB_FLAG_FREE_STACK) != 0)
-    {
-      up_release_stack(tcb, tcb->flags & TCB_FLAG_TTYPE_MASK);
-    }
-
-  base = STACKFRAME_ALIGN_UP((uintptr_t)stack);
-  top = STACKFRAME_ALIGN_DOWN((uintptr_t)stack + stack_size);
-  if (top <= base)
-    {
-      return -EINVAL;
-    }
-
-  tcb->stack_alloc_ptr = stack;
-  tcb->stack_base_ptr = (void *)base;
-  tcb->adj_stack_size = top - base;
-  tcb->flags &= ~TCB_FLAG_FREE_STACK;
-
-#ifdef CONFIG_STACK_COLORATION
-  p2_stack_color(tcb->stack_base_ptr, tcb->adj_stack_size);
-#endif
-
-  return OK;
+  return p2_stack_attach(tcb, stack, stack_size);
 }
 
 void up_release_stack(struct tcb_s *tcb, uint8_t ttype)
 {
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
   (void)ttype;
+#endif
 
   if (tcb != NULL && tcb->stack_alloc_ptr != NULL &&
       (tcb->flags & TCB_FLAG_FREE_STACK) != 0)
     {
-#ifdef CONFIG_MM_KERNEL_HEAP
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+      kmm_free(tcb->stack_alloc_ptr);
+#else
+#  ifdef CONFIG_MM_KERNEL_HEAP
       if (ttype == TCB_FLAG_TTYPE_KERNEL)
         {
           kmm_free(tcb->stack_alloc_ptr);
         }
       else
-#endif
+#  endif
         {
           kumm_free(tcb->stack_alloc_ptr);
         }
+#endif
     }
 
   if (tcb != NULL)
@@ -228,27 +256,35 @@ int up_create_stack(struct tcb_s *tcb, size_t stack_size, uint8_t ttype)
     }
 
 #ifdef CONFIG_TLS_ALIGNED
-#  ifdef CONFIG_MM_KERNEL_HEAP
+#  ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+  stack = kmm_memalign(TLS_STACK_ALIGN, stack_size);
+#  else
+#    ifdef CONFIG_MM_KERNEL_HEAP
   if (ttype == TCB_FLAG_TTYPE_KERNEL)
     {
       stack = kmm_memalign(TLS_STACK_ALIGN, stack_size);
     }
   else
-#  endif
+#    endif
     {
       stack = kumm_memalign(TLS_STACK_ALIGN, stack_size);
     }
+#  endif
 #else
-#  ifdef CONFIG_MM_KERNEL_HEAP
+#  ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+  stack = kmm_malloc(stack_size);
+#  else
+#    ifdef CONFIG_MM_KERNEL_HEAP
   if (ttype == TCB_FLAG_TTYPE_KERNEL)
     {
       stack = kmm_malloc(stack_size);
     }
   else
-#  endif
+#    endif
     {
       stack = kumm_malloc(stack_size);
     }
+#  endif
 #endif
 
   if (stack == NULL)
@@ -256,19 +292,23 @@ int up_create_stack(struct tcb_s *tcb, size_t stack_size, uint8_t ttype)
       return -ENOMEM;
     }
 
-  ret = up_use_stack(tcb, stack, stack_size);
+  ret = p2_stack_attach(tcb, stack, stack_size);
   if (ret < 0)
     {
-#ifdef CONFIG_MM_KERNEL_HEAP
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+      kmm_free(stack);
+#else
+#  ifdef CONFIG_MM_KERNEL_HEAP
       if (ttype == TCB_FLAG_TTYPE_KERNEL)
         {
           kmm_free(stack);
         }
       else
-#endif
+#  endif
         {
           kumm_free(stack);
         }
+#endif
 
       return ret;
     }

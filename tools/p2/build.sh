@@ -5,6 +5,8 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 caller_apps=${NUTTX_APPS_DIR:-}
+caller_p2llvm_root=${P2LLVM_ROOT:-}
+caller_toolchain_lock=${P2_TOOLCHAIN_LOCK:-}
 
 if [[ -f "$HOME/.p2-nuttx-env" ]]; then
   # shellcheck disable=SC1091
@@ -16,12 +18,18 @@ if [[ -f "$ROOT/.p2-hil.env" ]]; then
   source "$ROOT/.p2-hil.env"
 fi
 
-# An explicit per-build apps checkout must win over convenience defaults from
-# the persistent environment files.  This keeps isolated release worktrees
-# paired with the intended nuttx-apps revision.
+# Explicit per-build apps, compiler, and lock selections must win over
+# convenience defaults from the persistent environment files.  This keeps an
+# isolated source worktree paired with its exact companion and toolchain.
 
 if [[ -n "$caller_apps" ]]; then
   NUTTX_APPS_DIR=$caller_apps
+fi
+if [[ -n "$caller_p2llvm_root" ]]; then
+  P2LLVM_ROOT=$caller_p2llvm_root
+fi
+if [[ -n "$caller_toolchain_lock" ]]; then
+  P2_TOOLCHAIN_LOCK=$caller_toolchain_lock
 fi
 
 requested=${1:-bringup}
@@ -48,6 +56,13 @@ esac
   { echo "ERROR: invalid P2 profile '$cfg'" >&2; exit 2; }
 
 target=$board:$cfg
+unified_profile=0
+case "$cfg" in
+  unified|unified-hil)
+    unified_profile=1
+    ;;
+esac
+
 apps=${NUTTX_APPS_DIR:-$ROOT/../apps}
 python=${P2_PYTHON:-python3}
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -67,6 +82,13 @@ apps_arg=$("$python" -c 'import os, sys; print(os.path.relpath(sys.argv[1], sys.
 [[ -n "${P2LLVM_ROOT:-}" ]] || { echo "ERROR: P2LLVM_ROOT is unset" >&2; exit 1; }
 [[ -x "$P2LLVM_ROOT/bin/clang" ]] ||
   { echo "ERROR: P2 clang not found at $P2LLVM_ROOT/bin/clang" >&2; exit 1; }
+
+if [[ $unified_profile -eq 1 ]]; then
+  [[ -x "$P2LLVM_ROOT/bin/llc" ]] ||
+    { echo "ERROR: P2 llc not found at $P2LLVM_ROOT/bin/llc" >&2; exit 1; }
+  [[ -x "$ROOT/tools/p2/check-unified-memory-codegen.py" ]] ||
+    { echo "ERROR: unified-memory compiler verifier is missing" >&2; exit 1; }
+fi
 
 if command -v sysctl >/dev/null 2>&1; then
   jobs=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
@@ -94,6 +116,47 @@ git -C "$apps" status --porcelain=v1 --untracked-files=all \
 [[ ! -s "$art/apps-source-status-before.txt" ]] && apps_clean=1 || apps_clean=0
 printf '%q ' "$ROOT/tools/p2/build.sh" "$requested" > "$art/build-command.txt"
 printf '\n' >> "$art/build-command.txt"
+
+verify_unified_toolchain_lock()
+{
+  local file
+  local digest
+
+  [[ -f "$toolchain_lock" ]] ||
+    { echo "ERROR: unified build toolchain lock is missing: $toolchain_lock" >&2;
+      return 1; }
+
+  for file in \
+    "$P2LLVM_ROOT/bin/clang" \
+    "$P2LLVM_ROOT/bin/clang++" \
+    "$P2LLVM_ROOT/bin/ld.lld" \
+    "$P2LLVM_ROOT/bin/llc" \
+    "$P2LLVM_ROOT/bin/llvm-ar" \
+    "$P2LLVM_ROOT/bin/llvm-nm" \
+    "$P2LLVM_ROOT/bin/llvm-objcopy" \
+    "$P2LLVM_ROOT/bin/llvm-objdump" \
+    "$P2LLVM_ROOT/bin/llvm-readelf" \
+    "$P2LLVM_ROOT/bin/llvm-readobj" \
+    "$P2LLVM_ROOT/bin/llvm-size" \
+    "$P2LLVM_ROOT/bin/llvm-strip" \
+    "$ROOT/tools/p2/patches/p2llvm-preempt-safe-integer.patch" \
+    "$ROOT/tools/p2/patches/p2llvm-unified-memory.patch"
+  do
+    [[ -f "$file" ]] ||
+      { echo "ERROR: unified toolchain input is missing: $file" >&2;
+        return 1; }
+    digest=$("$python" -c \
+      'import hashlib, sys; h = hashlib.sha256(); f = open(sys.argv[1], "rb"); [h.update(chunk) for chunk in iter(lambda: f.read(1048576), b"")]; print(h.hexdigest())' \
+      "$file")
+    awk -v key="sha256=$digest" -v path="$file" \
+      '$1 == key && $2 == path { found = 1 } END { exit !found }' \
+      "$toolchain_lock" ||
+      { echo "ERROR: unified toolchain lock does not pin $file at $digest" >&2;
+        return 1; }
+  done
+
+  echo "unified_toolchain_lock=verified"
+}
 
 finish()
 {
@@ -162,12 +225,32 @@ cd "$ROOT"
   echo "P2LLVM_ROOT=$P2LLVM_ROOT"
   echo "compiler=$compiler"
   echo "jobs=$jobs"
+  if [[ $unified_profile -eq 1 ]]; then
+    "$python" ./tools/p2/check-unified-memory-codegen.py \
+      --clang "$P2LLVM_ROOT/bin/clang" \
+      --llc "$P2LLVM_ROOT/bin/llc" |
+      tee "$art/unified-codegen.txt"
+    verify_unified_toolchain_lock
+  fi
   "$python" ./tools/p2/build_artifact.py \
     --verify-toolchain-lock "$toolchain_lock" \
     --nuttx-commit "$nuttx_commit" \
     --apps-commit "$apps_commit"
   ./tools/configure.sh -E -a "$apps_arg" "$target"
   make olddefconfig
+  if [[ $unified_profile -eq 1 ]]; then
+    LC_ALL=C grep -Fqx 'CONFIG_P2_EC32MB_PSRAM_UNIFIED=y' .config ||
+      { echo "ERROR: $target does not enable the unified PSRAM ABI" >&2;
+        exit 1; }
+    if LC_ALL=C grep -Fqx 'CONFIG_P2_EC32MB_PSRAM=y' .config; then
+      echo "ERROR: $target enables the legacy /dev/psram0 driver" >&2
+      exit 1
+    fi
+    if LC_ALL=C grep -aFq '/dev/psram0' .config; then
+      echo "ERROR: $target configuration contains the legacy PSRAM device path" >&2
+      exit 1
+    fi
+  fi
   make -j"$jobs" V=1
 } 2>&1 | tee "$log"
 
@@ -202,6 +285,40 @@ rm -f "$unsafe_relocs"
 cp nuttx nuttx.map System.map "$art/"
 "$P2LLVM_ROOT/bin/llvm-objcopy" -O binary nuttx nuttx.bin
 ./tools/p2/report-memory.sh nuttx.map nuttx.bin | tee "$art/memory.txt"
+
+if [[ $unified_profile -eq 1 ]]; then
+  unified_symbols=$art/unified-symbols.txt
+  "$P2LLVM_ROOT/bin/llvm-nm" --defined-only nuttx > "$unified_symbols"
+  for helper in \
+    __p2_xmem_load8 __p2_xmem_load16 __p2_xmem_load32 __p2_xmem_load64 \
+    __p2_xmem_store8 __p2_xmem_store16 __p2_xmem_store32 __p2_xmem_store64 \
+    __p2_xmem_memcpy __p2_xmem_memmove __p2_xmem_memset
+  do
+    LC_ALL=C grep -Eq "[[:space:]]${helper}$" "$unified_symbols" ||
+      { echo "ERROR: $target is missing required runtime helper $helper" >&2;
+        exit 1; }
+  done
+
+  for legacy_symbol in \
+    p2_psram_read p2_psram_write p2_psram_seek g_p2_psram_fops
+  do
+    if LC_ALL=C grep -Eq "[[:space:]]${legacy_symbol}$" \
+         "$unified_symbols"; then
+      echo "ERROR: $target contains legacy PSRAM driver symbol $legacy_symbol" >&2
+      exit 1
+    fi
+  done
+
+  # The HIL-only image deliberately contains this path as a negative stat()
+  # probe.  Its NODEV result is runtime evidence; the symbol exclusions above
+  # prove at link time that the character-driver implementation is absent.
+
+  if [[ "$cfg" == unified ]] &&
+     LC_ALL=C grep -aFq '/dev/psram0' nuttx.bin; then
+    echo "ERROR: $target image contains the legacy /dev/psram0 interface" >&2
+    exit 1
+  fi
+fi
 
 if [[ "$cfg" == "flashboot" || "$cfg" == "showcase" || "$cfg" == "base" ]] &&
    ! LC_ALL=C grep -aFq \

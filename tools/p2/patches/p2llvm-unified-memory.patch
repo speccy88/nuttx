@@ -1,0 +1,1322 @@
+diff --git a/llvm/lib/Target/P2/CMakeLists.txt b/llvm/lib/Target/P2/CMakeLists.txt
+index 549a8a89dfdb..23f39abb97cf 100644
+--- a/llvm/lib/Target/P2/CMakeLists.txt
++++ b/llvm/lib/Target/P2/CMakeLists.txt
+@@ -31,6 +31,7 @@ add_llvm_target(P2CodeGen
+     P2TargetObjectFile.cpp
+     P2Subtarget.cpp
+     P2TargetMachine.cpp
++    P2UnifiedMemory.cpp
+     P2FrameLowering.cpp
+     P2MachineFunctionInfo.cpp
+     P2ISelDAGToDAG.cpp
+@@ -56,4 +57,4 @@ add_llvm_target(P2CodeGen
+ add_subdirectory(TargetInfo)
+ add_subdirectory(MCTargetDesc)
+ add_subdirectory(AsmParser)
+-add_subdirectory(Disassembler)
+\ No newline at end of file
++add_subdirectory(Disassembler)
+diff --git a/llvm/lib/Target/P2/P2.h b/llvm/lib/Target/P2/P2.h
+index 6b1cef0dd893..81b99bb1c815 100644
+--- a/llvm/lib/Target/P2/P2.h
++++ b/llvm/lib/Target/P2/P2.h
+@@ -27,8 +27,9 @@ namespace llvm {
+     FunctionPass *createP2DelJmp0Pass(P2TargetMachine &TM);
+     FunctionPass *createP2InsertAugPass(P2TargetMachine &TM);
+     FunctionPass *createP2FinalizeBranchesPass(P2TargetMachine &TM);
++    FunctionPass *createP2UnifiedMemoryPass();
+ 
+ 
+ } // end namespace llvm;
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/llvm/lib/Target/P2/P2TargetMachine.cpp b/llvm/lib/Target/P2/P2TargetMachine.cpp
+index 2502d7d135ad..393ac8cb267b 100644
+--- a/llvm/lib/Target/P2/P2TargetMachine.cpp
++++ b/llvm/lib/Target/P2/P2TargetMachine.cpp
+@@ -58,6 +58,7 @@ namespace {
+         P2PassConfig(P2TargetMachine &TM, PassManagerBase &PM) : TargetPassConfig(TM, PM) {}
+ 
+         bool addInstSelector() override;
++        bool addPreISel() override;
+         void addPreEmitPass() override;
+         void addPreRegAlloc() override;
+ 
+@@ -73,6 +74,11 @@ namespace {
+         return false;
+     }
+ 
++    bool P2PassConfig::addPreISel() {
++        addPass(createP2UnifiedMemoryPass());
++        return false;
++    }
++
+     void P2PassConfig::addPreEmitPass() {
+         P2TargetMachine &TM = getP2TargetMachine();
+         addPass(createP2DelJmp0Pass(TM));
+@@ -89,4 +95,4 @@ namespace {
+ 
+ TargetPassConfig *P2TargetMachine::createPassConfig(PassManagerBase &PM) {
+     return new P2PassConfig(*this, PM);
+-}
+\ No newline at end of file
++}
+diff --git a/llvm/lib/Target/P2/P2UnifiedMemory.cpp b/llvm/lib/Target/P2/P2UnifiedMemory.cpp
+new file mode 100644
+index 000000000000..49121b6bba40
+--- /dev/null
++++ b/llvm/lib/Target/P2/P2UnifiedMemory.cpp
+@@ -0,0 +1,796 @@
++//===-- P2UnifiedMemory.cpp - Route generic memory through xmem helpers ----===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++//
++// P2 Hub RAM is directly addressable, but external memory is reached through
++// board-specific transactions.  With -p2-unified-memory, pointers whose
++// provenance is not provably a Hub alloca or global are routed through a small
++// runtime ABI.  Only bounded constant inbounds GEPs retain Hub provenance;
++// integer-derived, non-inbounds, and variable-offset pointers are deliberately
++// conservative.  The runtime is responsible for discriminating Hub and
++// external addresses.  Atomic operations are only permitted when provenance
++// proves that the address is native Hub memory; the scalar helper ABI
++// deliberately carries no ordering argument and therefore cannot preserve LLVM
++// atomic semantics.
++//
++// This pass runs from the P2 target's pre-ISel hook, after ordinary IR
++// optimization.  Calls are opaque memory side effects, which preserves
++// volatile accesses and keeps ordered accesses from moving across a helper.
++// P2 unified-memory configurations must not enable a later transformation,
++// such as SafeStack, that introduces arbitrary-pointer memory accesses.
++//
++//===----------------------------------------------------------------------===//
++
++#include "P2.h"
++
++#include "llvm/ADT/APInt.h"
++#include "llvm/ADT/SmallPtrSet.h"
++#include "llvm/ADT/SmallVector.h"
++#include "llvm/IR/Constants.h"
++#include "llvm/IR/DataLayout.h"
++#include "llvm/IR/Function.h"
++#include "llvm/IR/IRBuilder.h"
++#include "llvm/IR/InstIterator.h"
++#include "llvm/IR/Instructions.h"
++#include "llvm/IR/IntrinsicInst.h"
++#include "llvm/IR/Module.h"
++#include "llvm/IR/Operator.h"
++#include "llvm/Pass.h"
++#include "llvm/Support/CommandLine.h"
++#include "llvm/Support/ErrorHandling.h"
++#include "llvm/Support/raw_ostream.h"
++
++#include <cstdint>
++#include <limits>
++#include <string>
++
++using namespace llvm;
++
++#define DEBUG_TYPE "p2-unified-memory-lowering"
++
++static cl::opt<bool> EnableP2UnifiedMemory(
++    "p2-unified-memory", cl::init(false),
++    cl::desc("Route non-Hub P2 memory accesses through unified-memory helpers"));
++
++namespace {
++
++class P2UnifiedMemory final : public FunctionPass {
++public:
++  static char ID;
++
++  P2UnifiedMemory() : FunctionPass(ID) {}
++
++  StringRef getPassName() const override {
++    return "P2 Unified Memory Lowering";
++  }
++
++  bool runOnFunction(Function &F) override;
++
++private:
++  bool isProvablyHubPointer(const Value *Pointer,
++                            const DataLayout &DL) const;
++  bool isProvablyHubPointerImpl(
++      const Value *Pointer, const DataLayout &DL, APInt Offset,
++      SmallPtrSetImpl<const Value *> &Visiting) const;
++  bool isHubObjectAtOffset(const Value *Object, const DataLayout &DL,
++                           const APInt &Offset) const;
++  FunctionCallee getHelper(Module &M, StringRef Name, Type *ReturnTy,
++                           ArrayRef<Type *> ParameterTys) const;
++  Value *castAddress(IRBuilder<> &Builder, Value *Pointer) const;
++  Value *getI32Length(IRBuilder<> &Builder, Value *Length,
++                      const Instruction &At) const;
++  unsigned getScalarHelperWidth(Type *Ty, const DataLayout &DL,
++                                const Instruction &At) const;
++  uint32_t getFixedTransferSize(Type *Ty, const DataLayout &DL,
++                                const Instruction &At) const;
++  bool lowerLoad(LoadInst &Load, const DataLayout &DL) const;
++  bool lowerStore(StoreInst &Store, const DataLayout &DL) const;
++  bool lowerMemIntrinsic(MemIntrinsic &MI, const DataLayout &DL) const;
++  bool lowerLibcMemoryCall(CallBase &Call, const DataLayout &DL) const;
++  bool lowerByValArguments(CallBase &Call, const DataLayout &DL) const;
++  void rejectUnsupportedAtomicMemory(Instruction &I,
++                                     const DataLayout &DL) const;
++  void rejectUnsafeIntrinsic(IntrinsicInst &Intrinsic,
++                             const DataLayout &DL) const;
++  void rejectUnsafeCall(CallBase &Call, const DataLayout &DL) const;
++
++  [[noreturn]] void fail(const Instruction &At, const Twine &Reason) const;
++};
++
++} // end anonymous namespace
++
++char P2UnifiedMemory::ID = 0;
++
++static RegisterPass<P2UnifiedMemory>
++    X("p2-unified-memory-lowering", "P2 Unified Memory Lowering", false,
++      false);
++
++[[noreturn]] void P2UnifiedMemory::fail(const Instruction &At,
++                                        const Twine &Reason) const {
++  std::string Message;
++  raw_string_ostream OS(Message);
++  OS << "P2 unified-memory lowering failed in function '"
++     << At.getFunction()->getName() << "': " << Reason << ": ";
++  At.print(OS);
++  OS.flush();
++  report_fatal_error(StringRef(Message), false);
++}
++
++bool P2UnifiedMemory::isHubObjectAtOffset(const Value *Object,
++                                          const DataLayout &DL,
++                                          const APInt &Offset) const {
++  // GlobalAlias and GlobalIFunc can hide an arbitrary constant-expression
++  // address.  Only actual storage objects are eligible for a native proof.
++  if (!isa<AllocaInst>(Object) && !isa<GlobalVariable>(Object))
++    return false;
++
++  // The object itself is a native Hub address.  A derived address needs an
++  // actual byte-range proof below; in particular, do not treat one-past or a
++  // wrapped offset as Hub merely because its underlying object is Hub.
++  if (Offset.isZero())
++    return true;
++  if (Offset.isNegative())
++    return false;
++
++  uint64_t ObjectSize;
++  if (auto *Alloca = dyn_cast<AllocaInst>(Object)) {
++    Type *AllocatedTy = Alloca->getAllocatedType();
++    auto *ArraySize = dyn_cast<ConstantInt>(Alloca->getArraySize());
++    if (!AllocatedTy->isSized() || !ArraySize ||
++        ArraySize->getValue().getActiveBits() > 64)
++      return false;
++
++    TypeSize ElementSize = DL.getTypeAllocSize(AllocatedTy);
++    if (ElementSize.isScalable())
++      return false;
++    uint64_t Count = ArraySize->getZExtValue();
++    uint64_t ElementBytes = ElementSize.getFixedSize();
++    if (Count != 0 &&
++        ElementBytes > std::numeric_limits<uint64_t>::max() / Count)
++      return false;
++    ObjectSize = ElementBytes * Count;
++  } else {
++    auto *Global = dyn_cast<GlobalVariable>(Object);
++    if (!Global || !Global->getValueType()->isSized())
++      return false;
++    TypeSize Size = DL.getTypeAllocSize(Global->getValueType());
++    if (Size.isScalable())
++      return false;
++    ObjectSize = Size.getFixedSize();
++  }
++
++  APInt Size(Offset.getBitWidth(), ObjectSize);
++  if (Size.getLimitedValue() != ObjectSize)
++    return false;
++  return Offset.ult(Size);
++}
++
++bool P2UnifiedMemory::isProvablyHubPointerImpl(
++    const Value *Pointer, const DataLayout &DL, APInt Offset,
++    SmallPtrSetImpl<const Value *> &Visiting) const {
++  if (!Visiting.insert(Pointer).second)
++    return false;
++
++  bool IsHub = false;
++  if (isa<IntToPtrInst>(Pointer) ||
++      (isa<ConstantExpr>(Pointer) &&
++       cast<ConstantExpr>(Pointer)->getOpcode() == Instruction::IntToPtr)) {
++    // Never reconstruct provenance across integer arithmetic.  In particular,
++    // ptrtoint(@hub) + P2_PSRAM_UNIFIED_BASE must remain a tagged xmem address.
++    IsHub = false;
++  } else if (isa<AllocaInst>(Pointer) || isa<GlobalVariable>(Pointer)) {
++    IsHub = isHubObjectAtOffset(Pointer, DL, Offset);
++  } else if (auto *GEP = dyn_cast<GEPOperator>(Pointer)) {
++    if (GEP->isInBounds()) {
++      APInt GEPOffset(Offset.getBitWidth(), 0);
++      if (GEP->accumulateConstantOffset(DL, GEPOffset)) {
++        Offset += GEPOffset;
++        IsHub = isProvablyHubPointerImpl(GEP->getPointerOperand(), DL,
++                                         Offset, Visiting);
++      }
++    }
++  } else if (auto *Cast = dyn_cast<CastInst>(Pointer)) {
++    if (Cast->getOpcode() == Instruction::BitCast ||
++        Cast->getOpcode() == Instruction::AddrSpaceCast) {
++      auto *SourceTy = cast<PointerType>(Cast->getOperand(0)->getType());
++      if (DL.getIndexSizeInBits(SourceTy->getAddressSpace()) ==
++          Offset.getBitWidth())
++        IsHub = isProvablyHubPointerImpl(Cast->getOperand(0), DL, Offset,
++                                         Visiting);
++    }
++  } else if (auto *Expression = dyn_cast<ConstantExpr>(Pointer)) {
++    if (Expression->getOpcode() == Instruction::BitCast ||
++        Expression->getOpcode() == Instruction::AddrSpaceCast) {
++      auto *SourceTy = cast<PointerType>(Expression->getOperand(0)->getType());
++      if (DL.getIndexSizeInBits(SourceTy->getAddressSpace()) ==
++          Offset.getBitWidth())
++        IsHub = isProvablyHubPointerImpl(Expression->getOperand(0), DL,
++                                         Offset, Visiting);
++    }
++  } else if (auto *Select = dyn_cast<SelectInst>(Pointer)) {
++    IsHub = isProvablyHubPointerImpl(Select->getTrueValue(), DL, Offset,
++                                     Visiting) &&
++            isProvablyHubPointerImpl(Select->getFalseValue(), DL, Offset,
++                                     Visiting);
++  } else if (auto *Phi = dyn_cast<PHINode>(Pointer)) {
++    IsHub = Phi->getNumIncomingValues() != 0;
++    for (const Value *Incoming : Phi->incoming_values()) {
++      if (!isProvablyHubPointerImpl(Incoming, DL, Offset, Visiting)) {
++        IsHub = false;
++        break;
++      }
++    }
++  } else if (auto *Freeze = dyn_cast<FreezeInst>(Pointer)) {
++    IsHub = isProvablyHubPointerImpl(Freeze->getOperand(0), DL, Offset,
++                                     Visiting);
++  }
++
++  Visiting.erase(Pointer);
++  return IsHub;
++}
++
++bool P2UnifiedMemory::isProvablyHubPointer(const Value *Pointer,
++                                           const DataLayout &DL) const {
++  if (!Pointer || !Pointer->getType()->isPointerTy())
++    return false;
++
++  auto *PointerTy = cast<PointerType>(Pointer->getType());
++  unsigned IndexBits = DL.getIndexSizeInBits(PointerTy->getAddressSpace());
++  if (IndexBits == 0)
++    return false;
++
++  SmallPtrSet<const Value *, 16> Visiting;
++  return isProvablyHubPointerImpl(Pointer, DL, APInt(IndexBits, 0),
++                                  Visiting);
++}
++
++FunctionCallee P2UnifiedMemory::getHelper(
++    Module &M, StringRef Name, Type *ReturnTy,
++    ArrayRef<Type *> ParameterTys) const {
++  FunctionType *ExpectedTy =
++      FunctionType::get(ReturnTy, ParameterTys, false);
++  FunctionCallee Helper = M.getOrInsertFunction(Name, ExpectedTy);
++
++  // getOrInsertFunction returns a bitcast if an incompatible declaration
++  // already owns the name.  Such a mismatch is an ABI error, not something
++  // this late pass can safely repair.
++  auto *FunctionValue = dyn_cast<Function>(Helper.getCallee());
++  if (!FunctionValue || FunctionValue->getFunctionType() != ExpectedTy) {
++    std::string Message =
++        (Twine("P2 unified-memory helper '") + Name +
++         "' has an incompatible declaration")
++            .str();
++    report_fatal_error(StringRef(Message), false);
++  }
++
++  return Helper;
++}
++
++Value *P2UnifiedMemory::castAddress(IRBuilder<> &Builder,
++                                    Value *Pointer) const {
++  Type *AddressTy = Builder.getInt8PtrTy();
++  if (Pointer->getType() == AddressTy)
++    return Pointer;
++  return Builder.CreatePointerBitCastOrAddrSpaceCast(Pointer, AddressTy,
++                                                      "xmem.addr");
++}
++
++Value *P2UnifiedMemory::getI32Length(IRBuilder<> &Builder, Value *Length,
++                                     const Instruction &At) const {
++  auto *LengthTy = dyn_cast<IntegerType>(Length->getType());
++  if (!LengthTy)
++    fail(At, "memory operation length is not an integer");
++
++  unsigned BitWidth = LengthTy->getBitWidth();
++  if (BitWidth == 32)
++    return Length;
++  if (BitWidth < 32)
++    return Builder.CreateZExt(Length, Builder.getInt32Ty(), "xmem.length");
++
++  auto *ConstantLength = dyn_cast<ConstantInt>(Length);
++  if (!ConstantLength || ConstantLength->getValue().getActiveBits() > 32)
++    fail(At, "memory operation length cannot be represented by the i32 "
++             "unified-memory ABI");
++  return Builder.CreateTrunc(Length, Builder.getInt32Ty(), "xmem.length");
++}
++
++unsigned P2UnifiedMemory::getScalarHelperWidth(Type *Ty, const DataLayout &DL,
++                                               const Instruction &At) const {
++  if (auto *IntegerTy = dyn_cast<IntegerType>(Ty)) {
++    switch (IntegerTy->getBitWidth()) {
++    case 1:
++    case 8:
++      return 8;
++    case 16:
++      return 16;
++    case 32:
++      return 32;
++    case 64:
++      return 64;
++    default:
++      return 0;
++    }
++  }
++
++  if (Ty->isPointerTy()) {
++    if (DL.isNonIntegralPointerType(Ty) || DL.getPointerTypeSizeInBits(Ty) != 32)
++      fail(At, "unified-memory ABI requires a 32-bit integral pointer type");
++    return 32;
++  }
++
++  if (Ty->isFloatTy())
++    return 32;
++  if (Ty->isDoubleTy())
++    return 64;
++
++  return 0;
++}
++
++uint32_t P2UnifiedMemory::getFixedTransferSize(
++    Type *Ty, const DataLayout &DL, const Instruction &At) const {
++  if (!Ty->isSized())
++    fail(At, "non-Hub load/store type is not sized");
++
++  TypeSize Size = DL.getTypeStoreSize(Ty);
++  if (Size.isScalable() ||
++      Size.getFixedSize() > std::numeric_limits<uint32_t>::max())
++    fail(At, "non-Hub load/store type is scalable or too large for the i32 "
++             "unified-memory ABI");
++  return static_cast<uint32_t>(Size.getFixedSize());
++}
++
++bool P2UnifiedMemory::lowerLoad(LoadInst &Load,
++                                const DataLayout &DL) const {
++  if (isProvablyHubPointer(Load.getPointerOperand(), DL))
++    return false;
++
++  if (Load.isAtomic())
++    fail(Load, "atomic load on non-Hub memory is unsupported");
++
++  Type *ValueTy = Load.getType();
++  unsigned Width = getScalarHelperWidth(ValueTy, DL, Load);
++  if (Width == 0) {
++    uint32_t Size = getFixedTransferSize(ValueTy, DL, Load);
++    Align Alignment = DL.getPrefTypeAlign(ValueTy);
++    Function &F = *Load.getFunction();
++    IRBuilder<> EntryBuilder(&*F.getEntryBlock().getFirstInsertionPt());
++    AllocaInst *HubCopy = EntryBuilder.CreateAlloca(
++        ValueTy, nullptr, Load.getName() + ".xmem.hub");
++    HubCopy->setAlignment(Alignment);
++
++    IRBuilder<> Builder(&Load);
++    Builder.SetCurrentDebugLocation(Load.getDebugLoc());
++    Value *Destination = castAddress(Builder, HubCopy);
++    Value *Source = castAddress(Builder, Load.getPointerOperand());
++    FunctionCallee Copy = getHelper(
++        *Load.getModule(), "__p2_xmem_memcpy", Builder.getVoidTy(),
++        {Builder.getInt8PtrTy(), Builder.getInt8PtrTy(), Builder.getInt32Ty()});
++    Builder.CreateCall(Copy, {Destination, Source, Builder.getInt32(Size)});
++    LoadInst *HubLoad =
++        Builder.CreateLoad(ValueTy, HubCopy, Load.getName() + ".xmem");
++    HubLoad->setAlignment(Alignment);
++
++    Load.replaceAllUsesWith(HubLoad);
++    Load.eraseFromParent();
++    return true;
++  }
++
++  LLVMContext &Context = Load.getContext();
++  Type *RawTy = IntegerType::get(Context, Width);
++  std::string HelperName =
++      (Twine("__p2_xmem_load") + Twine(Width)).str();
++
++  IRBuilder<> Builder(&Load);
++  Builder.SetCurrentDebugLocation(Load.getDebugLoc());
++  Value *Address = castAddress(Builder, Load.getPointerOperand());
++  FunctionCallee Helper =
++      getHelper(*Load.getModule(), HelperName, RawTy, {Builder.getInt8PtrTy()});
++  CallInst *Call = Builder.CreateCall(Helper, {Address}, Load.getName() + ".raw");
++
++  Value *Result = Call;
++  if (ValueTy->isIntegerTy(1))
++    Result = Builder.CreateTrunc(Call, ValueTy, Load.getName() + ".xmem");
++  else if (ValueTy->isPointerTy())
++    Result = Builder.CreateIntToPtr(Call, ValueTy, Load.getName() + ".xmem");
++  else if (ValueTy->isFloatingPointTy())
++    Result = Builder.CreateBitCast(Call, ValueTy, Load.getName() + ".xmem");
++
++  Load.replaceAllUsesWith(Result);
++  Load.eraseFromParent();
++  return true;
++}
++
++bool P2UnifiedMemory::lowerStore(StoreInst &Store,
++                                 const DataLayout &DL) const {
++  if (isProvablyHubPointer(Store.getPointerOperand(), DL))
++    return false;
++
++  if (Store.isAtomic())
++    fail(Store, "atomic store on non-Hub memory is unsupported");
++
++  Value *StoredValue = Store.getValueOperand();
++  Type *ValueTy = StoredValue->getType();
++  unsigned Width = getScalarHelperWidth(ValueTy, DL, Store);
++  if (Width == 0) {
++    uint32_t Size = getFixedTransferSize(ValueTy, DL, Store);
++    Align Alignment = DL.getPrefTypeAlign(ValueTy);
++    Function &F = *Store.getFunction();
++    IRBuilder<> EntryBuilder(&*F.getEntryBlock().getFirstInsertionPt());
++    AllocaInst *HubCopy =
++        EntryBuilder.CreateAlloca(ValueTy, nullptr, "xmem.store.hub");
++    HubCopy->setAlignment(Alignment);
++
++    IRBuilder<> Builder(&Store);
++    Builder.SetCurrentDebugLocation(Store.getDebugLoc());
++    StoreInst *HubStore = Builder.CreateStore(StoredValue, HubCopy);
++    HubStore->setAlignment(Alignment);
++    Value *Destination = castAddress(Builder, Store.getPointerOperand());
++    Value *Source = castAddress(Builder, HubCopy);
++    FunctionCallee Copy = getHelper(
++        *Store.getModule(), "__p2_xmem_memcpy", Builder.getVoidTy(),
++        {Builder.getInt8PtrTy(), Builder.getInt8PtrTy(), Builder.getInt32Ty()});
++    Builder.CreateCall(Copy, {Destination, Source, Builder.getInt32(Size)});
++
++    Store.eraseFromParent();
++    return true;
++  }
++
++  LLVMContext &Context = Store.getContext();
++  Type *RawTy = IntegerType::get(Context, Width);
++  std::string HelperName =
++      (Twine("__p2_xmem_store") + Twine(Width)).str();
++
++  IRBuilder<> Builder(&Store);
++  Builder.SetCurrentDebugLocation(Store.getDebugLoc());
++  Value *Address = castAddress(Builder, Store.getPointerOperand());
++  Value *RawValue = StoredValue;
++  if (ValueTy->isIntegerTy(1))
++    RawValue = Builder.CreateZExt(StoredValue, RawTy, "xmem.value");
++  else if (ValueTy->isPointerTy())
++    RawValue = Builder.CreatePtrToInt(StoredValue, RawTy, "xmem.value");
++  else if (ValueTy->isFloatingPointTy())
++    RawValue = Builder.CreateBitCast(StoredValue, RawTy, "xmem.value");
++
++  FunctionCallee Helper = getHelper(*Store.getModule(), HelperName,
++                                    Builder.getVoidTy(),
++                                    {Builder.getInt8PtrTy(), RawTy});
++  Builder.CreateCall(Helper, {Address, RawValue});
++  Store.eraseFromParent();
++  return true;
++}
++
++bool P2UnifiedMemory::lowerMemIntrinsic(MemIntrinsic &MI,
++                                        const DataLayout &DL) const {
++  Value *Destination = MI.getRawDest();
++  Value *Source = nullptr;
++  StringRef HelperName;
++
++  if (auto *Transfer = dyn_cast<MemTransferInst>(&MI)) {
++    Source = Transfer->getRawSource();
++    if (isProvablyHubPointer(Destination, DL) &&
++        isProvablyHubPointer(Source, DL))
++      return false;
++    HelperName = isa<MemMoveInst>(Transfer) ? "__p2_xmem_memmove"
++                                            : "__p2_xmem_memcpy";
++  } else if (isa<MemSetInst>(&MI)) {
++    if (isProvablyHubPointer(Destination, DL))
++      return false;
++    HelperName = "__p2_xmem_memset";
++  } else {
++    fail(MI, "unsupported memory intrinsic");
++  }
++
++  IRBuilder<> Builder(&MI);
++  Builder.SetCurrentDebugLocation(MI.getDebugLoc());
++  Type *I8PtrTy = Builder.getInt8PtrTy();
++  Value *DestinationAddress = castAddress(Builder, Destination);
++  Value *Length = getI32Length(Builder, MI.getLength(), MI);
++  FunctionCallee Helper;
++
++  if (Source) {
++    Value *SourceAddress = castAddress(Builder, Source);
++    Helper = getHelper(*MI.getModule(), HelperName, Builder.getVoidTy(),
++                       {I8PtrTy, I8PtrTy, Builder.getInt32Ty()});
++    Builder.CreateCall(Helper, {DestinationAddress, SourceAddress, Length});
++  } else {
++    auto &Set = cast<MemSetInst>(MI);
++    Value *SetValue = Set.getValue();
++    if (!SetValue->getType()->isIntegerTy(8))
++      fail(MI, "memset value is not i8");
++    Helper = getHelper(*MI.getModule(), HelperName, Builder.getVoidTy(),
++                       {I8PtrTy, Builder.getInt8Ty(), Builder.getInt32Ty()});
++    Builder.CreateCall(Helper, {DestinationAddress, SetValue, Length});
++  }
++
++  MI.eraseFromParent();
++  return true;
++}
++
++bool P2UnifiedMemory::lowerLibcMemoryCall(CallBase &Call,
++                                          const DataLayout &DL) const {
++  Function *Callee = Call.getCalledFunction();
++  if (!Callee)
++    return false;
++
++  StringRef Name = Callee->getName();
++  bool IsMemset = Name == "memset";
++  if (!IsMemset && Name != "memcpy" && Name != "memmove")
++    return false;
++
++  if (Call.arg_size() != 3 || !Call.getType()->isPointerTy() ||
++      !Call.getArgOperand(0)->getType()->isPointerTy() ||
++      !Call.getArgOperand(2)->getType()->isIntegerTy() ||
++      (IsMemset && !Call.getArgOperand(1)->getType()->isIntegerTy()) ||
++      (!IsMemset && !Call.getArgOperand(1)->getType()->isPointerTy()))
++    fail(Call, Twine("direct libc ") + Name +
++                   " call has an incompatible standard ABI");
++
++  Value *Destination = Call.getArgOperand(0);
++  Value *Source = IsMemset ? nullptr : Call.getArgOperand(1);
++  if (isProvablyHubPointer(Destination, DL) &&
++      (!Source || isProvablyHubPointer(Source, DL)))
++    return false;
++
++  // Replacing a pointer-returning libc call with a void helper plus the
++  // destination value cannot preserve musttail.  Reject before creating any
++  // helper IR rather than silently weakening a semantic guarantee.
++  if (auto *CallInstruction = dyn_cast<CallInst>(&Call))
++    if (CallInstruction->isMustTailCall())
++      fail(Call, Twine("musttail direct libc ") + Name +
++                     " call on non-Hub memory is unsupported");
++
++  // NuttX does not use exceptions, and Clang emits these libc operations as
++  // calls.  Refuse an invoke/callbr rather than silently discarding its unwind
++  // or indirect control-flow edge.
++  if (!isa<CallInst>(Call))
++    fail(Call, Twine("non-Hub direct libc ") + Name +
++                   " invoke/callbr is unsupported");
++  if (Call.hasOperandBundles())
++    fail(Call, Twine("non-Hub direct libc ") + Name +
++                   " call with operand bundles is unsupported");
++
++  IRBuilder<> Builder(&Call);
++  Builder.SetCurrentDebugLocation(Call.getDebugLoc());
++  Type *I8PtrTy = Builder.getInt8PtrTy();
++  Value *DestinationAddress = castAddress(Builder, Destination);
++  Value *Length = getI32Length(Builder, Call.getArgOperand(2), Call);
++  FunctionCallee Helper;
++
++  if (IsMemset) {
++    Value *SetValue = Builder.CreateIntCast(
++        Call.getArgOperand(1), Builder.getInt8Ty(), false, "xmem.set.value");
++    Helper = getHelper(*Call.getModule(), "__p2_xmem_memset",
++                       Builder.getVoidTy(),
++                       {I8PtrTy, Builder.getInt8Ty(), Builder.getInt32Ty()});
++    Builder.CreateCall(Helper, {DestinationAddress, SetValue, Length});
++  } else {
++    Value *SourceAddress = castAddress(Builder, Source);
++    StringRef HelperName =
++        Name == "memmove" ? "__p2_xmem_memmove" : "__p2_xmem_memcpy";
++    Helper = getHelper(*Call.getModule(), HelperName, Builder.getVoidTy(),
++                       {I8PtrTy, I8PtrTy, Builder.getInt32Ty()});
++    Builder.CreateCall(Helper,
++                       {DestinationAddress, SourceAddress, Length});
++  }
++
++  Value *ReturnValue = Destination;
++  if (ReturnValue->getType() != Call.getType())
++    ReturnValue = Builder.CreatePointerBitCastOrAddrSpaceCast(
++        ReturnValue, Call.getType(), "xmem.return");
++  Call.replaceAllUsesWith(ReturnValue);
++  Call.eraseFromParent();
++  return true;
++}
++
++bool P2UnifiedMemory::lowerByValArguments(CallBase &Call,
++                                          const DataLayout &DL) const {
++  bool Changed = false;
++  Function &F = *Call.getFunction();
++
++  for (unsigned ArgumentIndex = 0; ArgumentIndex < Call.arg_size();
++       ++ArgumentIndex) {
++    if (!Call.paramHasAttr(ArgumentIndex, Attribute::ByVal))
++      continue;
++
++    Value *Argument = Call.getArgOperand(ArgumentIndex);
++    if (isProvablyHubPointer(Argument, DL))
++      continue;
++
++    // musttail is a semantic guarantee: inserting a caller-owned Hub copy
++    // makes the tail call impossible and silently clearing the marker would
++    // change valid input IR.  Reject it deliberately before mutating the call.
++    if (auto *CallInstruction = dyn_cast<CallInst>(&Call))
++      if (CallInstruction->isMustTailCall())
++        fail(Call, "musttail call with a non-Hub byval argument is "
++                   "unsupported");
++
++    Type *ByValTy = Call.getParamByValType(ArgumentIndex);
++    if (!ByValTy || !ByValTy->isSized())
++      fail(Call, "non-Hub byval argument has no statically sized pointee type");
++
++    TypeSize Size = DL.getTypeAllocSize(ByValTy);
++    if (Size.isScalable() ||
++        Size.getFixedSize() > std::numeric_limits<uint32_t>::max())
++      fail(Call, "non-Hub byval argument is too large for the i32 "
++                 "unified-memory ABI");
++
++    MaybeAlign ParameterAlignment = Call.getParamAlign(ArgumentIndex);
++    Align Alignment = ParameterAlignment
++                          ? *ParameterAlignment
++                          : DL.getABITypeAlign(ByValTy);
++    IRBuilder<> EntryBuilder(&*F.getEntryBlock().getFirstInsertionPt());
++    AllocaInst *HubCopy = EntryBuilder.CreateAlloca(
++        ByValTy, nullptr, Argument->getName() + ".byval.hub");
++    HubCopy->setAlignment(Alignment);
++
++    IRBuilder<> Builder(&Call);
++    Builder.SetCurrentDebugLocation(Call.getDebugLoc());
++    Value *Destination = castAddress(Builder, HubCopy);
++    Value *Source = castAddress(Builder, Argument);
++    Value *Length = Builder.getInt32(static_cast<uint32_t>(Size.getFixedSize()));
++    FunctionCallee Copy = getHelper(
++        *Call.getModule(), "__p2_xmem_memcpy", Builder.getVoidTy(),
++        {Builder.getInt8PtrTy(), Builder.getInt8PtrTy(), Builder.getInt32Ty()});
++    Builder.CreateCall(Copy, {Destination, Source, Length});
++
++    Value *Replacement = HubCopy;
++    if (Replacement->getType() != Argument->getType())
++      Replacement = Builder.CreatePointerBitCastOrAddrSpaceCast(
++          Replacement, Argument->getType(), "xmem.byval.arg");
++    Call.setArgOperand(ArgumentIndex, Replacement);
++
++    // A tail call cannot retain a pointer into the caller's Hub stack.  The
++    // backend may still choose a sibling call after copying the byval payload
++    // into its own outgoing area, but this IR call is no longer tail-marked.
++    if (auto *CallInstruction = dyn_cast<CallInst>(&Call))
++      CallInstruction->setTailCallKind(CallInst::TCK_None);
++
++    Changed = true;
++  }
++
++  return Changed;
++}
++
++void P2UnifiedMemory::rejectUnsupportedAtomicMemory(
++    Instruction &I, const DataLayout &DL) const {
++  if (auto *RMW = dyn_cast<AtomicRMWInst>(&I)) {
++    if (!isProvablyHubPointer(RMW->getPointerOperand(), DL))
++      fail(I, "atomicrmw on non-Hub memory is unsupported");
++    return;
++  }
++
++  if (auto *CmpXchg = dyn_cast<AtomicCmpXchgInst>(&I)) {
++    if (!isProvablyHubPointer(CmpXchg->getPointerOperand(), DL))
++      fail(I, "cmpxchg on non-Hub memory is unsupported");
++    return;
++  }
++
++  auto *AtomicMemory = dyn_cast<AtomicMemIntrinsic>(&I);
++  if (!AtomicMemory)
++    return;
++
++  bool HasNonHubPointer =
++      !isProvablyHubPointer(AtomicMemory->getRawDest(), DL);
++  if (auto *Transfer = dyn_cast<AtomicMemTransferInst>(AtomicMemory))
++    HasNonHubPointer |=
++        !isProvablyHubPointer(Transfer->getRawSource(), DL);
++  if (HasNonHubPointer)
++    fail(I, "element-unordered-atomic memory intrinsic on non-Hub memory is "
++            "unsupported");
++}
++
++void P2UnifiedMemory::rejectUnsafeIntrinsic(IntrinsicInst &Intrinsic,
++                                            const DataLayout &DL) const {
++  if (!Intrinsic.mayReadOrWriteMemory())
++    return;
++
++  for (Value *Argument : Intrinsic.args()) {
++    Type *ArgumentTy = Argument->getType();
++    if (ArgumentTy->isPointerTy()) {
++      if (!isProvablyHubPointer(Argument, DL))
++        fail(Intrinsic,
++             "unsupported intrinsic may access non-Hub memory");
++      continue;
++    }
++
++    // Masked gather/scatter and VP memory intrinsics use vectors of pointers.
++    // This scalar helper ABI cannot preserve their lane semantics.
++    if (auto *VectorTy = dyn_cast<VectorType>(ArgumentTy)) {
++      if (VectorTy->getElementType()->isPointerTy())
++        fail(Intrinsic,
++             "vector-of-pointers memory intrinsic is unsupported");
++    }
++  }
++}
++
++void P2UnifiedMemory::rejectUnsafeCall(CallBase &Call,
++                                       const DataLayout &DL) const {
++  // Inline assembly is opaque to LLVM.  Reject every unproven pointer operand,
++  // not only '*m' constraints: a nominal register operand can still be
++  // dereferenced by the assembly template.
++  if (Call.isInlineAsm()) {
++    for (Value *Argument : Call.args()) {
++      if (Argument->getType()->isPointerTy() &&
++          !isProvablyHubPointer(Argument, DL))
++        fail(Call, "non-Hub pointer passed to inline assembly is unsupported");
++    }
++    return;
++  }
++
++  Value *CalledValue = Call.getCalledOperand()->stripPointerCasts();
++  auto *Callee = dyn_cast<Function>(CalledValue);
++  if (!Callee ||
++      (!Callee->getName().startswith("__atomic_") &&
++       !Callee->getName().startswith("__sync_")))
++    return;
++
++  // Clang lowers P2 C atomics to libatomic calls because the target reports no
++  // lock-free widths.  Letting such a call receive a tagged address would
++  // bypass this pass in compiler-generated library code, so reject it until a
++  // unified-memory atomic ABI is implemented.
++  for (Value *Argument : Call.args()) {
++    if (Argument->getType()->isPointerTy() &&
++        !isProvablyHubPointer(Argument, DL))
++      fail(Call, "atomic operation libcall (__atomic_/__sync_) on non-Hub "
++                 "memory is unsupported");
++  }
++}
++
++bool P2UnifiedMemory::runOnFunction(Function &F) {
++  if (!EnableP2UnifiedMemory || F.isDeclaration() ||
++      F.getName().startswith("__p2_xmem_"))
++    return false;
++
++  const DataLayout &DL = F.getParent()->getDataLayout();
++  SmallVector<Instruction *, 64> Worklist;
++  for (Instruction &I : instructions(F))
++    Worklist.push_back(&I);
++
++  bool Changed = false;
++  for (Instruction *I : Worklist) {
++    if (auto *Load = dyn_cast<LoadInst>(I)) {
++      Changed |= lowerLoad(*Load, DL);
++      continue;
++    }
++    if (auto *Store = dyn_cast<StoreInst>(I)) {
++      Changed |= lowerStore(*Store, DL);
++      continue;
++    }
++    if (isa<AtomicRMWInst>(I) || isa<AtomicCmpXchgInst>(I) ||
++        isa<AtomicMemIntrinsic>(I)) {
++      rejectUnsupportedAtomicMemory(*I, DL);
++      continue;
++    }
++    if (auto *MI = dyn_cast<MemIntrinsic>(I)) {
++      Changed |= lowerMemIntrinsic(*MI, DL);
++      continue;
++    }
++    if (auto *VAArg = dyn_cast<VAArgInst>(I)) {
++      if (!isProvablyHubPointer(VAArg->getPointerOperand(), DL))
++        fail(*VAArg, "va_arg on a non-Hub va_list is unsupported");
++      continue;
++    }
++    if (auto *Intrinsic = dyn_cast<IntrinsicInst>(I)) {
++      rejectUnsafeIntrinsic(*Intrinsic, DL);
++      continue;
++    }
++    if (auto *Call = dyn_cast<CallBase>(I)) {
++      rejectUnsafeCall(*Call, DL);
++      if (lowerLibcMemoryCall(*Call, DL)) {
++        Changed = true;
++        continue;
++      }
++      Changed |= lowerByValArguments(*Call, DL);
++    }
++  }
++
++  return Changed;
++}
++
++FunctionPass *llvm::createP2UnifiedMemoryPass() {
++  return new P2UnifiedMemory();
++}
+diff --git a/llvm/test/CodeGen/P2/unified-memory-unsupported.ll b/llvm/test/CodeGen/P2/unified-memory-unsupported.ll
+new file mode 100644
+index 000000000000..e2b758452212
+--- /dev/null
++++ b/llvm/test/CodeGen/P2/unified-memory-unsupported.ll
+@@ -0,0 +1,129 @@
++; RUN: split-file %s %t
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/vector.ll 2>&1 | FileCheck %s --check-prefix=VECTOR
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/atomic-load.ll 2>&1 | FileCheck %s --check-prefix=ATOMIC-LOAD
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/atomic-store.ll 2>&1 | FileCheck %s --check-prefix=ATOMIC-STORE
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/atomicrmw.ll 2>&1 | FileCheck %s --check-prefix=RMW
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/cmpxchg.ll 2>&1 | FileCheck %s --check-prefix=CMPXCHG
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/atomic-memcpy.ll 2>&1 | FileCheck %s --check-prefix=ATOMIC-MEMCPY
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/atomic-libcall.ll 2>&1 | FileCheck %s --check-prefix=ATOMIC-LIBCALL
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/inline-asm.ll 2>&1 | FileCheck %s --check-prefix=INLINE-ASM
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/libc-length.ll 2>&1 | FileCheck %s --check-prefix=LIBC-LENGTH
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/musttail-byval.ll 2>&1 | FileCheck %s --check-prefix=MUSTTAIL-BYVAL
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/musttail-memcpy.ll 2>&1 | FileCheck %s --check-prefix=MUSTTAIL-MEMCPY
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/musttail-memmove.ll 2>&1 | FileCheck %s --check-prefix=MUSTTAIL-MEMMOVE
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/musttail-memset.ll 2>&1 | FileCheck %s --check-prefix=MUSTTAIL-MEMSET
++
++;--- vector.ll
++define <vscale x 2 x i32> @unsupported_scalable_vector_load(
++    <vscale x 2 x i32>* %pointer) {
++; VECTOR: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_scalable_vector_load': non-Hub load/store type is scalable or too large for the i32 unified-memory ABI
++  %value = load <vscale x 2 x i32>, <vscale x 2 x i32>* %pointer, align 4
++  ret <vscale x 2 x i32> %value
++}
++
++;--- atomic-load.ll
++define i32 @unsupported_atomic_load(i32* %pointer) {
++; ATOMIC-LOAD: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_atomic_load': atomic load on non-Hub memory is unsupported
++  %value = load atomic i32, i32* %pointer seq_cst, align 4
++  ret i32 %value
++}
++
++;--- atomic-store.ll
++define void @unsupported_atomic_store(i32* %pointer, i32 %value) {
++; ATOMIC-STORE: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_atomic_store': atomic store on non-Hub memory is unsupported
++  store atomic i32 %value, i32* %pointer seq_cst, align 4
++  ret void
++}
++
++;--- atomicrmw.ll
++define i32 @unsupported_atomicrmw(i32* %pointer) {
++; RMW: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_atomicrmw': atomicrmw on non-Hub memory is unsupported
++  %value = atomicrmw add i32* %pointer, i32 1 seq_cst
++  ret i32 %value
++}
++
++;--- cmpxchg.ll
++define { i32, i1 } @unsupported_cmpxchg(i32* %pointer) {
++; CMPXCHG: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_cmpxchg': cmpxchg on non-Hub memory is unsupported
++  %value = cmpxchg i32* %pointer, i32 0, i32 1 seq_cst seq_cst
++  ret { i32, i1 } %value
++}
++
++;--- atomic-memcpy.ll
++declare void @llvm.memcpy.element.unordered.atomic.p0i8.p0i8.i32(i8*, i8*, i32, i32 immarg)
++
++define void @unsupported_atomic_memcpy(i8* %destination, i8* %source) {
++; ATOMIC-MEMCPY: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_atomic_memcpy': element-unordered-atomic memory intrinsic on non-Hub memory is unsupported
++  call void @llvm.memcpy.element.unordered.atomic.p0i8.p0i8.i32(i8* align 4 %destination, i8* align 4 %source, i32 16, i32 4)
++  ret void
++}
++
++;--- atomic-libcall.ll
++declare i32 @__atomic_fetch_add_4(i32*, i32, i32)
++
++define i32 @unsupported_atomic_libcall(i32* %pointer) {
++; ATOMIC-LIBCALL: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_atomic_libcall': atomic operation libcall (__atomic_/__sync_) on non-Hub memory is unsupported
++  %value = call i32 @__atomic_fetch_add_4(i32* %pointer, i32 1, i32 5)
++  ret i32 %value
++}
++
++;--- inline-asm.ll
++define void @unsupported_inline_asm(i32* %pointer) {
++; INLINE-ASM: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_inline_asm': non-Hub pointer passed to inline assembly is unsupported
++  call void asm sideeffect "", "*m"(i32* %pointer)
++  ret void
++}
++
++;--- libc-length.ll
++declare i8* @memcpy(i8*, i8*, i64)
++
++define i8* @unsupported_dynamic_libc_length(i8* %destination, i8* %source,
++                                            i64 %length) {
++; LIBC-LENGTH: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_dynamic_libc_length': memory operation length cannot be represented by the i32 unified-memory ABI
++  %result = call i8* @memcpy(i8* %destination, i8* %source, i64 %length)
++  ret i8* %result
++}
++
++;--- musttail-byval.ll
++%pair = type { i32, i32 }
++
++declare void @musttail_byval_callee(%pair* byval(%pair))
++
++define void @unsupported_musttail_byval(%pair* byval(%pair) %source) {
++; MUSTTAIL-BYVAL: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_musttail_byval': musttail call with a non-Hub byval argument is unsupported
++  musttail call void @musttail_byval_callee(%pair* byval(%pair) %source)
++  ret void
++}
++
++;--- musttail-memcpy.ll
++declare i8* @memcpy(i8*, i8*, i32)
++
++define i8* @unsupported_musttail_memcpy(i8* %destination, i8* %source,
++                                        i32 %length) {
++; MUSTTAIL-MEMCPY: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_musttail_memcpy': musttail direct libc memcpy call on non-Hub memory is unsupported
++  %result = musttail call i8* @memcpy(i8* %destination, i8* %source,
++                                      i32 %length)
++  ret i8* %result
++}
++
++;--- musttail-memmove.ll
++declare i8* @memmove(i8*, i8*, i32)
++
++define i8* @unsupported_musttail_memmove(i8* %destination, i8* %source,
++                                         i32 %length) {
++; MUSTTAIL-MEMMOVE: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_musttail_memmove': musttail direct libc memmove call on non-Hub memory is unsupported
++  %result = musttail call i8* @memmove(i8* %destination, i8* %source,
++                                       i32 %length)
++  ret i8* %result
++}
++
++;--- musttail-memset.ll
++declare i8* @memset(i8*, i32, i32)
++
++define i8* @unsupported_musttail_memset(i8* %destination, i32 %value,
++                                        i32 %length) {
++; MUSTTAIL-MEMSET: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_musttail_memset': musttail direct libc memset call on non-Hub memory is unsupported
++  %result = musttail call i8* @memset(i8* %destination, i32 %value,
++                                      i32 %length)
++  ret i8* %result
++}
+diff --git a/llvm/test/CodeGen/P2/unified-memory.ll b/llvm/test/CodeGen/P2/unified-memory.ll
+new file mode 100644
+index 000000000000..05d85b4ef04c
+--- /dev/null
++++ b/llvm/test/CodeGen/P2/unified-memory.ll
+@@ -0,0 +1,313 @@
++; RUN: llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -print-after=p2-unified-memory-lowering -o /dev/null < %s 2>&1 | FileCheck %s
++
++%pair = type { i32, i32 }
++
++@hub_word = global i32 0, align 4
++@hub_bytes = global [16 x i8] zeroinitializer, align 4
++@hub_i128 = global i128 0, align 4
++@hub_vector = global <4 x i16> zeroinitializer, align 4
++@hub_pair = global %pair zeroinitializer, align 4
++@tag_alias = alias i8, i8* getelementptr ([16 x i8], [16 x i8]* @hub_bytes, i32 0, i32 268435456)
++
++declare void @llvm.memcpy.p0i8.p0i8.i32(i8* noalias nocapture writeonly, i8* noalias nocapture readonly, i32, i1 immarg)
++declare void @llvm.memmove.p0i8.p0i8.i32(i8* nocapture writeonly, i8* nocapture readonly, i32, i1 immarg)
++declare void @llvm.memset.p0i8.i32(i8* nocapture writeonly, i8, i32, i1 immarg)
++declare void @consume_pair(%pair* byval(%pair) align 4)
++declare i8* @memcpy(i8*, i8*, i32)
++declare i8* @memmove(i8*, i8*, i32)
++declare i8* @memset(i8*, i32, i32)
++
++define i1 @dynamic_i1(i1* %pointer, i1 %value) {
++; CHECK-LABEL: define i1 @dynamic_i1(
++; CHECK: %[[ADDRESS:.*]] = bitcast i1* %pointer to i8*
++; CHECK: %[[RAW:.*]] = call i8 @__p2_xmem_load8(i8* %[[ADDRESS]])
++; CHECK: %[[RESULT:.*]] = trunc i8 %[[RAW]] to i1
++; CHECK: %[[STORE_ADDRESS:.*]] = bitcast i1* %pointer to i8*
++; CHECK: %[[STORE_VALUE:.*]] = zext i1 %value to i8
++; CHECK: call void @__p2_xmem_store8(i8* %[[STORE_ADDRESS]], i8 %[[STORE_VALUE]])
++; CHECK: ret i1 %[[RESULT]]
++  %loaded = load i1, i1* %pointer, align 1
++  store i1 %value, i1* %pointer, align 1
++  ret i1 %loaded
++}
++
++define i16 @dynamic_volatile_i16(i16* %pointer, i16 %value) {
++; CHECK-LABEL: define i16 @dynamic_volatile_i16(
++; CHECK: call i16 @__p2_xmem_load16(i8*
++; CHECK: call void @__p2_xmem_store16(i8* {{.*}}, i16 %value)
++  %loaded = load volatile i16, i16* %pointer, align 1
++  store volatile i16 %value, i16* %pointer, align 1
++  ret i16 %loaded
++}
++
++define i64 @dynamic_i64(i64* %pointer, i64 %value) {
++; CHECK-LABEL: define i64 @dynamic_i64(
++; CHECK: call i64 @__p2_xmem_load64(i8*
++; CHECK: call void @__p2_xmem_store64(i8* {{.*}}, i64 %value)
++  %loaded = load i64, i64* %pointer, align 1
++  store i64 %value, i64* %pointer, align 1
++  ret i64 %loaded
++}
++
++define i8* @dynamic_pointer(i8** %pointer, i8* %value) {
++; CHECK-LABEL: define i8* @dynamic_pointer(
++; CHECK: %[[POINTER_RAW:.*]] = call i32 @__p2_xmem_load32(i8*
++; CHECK: %[[POINTER_RESULT:.*]] = inttoptr i32 %[[POINTER_RAW]] to i8*
++; CHECK: %[[POINTER_VALUE:.*]] = ptrtoint i8* %value to i32
++; CHECK: call void @__p2_xmem_store32(i8* {{.*}}, i32 %[[POINTER_VALUE]])
++; CHECK: ret i8* %[[POINTER_RESULT]]
++  %loaded = load i8*, i8** %pointer, align 4
++  store i8* %value, i8** %pointer, align 4
++  ret i8* %loaded
++}
++
++define float @dynamic_float(float* %pointer, float %value) {
++; CHECK-LABEL: define float @dynamic_float(
++; CHECK: %[[FLOAT_RAW:.*]] = call i32 @__p2_xmem_load32(i8*
++; CHECK: %[[FLOAT_RESULT:.*]] = bitcast i32 %[[FLOAT_RAW]] to float
++; CHECK: %[[FLOAT_VALUE:.*]] = bitcast float %value to i32
++; CHECK: call void @__p2_xmem_store32(i8* {{.*}}, i32 %[[FLOAT_VALUE]])
++; CHECK: ret float %[[FLOAT_RESULT]]
++  %loaded = load float, float* %pointer, align 1
++  store float %value, float* %pointer, align 1
++  ret float %loaded
++}
++
++define double @dynamic_double(double* %pointer, double %value) {
++; CHECK-LABEL: define double @dynamic_double(
++; CHECK: %[[DOUBLE_RAW:.*]] = call i64 @__p2_xmem_load64(i8*
++; CHECK: %[[DOUBLE_RESULT:.*]] = bitcast i64 %[[DOUBLE_RAW]] to double
++; CHECK: %[[DOUBLE_VALUE:.*]] = bitcast double %value to i64
++; CHECK: call void @__p2_xmem_store64(i8* {{.*}}, i64 %[[DOUBLE_VALUE]])
++; CHECK: ret double %[[DOUBLE_RESULT]]
++  %loaded = load double, double* %pointer, align 1
++  store double %value, double* %pointer, align 1
++  ret double %loaded
++}
++
++define void @dynamic_i128(i128* %pointer) {
++; CHECK-LABEL: define void @dynamic_i128(
++; CHECK-DAG: %loaded.xmem.hub = alloca i128, align [[I128_ALIGN:[0-9]+]]
++; CHECK-DAG: %xmem.store.hub = alloca i128, align [[I128_ALIGN]]
++; CHECK: %[[WIDE_LOAD_DEST:.*]] = bitcast i128* %loaded.xmem.hub to i8*
++; CHECK: %[[WIDE_LOAD_SOURCE:.*]] = bitcast i128* %pointer to i8*
++; CHECK: call void @__p2_xmem_memcpy(i8* %[[WIDE_LOAD_DEST]], i8* %[[WIDE_LOAD_SOURCE]], i32 16)
++; CHECK: %[[WIDE_RESULT:.*]] = load i128, i128* %loaded.xmem.hub, align [[I128_ALIGN]]
++; CHECK: store i128 %[[WIDE_RESULT]], i128* @hub_i128, align 4
++; CHECK: %[[WIDE_VALUE:.*]] = load i128, i128* @hub_i128, align 4
++; CHECK: store i128 %[[WIDE_VALUE]], i128* %xmem.store.hub, align [[I128_ALIGN]]
++; CHECK: %[[WIDE_STORE_DEST:.*]] = bitcast i128* %pointer to i8*
++; CHECK: %[[WIDE_STORE_SOURCE:.*]] = bitcast i128* %xmem.store.hub to i8*
++; CHECK: call void @__p2_xmem_memcpy(i8* %[[WIDE_STORE_DEST]], i8* %[[WIDE_STORE_SOURCE]], i32 16)
++; CHECK: ret void
++  %loaded = load i128, i128* %pointer, align 1
++  store i128 %loaded, i128* @hub_i128, align 4
++  %hub_value = load i128, i128* @hub_i128, align 4
++  store i128 %hub_value, i128* %pointer, align 1
++  ret void
++}
++
++define void @dynamic_fixed_vector(<4 x i16>* %pointer) {
++; CHECK-LABEL: define void @dynamic_fixed_vector(
++; CHECK: %loaded.xmem.hub = alloca <4 x i16>, align [[VECTOR_ALIGN:[0-9]+]]
++; CHECK: call void @__p2_xmem_memcpy(i8* {{.*}}, i8* {{.*}}, i32 8)
++; CHECK: %[[VECTOR_RESULT:.*]] = load <4 x i16>, <4 x i16>* %loaded.xmem.hub, align [[VECTOR_ALIGN]]
++; CHECK: store <4 x i16> %[[VECTOR_RESULT]], <4 x i16>* @hub_vector, align 4
++; CHECK: %[[VECTOR_VALUE:.*]] = load <4 x i16>, <4 x i16>* @hub_vector, align 4
++; CHECK: store <4 x i16> %[[VECTOR_VALUE]], <4 x i16>* %xmem.store.hub, align [[VECTOR_ALIGN]]
++; CHECK: call void @__p2_xmem_memcpy(i8* {{.*}}, i8* {{.*}}, i32 8)
++; CHECK: ret void
++  %loaded = load <4 x i16>, <4 x i16>* %pointer, align 1
++  store <4 x i16> %loaded, <4 x i16>* @hub_vector, align 4
++  %hub_value = load <4 x i16>, <4 x i16>* @hub_vector, align 4
++  store <4 x i16> %hub_value, <4 x i16>* %pointer, align 1
++  ret void
++}
++
++define void @dynamic_aggregate(%pair* %pointer) {
++; CHECK-LABEL: define void @dynamic_aggregate(
++; CHECK: %loaded.xmem.hub = alloca %pair, align [[PAIR_ALIGN:[0-9]+]]
++; CHECK: call void @__p2_xmem_memcpy(i8* {{.*}}, i8* {{.*}}, i32 8)
++; CHECK: %[[AGGREGATE_RESULT:.*]] = load %pair, %pair* %loaded.xmem.hub, align [[PAIR_ALIGN]]
++; CHECK: store %pair %[[AGGREGATE_RESULT]], %pair* @hub_pair, align 4
++; CHECK: %[[AGGREGATE_VALUE:.*]] = load %pair, %pair* @hub_pair, align 4
++; CHECK: store %pair %[[AGGREGATE_VALUE]], %pair* %xmem.store.hub, align [[PAIR_ALIGN]]
++; CHECK: call void @__p2_xmem_memcpy(i8* {{.*}}, i8* {{.*}}, i32 8)
++; CHECK: ret void
++  %loaded = load %pair, %pair* %pointer, align 1
++  store %pair %loaded, %pair* @hub_pair, align 4
++  %hub_value = load %pair, %pair* @hub_pair, align 4
++  store %pair %hub_value, %pair* %pointer, align 1
++  ret void
++}
++
++define i32 @native_hub_access(i32 %value) {
++; CHECK-LABEL: define i32 @native_hub_access(
++; CHECK: %stack = alloca i32
++; CHECK: store i32 %value, i32* %stack
++; CHECK: %stack_value = load i32, i32* %stack
++; CHECK: %global_value = load i32, i32* @hub_word
++; CHECK-NOT: __p2_xmem_
++; CHECK: ret i32
++  %stack = alloca i32, align 4
++  store i32 %value, i32* %stack, align 4
++  %stack_value = load i32, i32* %stack, align 4
++  %global_value = load i32, i32* @hub_word, align 4
++  %result = add i32 %stack_value, %global_value
++  ret i32 %result
++}
++
++define i8 @native_bounded_global_gep(i8 %value) {
++; CHECK-LABEL: define i8 @native_bounded_global_gep(
++; CHECK: %slot = getelementptr inbounds [16 x i8], [16 x i8]* @hub_bytes, i32 0, i32 7
++; CHECK: store i8 %value, i8* %slot
++; CHECK: %loaded = load i8, i8* %slot
++; CHECK-NOT: __p2_xmem_
++; CHECK: ret i8 %loaded
++  %slot = getelementptr inbounds [16 x i8], [16 x i8]* @hub_bytes, i32 0, i32 7
++  store i8 %value, i8* %slot, align 1
++  %loaded = load i8, i8* %slot, align 1
++  ret i8 %loaded
++}
++
++define i8 @integer_derived_tag_alias(i8 %value) {
++; CHECK-LABEL: define i8 @integer_derived_tag_alias(
++; CHECK: %hub = ptrtoint [16 x i8]* @hub_bytes to i32
++; CHECK: %tag = add i32 %hub, 268435456
++; CHECK: %pointer = inttoptr i32 %tag to i8*
++; CHECK: %loaded.raw = call i8 @__p2_xmem_load8(i8* %pointer)
++; CHECK: call void @__p2_xmem_store8(i8* %pointer, i8 %value)
++; CHECK: ret i8 %loaded.raw
++  %hub = ptrtoint [16 x i8]* @hub_bytes to i32
++  %tag = add i32 %hub, 268435456
++  %pointer = inttoptr i32 %tag to i8*
++  %loaded = load i8, i8* %pointer, align 1
++  store i8 %value, i8* %pointer, align 1
++  ret i8 %loaded
++}
++
++define i8 @non_inbounds_gep_escape(i8 %value) {
++; CHECK-LABEL: define i8 @non_inbounds_gep_escape(
++; CHECK: %base = bitcast [16 x i8]* @hub_bytes to i8*
++; CHECK: %pointer = getelementptr i8, i8* %base, i32 268435456
++; CHECK: %loaded.raw = call i8 @__p2_xmem_load8(i8* %pointer)
++; CHECK: call void @__p2_xmem_store8(i8* %pointer, i8 %value)
++; CHECK: ret i8 %loaded.raw
++  %base = bitcast [16 x i8]* @hub_bytes to i8*
++  %pointer = getelementptr i8, i8* %base, i32 268435456
++  %loaded = load i8, i8* %pointer, align 1
++  store i8 %value, i8* %pointer, align 1
++  ret i8 %loaded
++}
++
++define i8 @global_alias_escape() {
++; CHECK-LABEL: define i8 @global_alias_escape(
++; CHECK: %loaded.raw = call i8 @__p2_xmem_load8(i8* @tag_alias)
++; CHECK: ret i8 %loaded.raw
++  %loaded = load i8, i8* @tag_alias, align 1
++  ret i8 %loaded
++}
++
++define i8 @variable_inbounds_gep_is_conservative(i8* %base, i32 %index) {
++; CHECK-LABEL: define i8 @variable_inbounds_gep_is_conservative(
++; CHECK: %pointer = getelementptr inbounds i8, i8* %base, i32 %index
++; CHECK: %loaded.raw = call i8 @__p2_xmem_load8(i8* %pointer)
++; CHECK: ret i8 %loaded.raw
++  %pointer = getelementptr inbounds i8, i8* %base, i32 %index
++  %loaded = load i8, i8* %pointer, align 1
++  ret i8 %loaded
++}
++
++define i32 @native_hub_atomics(i32 %value) {
++; CHECK-LABEL: define i32 @native_hub_atomics(
++; CHECK: store atomic i32 %value, i32* @hub_word seq_cst, align 4
++; CHECK: %loaded = load atomic i32, i32* @hub_word seq_cst, align 4
++; CHECK-NOT: __p2_xmem_
++; CHECK: ret i32 %loaded
++  store atomic i32 %value, i32* @hub_word seq_cst, align 4
++  %loaded = load atomic i32, i32* @hub_word seq_cst, align 4
++  ret i32 %loaded
++}
++
++define void @dynamic_bulk(i8* %destination, i8* %source, i32 %length, i8 %value) {
++; CHECK-LABEL: define void @dynamic_bulk(
++; CHECK: call void @__p2_xmem_memcpy(i8* %destination, i8* %source, i32 %length)
++; CHECK: call void @__p2_xmem_memmove(i8* %destination, i8* %source, i32 %length)
++; CHECK: call void @__p2_xmem_memset(i8* %destination, i8 %value, i32 %length)
++  call void @llvm.memcpy.p0i8.p0i8.i32(i8* align 1 %destination, i8* align 1 %source, i32 %length, i1 false)
++  call void @llvm.memmove.p0i8.p0i8.i32(i8* align 1 %destination, i8* align 1 %source, i32 %length, i1 true)
++  call void @llvm.memset.p0i8.i32(i8* align 1 %destination, i8 %value, i32 %length, i1 false)
++  ret void
++}
++
++define i8* @dynamic_libc_bulk(i8* %destination, i8* %source, i32 %length,
++                              i32 %value) {
++; CHECK-LABEL: define i8* @dynamic_libc_bulk(
++; CHECK: call void @__p2_xmem_memcpy(i8* %destination, i8* %source, i32 %length)
++; CHECK: call void @__p2_xmem_memmove(i8* %destination, i8* %source, i32 %length)
++; CHECK: %[[SET_VALUE:.*]] = trunc i32 %value to i8
++; CHECK: call void @__p2_xmem_memset(i8* %destination, i8 %[[SET_VALUE]], i32 %length)
++; CHECK-NOT: call i8* @mem
++; CHECK: ret i8* %destination
++  %copy = call i8* @memcpy(i8* %destination, i8* %source, i32 %length)
++  %move = call i8* @memmove(i8* %destination, i8* %source, i32 %length)
++  %set = call i8* @memset(i8* %destination, i32 %value, i32 %length)
++  ret i8* %set
++}
++
++define void @native_hub_bulk() {
++; CHECK-LABEL: define void @native_hub_bulk(
++; CHECK: call void @llvm.memcpy.p0i8.p0i8.i32
++; CHECK-NOT: __p2_xmem_memcpy
++; CHECK: ret void
++  %temporary = alloca [16 x i8], align 4
++  %temporary_pointer = bitcast [16 x i8]* %temporary to i8*
++  %global_pointer = getelementptr inbounds [16 x i8], [16 x i8]* @hub_bytes, i32 0, i32 0
++  call void @llvm.memcpy.p0i8.p0i8.i32(i8* align 4 %temporary_pointer, i8* align 4 %global_pointer, i32 16, i1 false)
++  ret void
++}
++
++define void @native_hub_libc_bulk(i32 %value) {
++; CHECK-LABEL: define void @native_hub_libc_bulk(
++; CHECK: call i8* @memcpy(
++; CHECK: call i8* @memmove(
++; CHECK: call i8* @memset(
++; CHECK-NOT: __p2_xmem_
++; CHECK: ret void
++  %temporary = alloca [16 x i8], align 4
++  %temporary_pointer = bitcast [16 x i8]* %temporary to i8*
++  %global_pointer = getelementptr inbounds [16 x i8], [16 x i8]* @hub_bytes, i32 0, i32 0
++  call i8* @memcpy(i8* %temporary_pointer, i8* %global_pointer, i32 16)
++  call i8* @memmove(i8* %global_pointer, i8* %temporary_pointer, i32 16)
++  call i8* @memset(i8* %temporary_pointer, i32 %value, i32 16)
++  ret void
++}
++
++define void @dynamic_byval(%pair* %source) {
++; CHECK-LABEL: define void @dynamic_byval(
++; CHECK: %source.byval.hub = alloca %pair, align 4
++; CHECK: %[[BYVAL_DEST:.*]] = bitcast %pair* %source.byval.hub to i8*
++; CHECK: %[[BYVAL_SOURCE:.*]] = bitcast %pair* %source to i8*
++; CHECK: call void @__p2_xmem_memcpy(i8* %[[BYVAL_DEST]], i8* %[[BYVAL_SOURCE]], i32 8)
++; CHECK: call void @consume_pair(%pair* byval(%pair) align 4 %source.byval.hub)
++  tail call void @consume_pair(%pair* byval(%pair) align 4 %source)
++  ret void
++}
++
++define i32 @__p2_xmem_runtime_body(i32* %pointer) {
++; CHECK-LABEL: define i32 @__p2_xmem_runtime_body(
++; CHECK: %value = load i32, i32* %pointer
++; CHECK-NOT: call i32 @__p2_xmem_load32
++; CHECK: ret i32 %value
++  %value = load i32, i32* %pointer, align 4
++  ret i32 %value
++}
++
++define void @__p2_xmem_memcpy(i8* %destination, i8* %source, i32 %length) {
++; CHECK-LABEL: define void @__p2_xmem_memcpy(
++; CHECK: call i8* @memcpy(i8* %destination, i8* %source, i32 %length)
++; CHECK-NOT: call void @__p2_xmem_memcpy
++; CHECK: ret void
++  call i8* @memcpy(i8* %destination, i8* %source, i32 %length)
++  ret void
++}

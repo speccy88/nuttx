@@ -13,9 +13,12 @@ The port now supplies native COGEXEC-to-HUBEXEC startup, initialized-data and
 BSS handling, clock and low-console setup, ``nx_start()``, upward-growing PTRA
 task stacks, heap allocation, initial TCB state, save/switch/full restore,
 global interrupt-state primitives, CT1 system ticks, low-level and full UART,
-stack helpers, register dumps, reset, and board initialization.  The current
+stack helpers, register dumps, reset, and board initialization.  The native
 linker/runtime window is Hub RAM ``[0, 0x7c000)``; external PSRAM is never
-treated as normal address space.
+hardware-mapped Hub address space.  The experimental ``p2-ec32mb:unified``
+profile adds a compiler-mediated tagged user-heap region.  That profile is
+**DRAFTED / HIL-REQUIRED** and is documented separately in
+:doc:`unified-memory`.
 
 The public context is the fixed 38-long layout in :doc:`context-frame`.
 Interrupt processing uses INT1 only, one detached Hub frame, and a guarded
@@ -29,7 +32,9 @@ The board maps P2-specific hardware to standard NuttX interfaces where a real
 lower half exists: GPIO, UART, PWM, capture, ADC, DAC, generic SPI, bit-banged
 I2C, W25 MTD, SMART, MMC/SD SPI, and the explicit PSRAM character device.  A
 central pin manager and a separate flash/microSD arbiter prevent independent
-drivers from silently reconfiguring shared pins.  The new I2C binding exposes
+drivers from silently reconfiguring shared pins.  The PSRAM character device
+belongs to the legacy profile; the separate unified profile intentionally
+omits ``/dev/psram0``.  The new I2C binding exposes
 ``/dev/i2c0`` on open-drain P24/P25 and can bind the BMP180 at fixed address
 ``0x77`` and ID ``0x55`` as ``/dev/press0``; this path passed 20/20 physical
 cycles.
@@ -52,7 +57,8 @@ root-file chain, and exact 402,060-byte image with SHA-256
 The SD-only reset then reached the ordered boot and showcase markers plus the
 first NSH prompt with zero serial TX and no loader download.  This is
 historical fix qualification, not the current release-candidate identity.
-The evidence also includes two consecutive complete 32-MiB PSRAM runs, the
+The evidence also includes two consecutive complete 32-MiB legacy PSRAM
+service runs, the
 standalone 1,000,000-switch context proof, and a 600-sample host-referenced
 raw GETCT campaign spanning a conservative 600.555632 seconds.  Evidence
 paths and their limits are documented in the subsystem pages rather than
@@ -134,6 +140,8 @@ Unsupported or incomplete areas
   architecture IRQ sources are not implemented.
 * Reset-interrupted flash recovery is verified; true power-loss recovery is
   not, because no controlled power-cycle command is available.
+* The tagged unified-PSRAM user heap has no hardware evidence and remains
+  **HIL-REQUIRED**.  Legacy ``/dev/psram0`` results do not qualify it.
 * P2-EC Rev D has no PSRAM.  Equivalent RAM, flash, and ROM SD-boot HIL passed
   on the exact release image; the no-PSRAM runtime contract also passed.
 

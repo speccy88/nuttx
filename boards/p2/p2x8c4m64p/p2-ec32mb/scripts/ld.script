@@ -83,6 +83,14 @@ SECTIONS
     _stext = ABSOLUTE(.);
     KEEP(*(.text.__start))
     KEEP(*(.text.main))
+
+    /* Unified-memory lowering emits references to this ABI after the C
+     * link inputs have been compiled.  Retain the complete recursion
+     * boundary even when a particular configuration happens not to use one
+     * width or bulk operation in its original IR.
+     */
+
+    KEEP(*(.text.__p2_xmem_*))
     *(.text .text.*)
     *(.gnu.linkonce.t.*)
     _etext = ABSOLUTE(.);

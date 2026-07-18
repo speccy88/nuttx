@@ -55,22 +55,82 @@ config P2_EC32MB_FLASHBOOT
 		intentionally incompatible with destructive p2storage handlers and
 		filesystem-formatting utilities.
 
+config P2_EC32MB_PSRAM_SERVICE
+	bool
+	default n
+
 config P2_EC32MB_PSRAM
 	bool "Register the onboard 32-MiB PSRAM service"
 	default n
 	depends on ARCH_BOARD_P2_EC32MB
 	depends on P2_SMARTPIN && BOARD_LATE_INITIALIZE
+	select P2_EC32MB_PSRAM_SERVICE
 	help
 		Start one non-scheduler cog as a bounded QPI transfer engine and
 		register the four interleaved APS6404L chips as /dev/psram0.  This is
 		an explicit character-device bulk store, not native address space;
 		applications must use read, write, seek, or the board transfer API.
 
+config P2_EC32MB_PSRAM_UNIFIED
+	bool "Use onboard PSRAM as unified user memory"
+	default n
+	depends on ARCH_BOARD_P2_EC32MB
+	depends on P2_SMARTPIN
+	depends on BUILD_FLAT
+	depends on !SMP
+	depends on !P2_EC32MB_PSRAM
+	select ARCH_HAVE_EXTRA_HEAPS
+	select MM_KERNEL_HEAP
+	select P2_EC32MB_PSRAM_SERVICE
+	help
+		Expose the four interleaved APS6404L chips as a tagged 32-MiB
+		user-heap region at 0x10000000.  A p2llvm memory-lowering pass routes
+		loads, stores, and bulk memory operations for that tagged range through
+		the board's dedicated QPI service cog.  Code, globals, interrupt state,
+		and every task stack remain in Hub RAM.  This mode does not register
+		/dev/psram0 and is supported only by the flat uniprocessor P2 port.
+
+config P2_EC32MB_PSRAM_UNIFIED_SELFTEST
+	bool "Run the unified PSRAM boot self-test"
+	default n
+	depends on P2_EC32MB_PSRAM_UNIFIED && BOARD_LATE_INITIALIZE
+	help
+		Run scalar, bulk-memory, allocator, fragmentation, realloc, free,
+		and concurrent-task checks against tagged PSRAM during board late
+		initialization.  Deterministic P2XMEM markers report the result.  This
+		is an opt-in HIL diagnostic and is not enabled by the normal unified
+		profile.
+
+config P2_EC32MB_PSRAM_UNIFIED_SELFTEST_FULL
+	bool "Destructively test every PSRAM byte before heap registration"
+	default n
+	depends on P2_EC32MB_PSRAM_UNIFIED_SELFTEST
+	help
+		Before adding PSRAM to the user heap, write an address-dependent
+		pattern across the complete 32-MiB device, read back every byte, and
+		compute a deterministic FNV-1a checksum.  This erases all PSRAM and
+		considerably extends boot time; enable it only for an explicitly armed
+		HIL run.
+
+config P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK
+	bool "Park the PSRAM worker while it owns the service lock"
+	default n
+	depends on P2_EC32MB_PSRAM_UNIFIED_SELFTEST
+	select BOARDCTL
+	select BOARDCTL_RESET
+	help
+		After the normal unified-memory self-test passes, arm one request that
+		parks the service cog while it owns the descriptor hardware lock.  The
+		caller must still reach its hardware-counter deadline, stop the service
+		cog, reclaim the orphaned lock, and report bounded terminal failure.
+		The test then resets intentionally; enable it only for a dedicated HIL
+		fault-injection image whose reboot is expected.
+
 config P2_EC32MB_PSRAM_COG_STACKSIZE
 	int "PSRAM service-cog stack size"
 	default 3072
 	range 2048 8192
-	depends on P2_EC32MB_PSRAM
+	depends on P2_EC32MB_PSRAM_SERVICE
 	help
 		Reserve this many long-aligned Hub RAM bytes for the dedicated
 		service cog.  Guard words are checked around the stack.
@@ -79,7 +139,7 @@ config P2_EC32MB_PSRAM_MAX_REQUEST
 	int "Maximum PSRAM service request size"
 	default 65536
 	range 4096 65536
-	depends on P2_EC32MB_PSRAM
+	depends on P2_EC32MB_PSRAM_SERVICE
 	help
 		Split larger character-device transfers into requests no larger than
 		this many bytes so cancellation and recovery remain bounded.
@@ -88,13 +148,13 @@ config P2_EC32MB_PSRAM_TIMEOUT_TICKS
 	int "Default PSRAM request timeout in ticks"
 	default 500
 	range 1 2147483647
-	depends on P2_EC32MB_PSRAM
+	depends on P2_EC32MB_PSRAM_SERVICE
 
 config P2_EC32MB_PSRAM_CANCEL_GRACE_TICKS
 	int "PSRAM cancellation grace period in ticks"
 	default 100
 	range 1 2147483647
-	depends on P2_EC32MB_PSRAM
+	depends on P2_EC32MB_PSRAM_SERVICE
 	help
 		Wait this long for cooperative cancellation before stopping the
 		service cog, floating P40-P57, and permanently failing the device.

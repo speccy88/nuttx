@@ -26,6 +26,7 @@
 
 #include <nuttx/config.h>
 
+#include <assert.h>
 #include <errno.h>
 #include <stdbool.h>
 
@@ -47,7 +48,7 @@
 
 #include "p2_ec32mb_pins.h"
 
-#ifdef CONFIG_P2_EC32MB_PSRAM
+#ifdef CONFIG_P2_EC32MB_PSRAM_SERVICE
 #  include <arch/board/p2_ec32mb_psram.h>
 #endif
 
@@ -188,6 +189,18 @@ void board_late_initialize(void)
       syslog(LOG_ERR, "ERROR: Failed to initialize P2 pins: %d\n",
              pin_ret);
       return;
+    }
+#endif
+
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_SELFTEST
+  int xmem_ret;
+
+  xmem_ret = p2_psram_unified_selftest();
+  if (xmem_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: P2 unified PSRAM self-test failed: %d\n",
+             xmem_ret);
+      PANIC();
     }
 #endif
 

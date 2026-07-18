@@ -27,7 +27,9 @@ APPS_REF=71b90cca497d18e667f091bef8113343f746badf
 P2LLVM_REF=bdcefcce7860b2232c06f35726fea679a3a7309c
 LLVM_PROJECT_REF=72a9bb1ef2656d9953d1f41a8196d425ff2ab0b1
 P2LLVM_LOADP2_REF=21e074cc7ee6fbd4fb12ef5352544b3457a6729c
-P2LLVM_PATCH=$ROOT/tools/p2/patches/p2llvm-preempt-safe-integer.patch
+P2LLVM_PREEMPT_PATCH=$ROOT/tools/p2/patches/p2llvm-preempt-safe-integer.patch
+P2LLVM_UNIFIED_PATCH=$ROOT/tools/p2/patches/p2llvm-unified-memory.patch
+P2LLVM_PATCHES=("$P2LLVM_PREEMPT_PATCH" "$P2LLVM_UNIFIED_PATCH")
 FLEXPROP_REF=858f51c4a24e7ae0f6cbc78f625c731083ad304f
 SPIN2CPP_REF=28f1b80fc3a36422fb0a1f7c54465d808634abc8
 LOADP2_REF=c20afedd4253d09da449fa740f8d4304481fc560
@@ -178,7 +180,7 @@ p2llvm_tools_valid()
 {
   local tool
 
-  for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump \
+  for tool in clang clang++ ld.lld llc llvm-ar llvm-nm llvm-objcopy llvm-objdump \
               llvm-readelf llvm-readobj llvm-size llvm-strip
   do
     [[ -x "$P2LLVM_ROOT/bin/$tool" ]] || return 1
@@ -495,6 +497,15 @@ p2llvm_compare64_valid()
     --toolchain-root "$P2LLVM_ROOT" >/dev/null 2>&1
 }
 
+p2llvm_unified_memory_valid()
+{
+  p2llvm_tools_valid || return 1
+  [[ -x "$ROOT/tools/p2/check-unified-memory-codegen.py" ]] || return 1
+  "$PYTHON" "$ROOT/tools/p2/check-unified-memory-codegen.py" \
+    --clang "$P2LLVM_ROOT/bin/clang" \
+    --llc "$P2LLVM_ROOT/bin/llc" >/dev/null 2>&1
+}
+
 p2llvm_valid()
 {
   p2llvm_tools_valid || return 1
@@ -503,43 +514,329 @@ p2llvm_valid()
   p2llvm_bool_memory_valid || return 1
   p2llvm_conditional_branch_valid || return 1
   p2llvm_compare64_valid || return 1
+  p2llvm_unified_memory_valid || return 1
   [[ -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]] || return 1
   [[ -f "$P2LLVM_ROOT/libp2/include/propeller2.h" ]] || return 1
 }
 
-apply_p2llvm_patch()
+prepare_p2llvm_expected_index()
 {
   local llvm_dir=$P2LLVM_SRC/llvm-project
-  local current_patch
+  local expected_index=$1
+  local expected_objects=$2
+  local patch_count=${3:-${#P2LLVM_PATCHES[@]}}
+  local expected_paths=$4
+  local patch_index=0
+  local patch_paths
+  local source_objects
+  local entry
+  local metadata
+  local mode
+  local type
+  local hash
+  local path
+  local path_error
+  local patch
 
-  [[ -f "$P2LLVM_PATCH" ]] ||
-    die "required p2llvm preemption patch is missing: $P2LLVM_PATCH"
+  rm -f "$expected_index" "$expected_index.lock"
+  : > "$expected_paths"
+  patch_paths=$(mktemp "$CACHE/p2llvm-patch-paths.XXXXXX") || return 1
+  source_objects=$(git -C "$llvm_dir" rev-parse --git-path objects) ||
+    { rm -f "$patch_paths"; return 1; }
+  GIT_INDEX_FILE="$expected_index" \
+    GIT_OBJECT_DIRECTORY="$expected_objects" \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+    git -C "$llvm_dir" read-tree --empty ||
+    { rm -f "$patch_paths"; return 1; }
 
-  current_patch=$(mktemp "$CACHE/p2llvm-current-patch.XXXXXX")
-  git -C "$llvm_dir" diff -U0 -- |
-    sed -E 's/[[:space:]]+$//' > "$current_patch"
+  for patch in "${P2LLVM_PATCHES[@]}"
+  do
+    (( patch_index < patch_count )) || break
+    [[ -f "$patch" ]] || { rm -f "$patch_paths"; return 1; }
+    git -C "$llvm_dir" apply --numstat --unidiff-zero "$patch" \
+      > "$patch_paths" || { rm -f "$patch_paths"; return 1; }
+    path_error=0
+    while IFS=$'\t' read -r _ _ path
+    do
+      if ! grep -Fqx -- "$path" "$expected_paths"; then
+        printf '%s\n' "$path" >> "$expected_paths"
+        entry=$(git -C "$llvm_dir" ls-tree HEAD -- "$path")
+        if [[ -n "$entry" ]]; then
+          metadata=${entry%%$'\t'*}
+          read -r mode type hash <<< "$metadata"
+          if [[ "$type" != blob ]] ||
+             ! GIT_INDEX_FILE="$expected_index" \
+               GIT_OBJECT_DIRECTORY="$expected_objects" \
+               GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+               git -C "$llvm_dir" update-index --add \
+                 --cacheinfo "$mode,$hash,$path";
+          then
+            path_error=1
+            break
+          fi
+        fi
+      fi
+    done < "$patch_paths"
+    if (( path_error != 0 )); then
+      rm -f "$patch_paths"
+      return 1
+    fi
+    GIT_INDEX_FILE="$expected_index" \
+      GIT_OBJECT_DIRECTORY="$expected_objects" \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+      git -C "$llvm_dir" apply \
+      --cached --unidiff-zero --check "$patch" ||
+      { rm -f "$patch_paths"; return 1; }
+    GIT_INDEX_FILE="$expected_index" \
+      GIT_OBJECT_DIRECTORY="$expected_objects" \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+      git -C "$llvm_dir" apply \
+      --cached --unidiff-zero "$patch" ||
+      { rm -f "$patch_paths"; return 1; }
+    (( patch_index += 1 ))
+  done
+  rm -f "$patch_paths"
+}
 
-  if git -C "$llvm_dir" apply --unidiff-zero --reverse --check \
-       "$P2LLVM_PATCH" \
-       >/dev/null 2>&1; then
-    cmp -s "$current_patch" "$P2LLVM_PATCH" ||
-      { rm -f "$current_patch";
-        die "p2llvm source has changes in addition to the required patch"; }
-    rm -f "$current_patch"
+p2llvm_patch_prefix_state_valid()
+{
+  local llvm_dir=$P2LLVM_SRC/llvm-project
+  local patch_count=$1
+  local expected_index
+  local expected_objects
+  local allowed_additions
+  local actual_changes
+  local expected_changes
+  local expected_paths=()
+  local source_objects
+  local path
+  local unexpected_change=0
+
+  expected_index=$(mktemp "$CACHE/p2llvm-expected-index.XXXXXX") || return 1
+  allowed_additions=$(mktemp "$CACHE/p2llvm-expected-additions.XXXXXX") ||
+    { rm -f "$expected_index"; return 1; }
+  expected_objects=$(mktemp -d "$CACHE/p2llvm-expected-objects.XXXXXX") ||
+    { rm -f "$expected_index" "$allowed_additions"; return 1; }
+  actual_changes=$(mktemp "$CACHE/p2llvm-actual-changes.XXXXXX") ||
+    { rm -f "$expected_index" "$allowed_additions";
+      rm -rf -- "$expected_objects"; return 1; }
+  expected_changes=$(mktemp "$CACHE/p2llvm-expected-changes.XXXXXX") ||
+    { rm -f "$expected_index" "$allowed_additions" "$actual_changes";
+      rm -rf -- "$expected_objects"; return 1; }
+  source_objects=$(git -C "$llvm_dir" rev-parse --git-path objects) ||
+    { rm -f "$expected_index" "$allowed_additions" "$actual_changes" \
+        "$expected_changes";
+      rm -rf -- "$expected_objects"; return 1; }
+
+  if ! prepare_p2llvm_expected_index "$expected_index" "$expected_objects" \
+       "$patch_count" "$expected_changes"; then
+    rm -f "$expected_index" "$expected_index.lock" "$allowed_additions" \
+      "$actual_changes" "$expected_changes"
+    rm -rf -- "$expected_objects"
+    return 1
+  fi
+
+  git -C "$llvm_dir" diff --name-only --ignore-submodules=dirty -- \
+    > "$actual_changes"
+
+  # First reject tracked changes outside the patch prefix.  Then compare only
+  # the small expected path set against the temporary index; avoiding a full
+  # LLVM worktree rehash keeps this exact check practical on every bootstrap.
+
+  while IFS= read -r path
+  do
+    if ! grep -Fqx -- "$path" "$expected_changes"; then
+      unexpected_change=1
+      break
+    fi
+  done < "$actual_changes"
+  if (( unexpected_change != 0 )); then
+    rm -f "$expected_index" "$expected_index.lock" \
+      "$allowed_additions" "$actual_changes" "$expected_changes"
+    rm -rf -- "$expected_objects"
+    return 1
+  fi
+
+  while IFS= read -r path
+  do
+    expected_paths[${#expected_paths[@]}]=$path
+  done < "$expected_changes"
+
+  if (( ${#expected_paths[@]} != 0 )) &&
+     ! GIT_INDEX_FILE="$expected_index" \
+       GIT_OBJECT_DIRECTORY="$expected_objects" \
+       GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+       git -C "$llvm_dir" diff \
+       --quiet --ignore-submodules=dirty -- "${expected_paths[@]}" ||
+     ! git -C "$llvm_dir" diff --cached --quiet \
+       --ignore-submodules=dirty --;
+  then
+    rm -f "$expected_index" "$expected_index.lock" "$allowed_additions" \
+      "$actual_changes" "$expected_changes"
+    rm -rf -- "$expected_objects"
+    return 1
+  fi
+
+  : > "$allowed_additions"
+  if (( ${#expected_paths[@]} != 0 )); then
+    GIT_INDEX_FILE="$expected_index" \
+      GIT_OBJECT_DIRECTORY="$expected_objects" \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES="$source_objects" \
+      git -C "$llvm_dir" diff --cached \
+      --name-only --diff-filter=A HEAD -- "${expected_paths[@]}" \
+      > "$allowed_additions"
+  fi
+
+  # New files supplied by a patch are untracked in the real index.  Permit
+  # exactly those paths and reject every other non-ignored untracked file.
+
+  while IFS= read -r path
+  do
+    if ! grep -Fqx -- "$path" "$allowed_additions"; then
+      rm -f "$expected_index" "$expected_index.lock" \
+        "$allowed_additions" "$actual_changes" "$expected_changes"
+      rm -rf -- "$expected_objects"
+      return 1
+    fi
+  done < <(git -C "$llvm_dir" ls-files --others --exclude-standard)
+
+  rm -f "$expected_index" "$expected_index.lock" "$allowed_additions" \
+    "$actual_changes" "$expected_changes"
+  rm -rf -- "$expected_objects"
+}
+
+p2llvm_patch_state_valid()
+{
+  p2llvm_patch_prefix_state_valid "${#P2LLVM_PATCHES[@]}"
+}
+
+apply_p2llvm_patches()
+{
+  local llvm_dir=$P2LLVM_SRC/llvm-project
+  local patch
+  local patch_index
+  local prefix
+
+  for patch in "${P2LLVM_PATCHES[@]}"
+  do
+    [[ -f "$patch" ]] || die "required p2llvm patch is missing: $patch"
+  done
+
+  if p2llvm_patch_state_valid; then
     return
   fi
 
-  if [[ -s "$current_patch" ]] ||
-     ! git -C "$llvm_dir" diff --quiet --ignore-submodules=dirty --;
-  then
-    rm -f "$current_patch"
-    die "p2llvm llvm-project has tracked modifications; refusing to overwrite"
+  for ((prefix=${#P2LLVM_PATCHES[@]} - 1; prefix >= 0; prefix--))
+  do
+    if p2llvm_patch_prefix_state_valid "$prefix"; then
+      for ((patch_index=prefix;
+           patch_index < ${#P2LLVM_PATCHES[@]};
+           patch_index++))
+      do
+        patch=${P2LLVM_PATCHES[$patch_index]}
+        git -C "$llvm_dir" apply --unidiff-zero "$patch"
+        echo "Applied $(basename "$patch")"
+      done
+      p2llvm_patch_state_valid ||
+        die "p2llvm source does not exactly match the required patch series"
+      return
+    fi
+  done
+
+  die "p2llvm llvm-project is not an exact patch-series prefix; refusing to overwrite"
+}
+
+selftest_p2llvm_patch_state()
+{
+  local real_src=$P2LLVM_SRC
+  local selftest_root
+  local unexpected
+  local sparse_paths
+  local patch_paths
+  local patch
+  local path
+  local failure=
+
+  selftest_root=$(mktemp -d "$CACHE/p2llvm-patch-selftest.XXXXXX") ||
+    die "could not create the p2llvm patch-state self-test directory"
+  sparse_paths=$(mktemp "$CACHE/p2llvm-selftest-paths.XXXXXX") ||
+    { rm -rf -- "$selftest_root";
+      die "could not create the p2llvm self-test path list"; }
+  patch_paths=$(mktemp "$CACHE/p2llvm-selftest-patch.XXXXXX") ||
+    { rm -f "$sparse_paths"; rm -rf -- "$selftest_root";
+      die "could not create the p2llvm self-test patch path list"; }
+  : > "$sparse_paths"
+  for patch in "${P2LLVM_PATCHES[@]}"
+  do
+    git -C "$real_src/llvm-project" apply --numstat --unidiff-zero \
+      "$patch" > "$patch_paths" ||
+      { rm -f "$sparse_paths" "$patch_paths";
+        rm -rf -- "$selftest_root";
+        die "could not inspect the p2llvm self-test patch paths"; }
+    while IFS=$'\t' read -r _ _ path
+    do
+      grep -Fqx -- "$path" "$sparse_paths" ||
+        printf '%s\n' "$path" >> "$sparse_paths"
+    done < "$patch_paths"
+  done
+  rm -f "$patch_paths"
+
+  git clone --quiet --shared --no-checkout "$real_src/llvm-project" \
+    "$selftest_root/llvm-project" ||
+    { rm -f "$sparse_paths"; rm -rf -- "$selftest_root";
+      die "could not clone the p2llvm patch-state self-test fixture"; }
+  git -C "$selftest_root/llvm-project" sparse-checkout init --no-cone ||
+    { rm -f "$sparse_paths"; rm -rf -- "$selftest_root";
+      die "could not initialize the p2llvm sparse self-test fixture"; }
+  git -C "$selftest_root/llvm-project" sparse-checkout set --no-cone \
+    --stdin < "$sparse_paths" ||
+    { rm -f "$sparse_paths"; rm -rf -- "$selftest_root";
+      die "could not select the p2llvm sparse self-test paths"; }
+  rm -f "$sparse_paths"
+  git -C "$selftest_root/llvm-project" checkout --quiet --detach HEAD ||
+    { rm -rf -- "$selftest_root";
+      die "could not check out the p2llvm patch-state self-test fixture"; }
+
+  P2LLVM_SRC=$selftest_root
+  if p2llvm_patch_state_valid; then
+    failure="clean source was accepted as the patched state"
+  else
+    apply_p2llvm_patches
+    p2llvm_patch_state_valid ||
+      failure="the exact two-patch state was rejected"
   fi
 
-  rm -f "$current_patch"
-  git -C "$llvm_dir" apply --unidiff-zero --check "$P2LLVM_PATCH"
-  git -C "$llvm_dir" apply --unidiff-zero "$P2LLVM_PATCH"
-  echo "Applied $(basename "$P2LLVM_PATCH")"
+  if [[ -z "$failure" ]]; then
+    git -C "$P2LLVM_SRC/llvm-project" apply --unidiff-zero --reverse \
+      "$P2LLVM_UNIFIED_PATCH" || failure="could not create a partial state"
+    if [[ -z "$failure" ]] && p2llvm_patch_state_valid; then
+      failure="a source state missing the unified patch was accepted"
+    fi
+    if [[ -z "$failure" ]]; then
+      apply_p2llvm_patches
+      p2llvm_patch_state_valid ||
+        failure="the exact first-patch state did not upgrade safely"
+    fi
+  fi
+
+  if [[ -z "$failure" ]]; then
+    unexpected=$(mktemp \
+      "$P2LLVM_SRC/llvm-project/p2llvm-unexpected.XXXXXX") ||
+      failure="could not create an additional-file fixture"
+    if [[ -z "$failure" ]] && p2llvm_patch_state_valid; then
+      failure="an additional untracked source file was accepted"
+    fi
+    [[ -z "${unexpected:-}" ]] || rm -f -- "$unexpected"
+  fi
+
+  if [[ -z "$failure" ]] && ! p2llvm_patch_state_valid; then
+    failure="the restored exact state was rejected"
+  fi
+
+  P2LLVM_SRC=$real_src
+  rm -rf -- "$selftest_root"
+  [[ -z "$failure" ]] || die "p2llvm patch-state self-test: $failure"
+  echo "Verified exact p2llvm patch-state detection and tamper rejection"
 }
 
 build_libp2()
@@ -610,7 +907,7 @@ build_p2llvm()
 
   if ! p2llvm_preemption_valid || ! p2llvm_linker_aug20_valid ||
      ! p2llvm_bool_memory_valid || ! p2llvm_conditional_branch_valid ||
-     ! p2llvm_compare64_valid;
+     ! p2llvm_compare64_valid || ! p2llvm_unified_memory_valid;
   then
     (
       cd "$P2LLVM_SRC"
@@ -631,6 +928,10 @@ build_p2llvm()
   "$PYTHON" "$ROOT/tools/p2/compare64_codegen.py" \
     --toolchain-root "$P2LLVM_ROOT" ||
     die "p2llvm does not correctly lower 64-bit comparisons"
+  "$PYTHON" "$ROOT/tools/p2/check-unified-memory-codegen.py" \
+    --clang "$P2LLVM_ROOT/bin/clang" \
+    --llc "$P2LLVM_ROOT/bin/llc" ||
+    die "p2llvm does not provide the required unified-memory lowering"
 
   if [[ ! -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]]; then
     build_libp2
@@ -697,6 +998,7 @@ write_lock()
     echo "loadp2_commit=$(git_head "$FLEXPROP_ROOT/loadp2")"
     echo "compiler=$("$P2LLVM_ROOT/bin/clang" --version | head -1)"
     echo "linker=$("$P2LLVM_ROOT/bin/ld.lld" --version | head -1)"
+    echo "llc=$("$P2LLVM_ROOT/bin/llc" --version | head -1)"
     echo "kconfig_conf=$KCONFIG_CONF"
     echo "kconfig_parser_version=$kconfig_version"
     echo "python=$("$PYTHON_VENV/bin/python" --version 2>&1)"
@@ -710,12 +1012,24 @@ write_lock()
     echo "p2llvm_bool_memory=verified global/static i1 loads and stores at O0 Os O2"
     echo "p2llvm_conditional_branch=verified TJZ/TJNZ fallthrough at O0 Os O2"
     echo "p2llvm_compare64=verified high-first signed/unsigned limb comparisons at O0 Os O2"
-    echo "p2llvm_preempt_patch=$(basename "$P2LLVM_PATCH")"
+    echo "p2llvm_preempt_patch=$(basename "$P2LLVM_PREEMPT_PATCH")"
+    echo "p2llvm_unified_memory=verified opt-in scalar/bulk lowering and explicit unsupported-operation rejection"
+    echo "p2llvm_unified_patch=$(basename "$P2LLVM_UNIFIED_PATCH")"
     echo "p2llvm_darwin_cmake=-DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_LIBXML2=OFF -DCMAKE_DISABLE_FIND_PACKAGE_Backtrace:BOOL=TRUE"
     echo "p2_flags=--target=p2 -fno-jump-tables -ffunction-sections -fdata-sections -fno-common -fno-builtin -Os"
-    shasum -a 256 "$P2LLVM_PATCH" "$KCONFIG_CONF" \
+    echo "p2_unified_flags=-mllvm -p2-unified-memory"
+    shasum -a 256 "$P2LLVM_PREEMPT_PATCH" "$P2LLVM_UNIFIED_PATCH" \
+      "$KCONFIG_CONF" \
       "$P2LLVM_ROOT/bin/clang" \
-      "$P2LLVM_ROOT/bin/ld.lld" "$P2LLVM_ROOT/libp2/lib/libp2.a" \
+      "$P2LLVM_ROOT/bin/clang++" \
+      "$P2LLVM_ROOT/bin/ld.lld" "$P2LLVM_ROOT/bin/llc" \
+      "$P2LLVM_ROOT/bin/llvm-ar" "$P2LLVM_ROOT/bin/llvm-nm" \
+      "$P2LLVM_ROOT/bin/llvm-objcopy" \
+      "$P2LLVM_ROOT/bin/llvm-objdump" \
+      "$P2LLVM_ROOT/bin/llvm-readelf" \
+      "$P2LLVM_ROOT/bin/llvm-readobj" \
+      "$P2LLVM_ROOT/bin/llvm-size" "$P2LLVM_ROOT/bin/llvm-strip" \
+      "$P2LLVM_ROOT/libp2/lib/libp2.a" \
       "$FLEXPROP_ROOT/bin/flexspin" "$FLEXPROP_ROOT/bin/loadp2" |
       sed 's/^/sha256=/'
   } > "$tmp"
@@ -724,7 +1038,7 @@ write_lock()
   echo "Wrote $lock"
 }
 
-for command in cmp git make cmake "$PYTHON" shasum
+for command in git make cmake "$PYTHON" shasum
 do
   need_command "$command"
 done
@@ -739,7 +1053,15 @@ ensure_checkout p2llvm https://github.com/ne75/p2llvm.git \
   "$P2LLVM_SRC" "$P2LLVM_REF"
 require_gitlink "$P2LLVM_SRC/llvm-project" "$LLVM_PROJECT_REF"
 require_gitlink "$P2LLVM_SRC/loadp2" "$P2LLVM_LOADP2_REF"
-apply_p2llvm_patch
+apply_p2llvm_patches
+case ${P2_BOOTSTRAP_PATCH_SELFTEST:-0} in
+  1|only)
+    selftest_p2llvm_patch_state
+    ;;
+esac
+if [[ ${P2_BOOTSTRAP_PATCH_SELFTEST:-0} == only ]]; then
+  exit 0
+fi
 ensure_checkout FlexProp https://github.com/totalspectrum/flexprop.git \
   "$FLEXPROP_ROOT" "$FLEXPROP_REF"
 require_gitlink "$FLEXPROP_ROOT/spin2cpp" "$SPIN2CPP_REF"
