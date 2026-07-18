@@ -47,6 +47,8 @@ if(CONFIG_LIBM_NEWLIB)
         ${CMAKE_CURRENT_LIST_DIR}/0003-newlib-fix-compilation-for-x86.patch &&
         patch -p1 -d ${CMAKE_CURRENT_LIST_DIR} <
         ${CMAKE_CURRENT_LIST_DIR}/0004-newlib-disable-optmisation-for-sincos.patch
+        && patch -p1 -d ${CMAKE_CURRENT_LIST_DIR} <
+        ${CMAKE_CURRENT_LIST_DIR}/0005-newlib-libm-remove-unused-cproj-cdefs.patch
     )
 
     FetchContent_GetProperties(newlib_fetch)
@@ -93,7 +95,9 @@ if(CONFIG_LIBM_NEWLIB)
   file(GLOB_RECURSE COMMON_CSRCS ${NEWLIB_DIR}/newlib/libm/common/*.c)
   file(GLOB_RECURSE COMPLEX_CSRCS ${NEWLIB_DIR}/newlib/libm/complex/*.c)
 
-  file(GLOB_RECURSE FENV_CSRCS ${NEWLIB_DIR}/newlib/libm/fenv/*.c)
+  if(NOT CONFIG_ARCH_P2)
+    file(GLOB_RECURSE FENV_CSRCS ${NEWLIB_DIR}/newlib/libm/fenv/*.c)
+  endif()
 
   set(CSRCS ${COMMON_CSRCS} ${COMPLEX_CSRCS} ${FENV_CSRCS})
 

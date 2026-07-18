@@ -1,0 +1,15 @@
+From: NuttX P2 port <dev@nuttx.apache.org>
+Subject: [PATCH] newlib libm: remove unused cdefs includes from cproj
+
+The RCSID uses in these files are already commented out, leaving the NetBSD
+sys/cdefs.h dependency unused.  NuttX intentionally supplies its own system
+headers while embedding Newlib libm.
+
+--- newlib/newlib/newlib/libm/complex/cproj.c
++++ newlib/newlib/newlib/libm/complex/cproj.c
+@@ -71 +70,0 @@ QUICKREF
+-#include <sys/cdefs.h>
+--- newlib/newlib/newlib/libm/complex/cprojf.c
++++ newlib/newlib/newlib/libm/complex/cprojf.c
+@@ -32 +31,0 @@
+-#include <sys/cdefs.h>

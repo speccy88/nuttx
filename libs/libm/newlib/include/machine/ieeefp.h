@@ -529,6 +529,14 @@
 #define __IEEE_LITTLE_ENDIAN
 #endif
 
+/* The Propeller 2 LLVM target is little-endian, but it is not known by the
+ * upstream Newlib architecture table.
+ */
+
+#ifdef __propeller2__
+#define __IEEE_LITTLE_ENDIAN
+#endif
+
 #ifdef __CYGWIN__
 #define __OBSOLETE_MATH_DEFAULT 0
 #endif
@@ -549,4 +557,3 @@
 
 #endif /* not __IEEE_LITTLE_ENDIAN */
 #endif /* not __IEEE_BIG_ENDIAN */
-

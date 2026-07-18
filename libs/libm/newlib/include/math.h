@@ -54,7 +54,14 @@ extern "C"
 # endif
 #endif
 
-#if !__has_extension(c_thread_local)
+#if defined(__propeller2__)
+/* p2llvm does not implement ELF/C TLS.  NuttX's initial P2 Python profile is
+ * single-owner, so Newlib's legacy signgam storage must be process-global.
+ * The re-entrant lgamma_r/gamma_r entry points remain safe for callers that
+ * supply their own sign storage.
+ */
+# define _Thread_local
+#elif !__has_extension(c_thread_local)
 /* XXX: Some compilers (Clang 3.3, GCC 4.7) falsely announce C++11 mode
  * without actually supporting the thread_local keyword. Don't check for
  * the presence of C++11 when defining _Thread_local.

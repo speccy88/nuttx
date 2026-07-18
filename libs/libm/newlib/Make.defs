@@ -32,18 +32,33 @@ else
   NEWLIB_TARBALL=$(NEWLIB_BASENAME)-$(NEWLIB_VERSION).tar.gz
 endif
 
+NEWLIB_PATCHES = \
+	newlib/0001-newlib-libm-fix-__RCSID-build-error.patch \
+	newlib/0002-newlib-libm-remove-include-reent.h.patch \
+	newlib/0003-newlib-fix-compilation-for-x86.patch \
+	newlib/0004-newlib-disable-optmisation-for-sincos.patch \
+	newlib/0005-newlib-libm-remove-unused-cproj-cdefs.patch
+
+NEWLIB_PATCH_STAMP = newlib/newlib/.nuttx-patched
+
 ifeq ($(wildcard newlib/newlib/.git),)
 $(NEWLIB_BASENAME)-$(NEWLIB_VERSION).tar.gz:
 	$(call DOWNLOAD,$(NEWLIB_URL_BASE),$(NEWLIB_TARBALL),$(NEWLIB_BASENAME)-$(NEWLIB_VERSION).tar.gz)
 
-newlib/newlib: $(NEWLIB_BASENAME)-$(NEWLIB_VERSION).tar.gz
+$(NEWLIB_PATCH_STAMP): $(NEWLIB_BASENAME)-$(NEWLIB_VERSION).tar.gz \
+	$(NEWLIB_PATCHES)
+	$(call DELDIR, $(NEWLIB_BASENAME)-$(NEWLIB_VERSION))
+	$(call DELDIR, newlib/newlib)
 	$(Q) tar -xf $(NEWLIB_BASENAME)-$(NEWLIB_VERSION).tar.gz
 	$(Q) mv $(NEWLIB_BASENAME)-$(NEWLIB_VERSION) newlib/newlib
 	$(Q) patch -p0 < newlib/0001-newlib-libm-fix-__RCSID-build-error.patch
 	$(Q) patch -p0 < newlib/0002-newlib-libm-remove-include-reent.h.patch
 	$(Q) patch -p0 < newlib/0003-newlib-fix-compilation-for-x86.patch
 	$(Q) patch -p0 < newlib/0004-newlib-disable-optmisation-for-sincos.patch
-	$(Q) touch $@
+	$(Q) patch -p0 < newlib/0005-newlib-libm-remove-unused-cproj-cdefs.patch
+	$(Q) touch $(NEWLIB_PATCH_STAMP)
+
+newlib/newlib: $(NEWLIB_PATCH_STAMP)
 endif
 
 distclean::
@@ -88,9 +103,15 @@ VPATH += :newlib/newlib/newlib/libm/complex
 DEPPATH += --dep-path newlib/newlib/newlib/libm/common
 DEPPATH += --dep-path newlib/newlib/newlib/libm/complex
 
-CSRCS += $(wildcard newlib/newlib/newlib/libm/fenv/*.c)
-VPATH += :newlib/newlib/newlib/libm/fenv
-DEPPATH += --dep-path newlib/newlib/newlib/libm/fenv
+# p2llvm has no floating-point environment or fenv.h.  The software libm
+# functions remain available, but do not advertise unsupported exception-mode
+# controls on this target.
+
+ifneq ($(CONFIG_ARCH_P2),y)
+  CSRCS += $(wildcard newlib/newlib/newlib/libm/fenv/*.c)
+  VPATH += :newlib/newlib/newlib/libm/fenv
+  DEPPATH += --dep-path newlib/newlib/newlib/libm/fenv
+endif
 
 ifneq ($(CONFIG_ARCH_X86_64)$(CONFIG_ARCH_X86),)
 CFLAGS += ${INCDIR_PREFIX}newlib/newlib/newlib/libc/machine/shared_x86/sys
