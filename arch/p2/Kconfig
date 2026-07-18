@@ -115,9 +115,24 @@ config P2_HUB_OVERLAY_SHADOW_DEPTH
 	range 4 1024
 	default 64
 	help
-		Maximum number of nested overlay calls.  Return resumes and caller
-		group identifiers are held in a separate fixed Hub array; they are
-		never placed in PSRAM.
+		Maximum number of simultaneously active root or cross-group overlay
+		calls.  Calls within the already-loaded group return directly and do
+		not consume a record.  Each record holds the exact return resume plus
+		caller and callee group identifiers in 12 bytes of fixed Hub memory;
+		the default depth therefore costs 768 bytes and the maximum costs
+		12288 bytes.  Shadow records are never placed in PSRAM.
+
+config P2_HUB_OVERLAY_GROUP_COUNT
+	int "Compiler-generated Hub overlay groups"
+	depends on P2_HUB_OVERLAYS
+	range 1 256
+	default 32
+	help
+		Number of deterministic overlay groups used for large translation-unit
+		sets such as CPython.  More groups reduce the maximum bytes sharing one
+		execution slot, at the cost of a larger resident descriptor table.  The
+		linker discovers the actual group IDs and rejects missing IDs or a group
+		whose linked body exceeds the configured slot.
 
 source "arch/p2/src/p2x8c4m64p/Kconfig"
 endif

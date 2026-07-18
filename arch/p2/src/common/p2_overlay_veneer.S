@@ -22,6 +22,7 @@
 
 #define __ASSEMBLY__ 1
 #include <arch/context.h>
+#include "p2_overlay_internal.h"
 
         .section .text.p2_overlay_veneer,"ax",@progbits
 
@@ -50,17 +51,22 @@ __p2_overlay_enter:
         rdlong  r1, pa
         calla   #\p2_overlay_dispatch_enter
         mov     pb, r31
+        testb   pb, #P2_OVERLAY_DIRECT_TARGET_BIT wc
+  if_c  andn    pb, ##P2_OVERLAY_DIRECT_TARGET_FLAG
 
         sub     ptra, #120
         setq    #29
         rdlong  r0, ptra
 
-        /* Discard the stub-to-veneer CALLA word.  Replace only the low 20 PC
-         * bits of the original packed resume, retaining its exact C/Z bits.
-         * The C shadow stack holds the complete original resume.
+        /* Discard the stub-to-veneer CALLA word.  A same-loaded-group target
+         * retains the original caller resume and returns through it directly,
+         * consuming no C shadow record.  A root or cross-group target instead
+         * replaces only the low 20 PC bits, retaining the exact C/Z bits; its
+         * complete original resume is held by the C shadow stack.
          */
 
         sub     ptra, #4
+  if_c  jmp     pb
         mov     pa, ptra
         sub     pa, #4
         rdlong  r30, pa

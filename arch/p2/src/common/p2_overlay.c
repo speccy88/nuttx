@@ -41,6 +41,7 @@
 
 #include "sched/sched.h"
 #include "p2_internal.h"
+#include "p2_overlay_internal.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -209,7 +210,10 @@ static int p2_overlay_validate_tables(void)
       ((uintptr_t)__p2_overlay_slot_start &
        (P2_OVERLAY_STUB_BYTES - 1)) != 0 ||
       stubs == 0 || stubs != entries || groups < 2 ||
-      (enter & ~P2_RESUME_PC_MASK) != 0)
+      (enter & ~P2_RESUME_PC_MASK) != 0 ||
+      (((uintptr_t)__p2_overlay_slot_start |
+        (uintptr_t)__p2_overlay_slot_end) &
+       P2_OVERLAY_DIRECT_TARGET_FLAG) != 0)
     {
       return -EINVAL;
     }
@@ -490,6 +494,7 @@ uintptr_t p2_overlay_dispatch_enter(uint32_t stub_resume,
   size_t stub_index;
   uint32_t caller_group;
   uint32_t group;
+  bool direct;
   bool needs_load;
   int ret;
 
@@ -523,16 +528,47 @@ uintptr_t p2_overlay_dispatch_enter(uint32_t stub_resume,
   irqstate = enter_critical_section();
   if (!g_p2_overlay_ready || g_p2_overlay_loader == NULL ||
       g_p2_overlay_transition ||
-      g_p2_overlay_depth >= CONFIG_P2_HUB_OVERLAY_SHADOW_DEPTH ||
+      g_p2_overlay_depth > CONFIG_P2_HUB_OVERLAY_SHADOW_DEPTH ||
+      (g_p2_overlay_depth == 0 && g_p2_overlay_owner != NULL) ||
       (g_p2_overlay_depth != 0 && g_p2_overlay_owner != task))
     {
       int error = !g_p2_overlay_ready || g_p2_overlay_loader == NULL ?
                   -ENOSYS :
-                  g_p2_overlay_depth >=
+                  g_p2_overlay_depth >
                     CONFIG_P2_HUB_OVERLAY_SHADOW_DEPTH ? -EOVERFLOW : -EBUSY;
 
       leave_critical_section(irqstate);
       p2_overlay_fail(error);
+    }
+
+  /* Calls within the currently loaded group need neither a reload nor a
+   * shadow record.  The veneer leaves the original CALLA resume untouched,
+   * and the callee consumes it directly with RETA.  Require the top record
+   * to agree with the published image so a corrupted or transient state can
+   * never bypass the fail-closed path.  In particular, a direct call remains
+   * valid when the cross-group shadow stack is exactly full because it does
+   * not increase that depth.
+   */
+
+  direct = g_p2_overlay_depth != 0 &&
+           g_p2_overlay_loaded_group == group;
+  if (direct)
+    {
+      if (g_p2_overlay_shadow[g_p2_overlay_depth - 1].callee_group != group)
+        {
+          leave_critical_section(irqstate);
+          p2_overlay_fail(-EFAULT);
+        }
+
+      leave_critical_section(irqstate);
+      return ((uintptr_t)__p2_overlay_slot_start + entry->offset) |
+             P2_OVERLAY_DIRECT_TARGET_FLAG;
+    }
+
+  if (g_p2_overlay_depth >= CONFIG_P2_HUB_OVERLAY_SHADOW_DEPTH)
+    {
+      leave_critical_section(irqstate);
+      p2_overlay_fail(-EOVERFLOW);
     }
 
   if (g_p2_overlay_depth == 0)
