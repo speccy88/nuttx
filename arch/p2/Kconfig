@@ -79,5 +79,45 @@ config P2_SMARTPIN
 		drivers.  Individual standard NuttX device interfaces remain
 		board-selectable.
 
+config P2_HUB_OVERLAYS
+	bool "Experimental Hub execution overlays"
+	default n
+	depends on P2_EC32MB_PSRAM_UNIFIED
+	depends on !SMP
+	help
+		Reserve a fixed execution slot at the top of Hub RAM and build the
+		resident dispatcher used by compiler-generated function overlays.
+		Overlay images are copied from tagged PSRAM by a board-registered
+		loader callback.  The dispatcher performs no filesystem or flash I/O.
+
+		This first implementation deliberately permits one owning task and one
+		root overlay call at a time.  A second task, interrupt-context entry,
+		invalid metadata, loader failure, or image-integrity failure stops
+		execution rather than branching into an unverified Hub image.
+
+		Leave this disabled unless the complete overlay image has been packed,
+		relocated into tagged PSRAM, and registered before its first stub call.
+
+config P2_HUB_OVERLAY_SLOT_SIZE
+	int "Hub overlay execution slot size"
+	depends on P2_HUB_OVERLAYS
+	range 4096 262144
+	default 131072
+	help
+		Bytes reserved at the high end of the loader-safe Hub window for one
+		overlay group.  The value must be a multiple of four.  The linker
+		checks alignment and rejects an image whose resident allocation reaches
+		this slot.
+
+config P2_HUB_OVERLAY_SHADOW_DEPTH
+	int "Overlay return shadow depth"
+	depends on P2_HUB_OVERLAYS
+	range 4 1024
+	default 64
+	help
+		Maximum number of nested overlay calls.  Return resumes and caller
+		group identifiers are held in a separate fixed Hub array; they are
+		never placed in PSRAM.
+
 source "arch/p2/src/p2x8c4m64p/Kconfig"
 endif

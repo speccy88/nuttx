@@ -1,5 +1,17 @@
 CMN_ASRCS += p2_context.S p2_serial_rx.S
 
+ifeq ($(CONFIG_P2_HUB_OVERLAYS),y)
+CMN_ASRCS += p2_overlay_veneer.S
+CMN_CSRCS += p2_overlay.c
+
+# The dispatcher dereferences only fixed Hub metadata and the fixed Hub slot;
+# tagged PSRAM is passed to (but never dereferenced by) its loader callback.
+# Keeping this object native also prevents a group reload from recursively
+# entering the unified-memory helpers while the overlay slot is invalid.
+
+p2_overlay$(OBJEXT): P2_UNIFIED_MEMORY_FLAGS =
+endif
+
 ifeq ($(CONFIG_ARCH_SETJMP_H),y)
 CMN_ASRCS += p2_setjmp.S
 endif

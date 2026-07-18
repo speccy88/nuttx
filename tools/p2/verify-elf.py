@@ -28,7 +28,6 @@ import sys
 from elftools.elf.constants import SH_FLAGS
 from elftools.elf.elffile import ELFFile
 
-
 HUB_LIMIT = 0x7C000
 HUBEXEC_MIN = 0x400
 TEXT_START = 0xA00
@@ -74,6 +73,14 @@ REQUIRED_SYMBOLS = (
     "p2_context_trigger_restore",
     "_sheap",
     "_eheap",
+    "__p2_overlay_slot_start",
+    "__p2_overlay_slot_end",
+    "__p2_overlay_stubs_start",
+    "__p2_overlay_stubs_end",
+    "__p2_overlay_entries_start",
+    "__p2_overlay_entries_end",
+    "__p2_overlay_groups_start",
+    "__p2_overlay_groups_end",
 )
 
 LOW_EXEC_SECTIONS = {".p2.entry", ".p2.cog", ".p2.lut"}
@@ -202,8 +209,7 @@ def verify_startup(sections: dict[str, object], symbols: dict[str, int]) -> None
             "__start does not load __initial_ptra into PTRA "
             f"(word 0x{stack_mov:08x})"
         )
-    if decode_augmented_source(stack_aug, stack_mov) != \
-            symbols["__initial_ptra"]:
+    if decode_augmented_source(stack_aug, stack_mov) != symbols["__initial_ptra"]:
         fail("__start AUGS/MOV target does not match __initial_ptra")
     if start_call & 0xFFF00000 != 0xFDC00000:
         fail(f"__start third word is not CALLA (word 0x{start_call:08x})")
@@ -221,8 +227,11 @@ def verify_context_trigger(
     for section in sections.values():
         start = int(section["sh_addr"])
         size = int(section["sh_size"])
-        if int(section["sh_flags"]) & SH_FLAGS.SHF_EXECINSTR and \
-                start <= address and address + 12 <= start + size:
+        if (
+            int(section["sh_flags"]) & SH_FLAGS.SHF_EXECINSTR
+            and start <= address
+            and address + 12 <= start + size
+        ):
             offset = address - start
             code = section.data()[offset : offset + 12]
             break
@@ -238,8 +247,7 @@ def verify_context_trigger(
             "p2_context_trigger_restore must start with TRGINT1/ALLOWI; "
             f"found 0x{trigger:08x}/0x{allow:08x}"
         )
-    if wait & 0xFFF00000 != 0xFD800000 or \
-            wait & 0xFFFFF != address + 8:
+    if wait & 0xFFF00000 != 0xFD800000 or wait & 0xFFFFF != address + 8:
         fail(
             "p2_context_trigger_restore does not spin after enabling its "
             f"waiting interrupt (word 0x{wait:08x})"
@@ -254,8 +262,11 @@ def executable_code(
     for section in sections.values():
         start = int(section["sh_addr"])
         size = int(section["sh_size"])
-        if int(section["sh_flags"]) & SH_FLAGS.SHF_EXECINSTR and \
-                start <= address and address + length <= start + size:
+        if (
+            int(section["sh_flags"]) & SH_FLAGS.SHF_EXECINSTR
+            and start <= address
+            and address + length <= start + size
+        ):
             offset = address - start
             return section.data()[offset : offset + length]
 
@@ -327,9 +338,7 @@ def verify_psram_test_hotpath(
             fail(f"{entry} does not call the locked {name} helper")
 
 
-def verify_psram_service(
-    sections: dict[str, object], symbols: dict[str, int]
-) -> None:
+def verify_psram_service(sections: dict[str, object], symbols: dict[str, int]) -> None:
     """Verify optional PSRAM service-cog AUGS relocation pairs."""
 
     required = (
@@ -374,8 +383,10 @@ def verify_psram_service(
 
     if start_words[4] & ~0x1FF != 0xF607A200:
         fail("p2_psram_cog_start does not load its entry into r1")
-    if decode_augmented_source(start_words[3], start_words[4]) != \
-            symbols["p2_psram_cog_entry"]:
+    if (
+        decode_augmented_source(start_words[3], start_words[4])
+        != symbols["p2_psram_cog_entry"]
+    ):
         fail("p2_psram_cog_start AUGS/MOV target does not match its entry")
 
     entry = executable_code(
@@ -387,19 +398,25 @@ def verify_psram_service(
     ]
     if entry_words[1] & ~0x1FF != 0xF607F000:
         fail("p2_psram_cog_entry does not load its guarded PTRA")
-    if decode_augmented_source(entry_words[0], entry_words[1]) != \
-            symbols["g_p2_psram_service_stack"]:
+    if (
+        decode_augmented_source(entry_words[0], entry_words[1])
+        != symbols["g_p2_psram_service_stack"]
+    ):
         fail("p2_psram_cog_entry AUGS/MOV target does not match its stack")
     if entry_words[2] != 0xF107F004:
         fail("p2_psram_cog_entry does not advance its guarded PTRA")
-    if entry_words[3] & 0xFFF00000 != 0xFDC00000 or \
-            entry_words[3] & 0xFFFFF != symbols["p2_psram_service_worker"]:
+    if (
+        entry_words[3] & 0xFFF00000 != 0xFDC00000
+        or entry_words[3] & 0xFFFFF != symbols["p2_psram_service_worker"]
+    ):
         fail("p2_psram_cog_entry CALLA target does not match its worker")
     if entry_words[4:] != [0xFD63A001, 0xFD63A003]:
         fail("p2_psram_cog_entry does not terminate with COGID/COGSTOP")
 
     timing = executable_code(
-        sections, symbols["p2_psram_timing_leaf"], 16,
+        sections,
+        symbols["p2_psram_timing_leaf"],
+        16,
         "p2_psram_timing_leaf",
     )
     timing_words = [
@@ -410,8 +427,10 @@ def verify_psram_service(
         fail("p2_psram_timing_leaf lost its SETQ/WRLONG register save")
     if timing_words[3] & ~0x1FF != 0xF607BE00:
         fail("p2_psram_timing_leaf does not load its wire descriptor into r15")
-    if decode_augmented_source(timing_words[2], timing_words[3]) != \
-            symbols["g_p2_psram_wire"]:
+    if (
+        decode_augmented_source(timing_words[2], timing_words[3])
+        != symbols["g_p2_psram_wire"]
+    ):
         fail("p2_psram_timing_leaf AUGS/MOV target does not match its wire data")
 
 
@@ -539,9 +558,7 @@ def verify_segments(elf: ELFFile, sections: dict[str, object]) -> int:
         if filesz > memsz:
             fail("PT_LOAD file size exceeds memory size")
         if paddr + memsz > HUB_LIMIT:
-            fail(
-                f"PT_LOAD range 0x{paddr:x}-0x{paddr + memsz:x} exceeds Hub RAM"
-            )
+            fail(f"PT_LOAD range 0x{paddr:x}-0x{paddr + memsz:x} exceeds Hub RAM")
         ranges.append((paddr, paddr + memsz))
 
     ranges.sort()
@@ -573,6 +590,74 @@ def ranges_overlap(first: tuple[int, int], second: tuple[int, int]) -> bool:
     return first[0] < second[1] and second[0] < first[1]
 
 
+def verify_overlay_abi(sections: dict[str, object], symbols: dict[str, int]) -> None:
+    """Verify fixed-slot and transparent four-byte overlay-stub invariants."""
+
+    slot = (
+        symbols["__p2_overlay_slot_start"],
+        symbols["__p2_overlay_slot_end"],
+    )
+    stubs = (
+        symbols["__p2_overlay_stubs_start"],
+        symbols["__p2_overlay_stubs_end"],
+    )
+    entries = (
+        symbols["__p2_overlay_entries_start"],
+        symbols["__p2_overlay_entries_end"],
+    )
+    groups = (
+        symbols["__p2_overlay_groups_start"],
+        symbols["__p2_overlay_groups_end"],
+    )
+
+    if not (0 <= slot[0] <= slot[1] == HUB_LIMIT):
+        fail(
+            f"invalid overlay slot 0x{slot[0]:x}-0x{slot[1]:x}; "
+            f"expected it to end at 0x{HUB_LIMIT:x}"
+        )
+    if (stubs[1] - stubs[0]) % 4 != 0:
+        fail("overlay stub range is not a multiple of four bytes")
+    if entries[1] - entries[0] != ((stubs[1] - stubs[0]) // 4) * 8:
+        fail("overlay stub and entry-table counts differ")
+    if (groups[1] - groups[0]) % 16 != 0:
+        fail("overlay group table is not a multiple of sixteen bytes")
+
+    if stubs[0] == stubs[1]:
+        if slot[0] != slot[1]:
+            fail("overlay slot is reserved but the linked image has no stubs")
+        return
+
+    required = (
+        ".p2.overlay.stubs",
+        ".p2.overlay.entries",
+        ".p2.overlay.groups",
+        ".p2.overlay.slot",
+    )
+    missing = [name for name in required if name not in sections]
+    if missing:
+        fail(f"enabled overlay image lacks sections: {', '.join(missing)}")
+    if slot[0] == slot[1]:
+        fail("overlay stubs are linked without a Hub execution slot")
+    if "__p2_overlay_enter" not in symbols:
+        fail("overlay stubs are linked without __p2_overlay_enter")
+
+    section = sections[".p2.overlay.stubs"]
+    if (
+        int(section["sh_addr"]) != stubs[0]
+        or int(section["sh_size"]) != stubs[1] - stubs[0]
+    ):
+        fail("overlay stub linker symbols do not cover the stub section")
+
+    target = symbols["__p2_overlay_enter"]
+    for index in range(0, int(section["sh_size"]), 4):
+        word = int.from_bytes(section.data()[index : index + 4], "little")
+        if word & 0xFFF00000 != 0xFDC00000 or word & 0xFFFFF != target:
+            fail(
+                f"overlay stub {index // 4} is not one unconditional "
+                f"CALLA to __p2_overlay_enter (word 0x{word:08x})"
+            )
+
+
 def verify_symbols(elf: ELFFile) -> dict[str, int]:
     symbols, unresolved = symbol_values(elf)
     if unresolved:
@@ -591,6 +676,10 @@ def verify_symbols(elf: ELFFile) -> dict[str, int]:
 
     stack = (symbols["_sinitialstack"], symbols["_einitialstack"])
     heap = (symbols["_sheap"], symbols["_eheap"])
+    overlay = (
+        symbols["__p2_overlay_slot_start"],
+        symbols["__p2_overlay_slot_end"],
+    )
     for name, region in (("initial stack", stack), ("heap", heap)):
         if not (0 <= region[0] < region[1] <= HUB_LIMIT):
             fail(f"invalid {name} range 0x{region[0]:x}-0x{region[1]:x}")
@@ -600,9 +689,7 @@ def verify_symbols(elf: ELFFile) -> dict[str, int]:
 
     ptra = symbols["__initial_ptra"]
     if ptra != stack[0]:
-        fail(
-            f"initial PTRA is 0x{ptra:x}; upward stack starts at 0x{stack[0]:x}"
-        )
+        fail(f"initial PTRA is 0x{ptra:x}; upward stack starts at 0x{stack[0]:x}")
 
     idle = (symbols["_sidle_stack"], symbols["_eidle_tls"])
     if not (0 <= idle[0] < idle[1] == stack[0]):
@@ -612,10 +699,11 @@ def verify_symbols(elf: ELFFile) -> dict[str, int]:
         )
     if symbols["_eidle_stack"] != stack[1] or stack[1] != heap[0]:
         fail("idle allocation, initial stack, and heap are not contiguous")
-    if symbols["_eheap"] != HUB_LIMIT:
+    if symbols["_eheap"] != overlay[0] or overlay[1] != HUB_LIMIT:
         fail(
-            f"heap ends at 0x{symbols['_eheap']:x}; expected loader-safe "
-            f"limit 0x{HUB_LIMIT:x}"
+            f"heap ends at 0x{symbols['_eheap']:x}, overlay is "
+            f"0x{overlay[0]:x}-0x{overlay[1]:x}; expected a contiguous "
+            f"layout ending at 0x{HUB_LIMIT:x}"
         )
 
     return symbols
@@ -638,6 +726,7 @@ def verify(path: pathlib.Path) -> None:
         sections = verify_sections(elf)
         verify_instruction_policy(sections)
         symbols = verify_symbols(elf)
+        verify_overlay_abi(sections, symbols)
         verify_startup(sections, symbols)
         verify_context_trigger(sections, symbols)
         verify_psram_service(sections, symbols)

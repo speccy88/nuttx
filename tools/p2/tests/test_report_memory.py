@@ -16,13 +16,20 @@ def map_text(
     stack_end=0x6A000,
     heap_start=0x6A000,
     heap_end=HUB_LIMIT,
+    overlay_start=None,
+    overlay_end=HUB_LIMIT,
 ):
+    if overlay_start is None:
+        overlay_start = heap_end
+
     symbols = (
         (image_end, "_ebss"),
         (stack_start, "_sinitialstack"),
         (stack_end, "_einitialstack"),
         (heap_start, "_sheap"),
         (heap_end, "_eheap"),
+        (overlay_start, "__p2_overlay_slot_start"),
+        (overlay_end, "__p2_overlay_slot_end"),
     )
     lines = ["     VMA      LMA     Size Align Out     In      Symbol"]
     for value, symbol in symbols:
@@ -54,6 +61,10 @@ class ReportMemoryTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("P2MEM:LINKED_IMAGE_END=0x00068000", result.stdout)
             self.assertIn("P2MEM:HEAP=0x0006a000-0x0007c000:BYTES=73728", result.stdout)
+            self.assertIn(
+                "P2MEM:HUB_OVERLAY_SLOT=0x0007c000-0x0007c000:BYTES=0",
+                result.stdout,
+            )
             self.assertIn("P2MEM:RAW_IMAGE=", result.stdout)
             self.assertTrue(
                 result.stdout.rstrip().endswith("P2MEM:PASS:STATICALLY-VERIFIED")
@@ -92,6 +103,28 @@ class ReportMemoryTests(unittest.TestCase):
             result = self.run_report(valid, raw)
             self.assertEqual(result.returncode, 1)
             self.assertIn("P2MEM:FAIL:RAW_IMAGE_OVERFLOW", result.stderr)
+
+    def test_reports_reserved_overlay_slot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            memory_map = pathlib.Path(temporary) / "overlay.map"
+            memory_map.write_text(
+                map_text(
+                    image_end=0x48000,
+                    stack_start=0x49000,
+                    stack_end=0x4A000,
+                    heap_start=0x4A000,
+                    heap_end=0x5C000,
+                    overlay_start=0x5C000,
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.run_report(memory_map)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(
+                "P2MEM:HUB_OVERLAY_SLOT=0x0005c000-0x0007c000:BYTES=131072",
+                result.stdout,
+            )
 
 
 if __name__ == "__main__":

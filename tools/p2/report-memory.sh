@@ -84,6 +84,14 @@ if ! heap_end=$(map_symbol _eheap); then
   blocked "MAP_SYMBOL=_eheap:MISSING_OR_INVALID"
 fi
 
+if ! overlay_start=$(map_symbol __p2_overlay_slot_start); then
+  blocked "MAP_SYMBOL=__p2_overlay_slot_start:MISSING_OR_INVALID"
+fi
+
+if ! overlay_end=$(map_symbol __p2_overlay_slot_end); then
+  blocked "MAP_SYMBOL=__p2_overlay_slot_end:MISSING_OR_INVALID"
+fi
+
 if (( image_end > HUB_LIMIT )); then
   failed "LINKED_IMAGE_END_OVERFLOW:END=$(printf '0x%08x' "$image_end"):LIMIT=$(printf '0x%08x' "$HUB_LIMIT")"
 fi
@@ -96,19 +104,25 @@ if (( heap_end > HUB_LIMIT )); then
   failed "HEAP_OVERFLOW:END=$(printf '0x%08x' "$heap_end"):LIMIT=$(printf '0x%08x' "$HUB_LIMIT")"
 fi
 
+if (( overlay_end > HUB_LIMIT )); then
+  failed "OVERLAY_OVERFLOW:END=$(printf '0x%08x' "$overlay_end"):LIMIT=$(printf '0x%08x' "$HUB_LIMIT")"
+fi
+
 if (( image_end == 0 ||
       stack_start < image_end || stack_start >= stack_end ||
       heap_start < stack_end || heap_start >= heap_end )); then
   blocked "MAP_LAYOUT=INVALID"
 fi
 
-if (( heap_end != HUB_LIMIT )); then
-  blocked "HEAP_END_MISMATCH:END=$(printf '0x%08x' "$heap_end"):EXPECTED=$(printf '0x%08x' "$HUB_LIMIT")"
+if (( heap_end != overlay_start || overlay_end != HUB_LIMIT ||
+      overlay_start > overlay_end )); then
+  blocked "OVERLAY_LAYOUT_MISMATCH:HEAP_END=$(printf '0x%08x' "$heap_end"):OVERLAY=$(printf '0x%08x-0x%08x' "$overlay_start" "$overlay_end"):EXPECTED_END=$(printf '0x%08x' "$HUB_LIMIT")"
 fi
 
 stack_bytes=$((stack_end - stack_start))
 heap_bytes=$((heap_end - heap_start))
 heap_headroom=$((HUB_LIMIT - heap_start))
+overlay_bytes=$((overlay_end - overlay_start))
 
 raw_bytes=
 staging_remaining=
@@ -138,6 +152,8 @@ printf 'P2MEM:INITIAL_STACK=0x%08x-0x%08x:BYTES=%u\n' \
   "$stack_start" "$stack_end" "$stack_bytes"
 printf 'P2MEM:HEAP=0x%08x-0x%08x:BYTES=%u:HEADROOM_TO_0X0007C000=%u\n' \
   "$heap_start" "$heap_end" "$heap_bytes" "$heap_headroom"
+printf 'P2MEM:HUB_OVERLAY_SLOT=0x%08x-0x%08x:BYTES=%u\n' \
+  "$overlay_start" "$overlay_end" "$overlay_bytes"
 
 if [[ -n "$bin_path" ]]; then
   printf 'P2MEM:RAW_IMAGE=%s:BYTES=%u:STAGING_CAPACITY=%u:STAGING_REMAINING=%u\n' \
