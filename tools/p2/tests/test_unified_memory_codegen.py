@@ -113,13 +113,44 @@ class UnifiedMemoryCodegenTests(unittest.TestCase):
                         provenance_fixture(helper_function=function)
                     )
 
+    def test_positive_atomic_libcalls_must_use_the_exact_nuttx_abi(self):
+        for function, (_, expected) in CODEGEN.POSITIVE_C_PROBES.items():
+            with self.subTest(function=function):
+                assembly = (
+                    f"{function}:\n"
+                    f"        calla #\\{expected}\n"
+                    "        reta\n"
+                    f".size {function}, .-{function}\n"
+                )
+                CODEGEN.verify_atomic_libcall_assembly(
+                    assembly, function, expected, "fixture"
+                )
+                with self.assertRaisesRegex(
+                    CODEGEN.CodegenError, "atomic ABI mismatch"
+                ):
+                    CODEGEN.verify_atomic_libcall_assembly(
+                        assembly.replace(expected, "__atomic_wrong_4"),
+                        function,
+                        expected,
+                        "fixture",
+                    )
+
+    def test_positive_vaarg_requires_xmem_cursor_staging(self):
+        assembly = (
+            "p2_probe_dynamic_vaarg:\n"
+            "        calla #\\__p2_xmem_load32\n"
+            "        rdlong r0, ptra\n"
+            "        calla #\\__p2_xmem_store32\n"
+            "        reta\n"
+            ".size p2_probe_dynamic_vaarg, .-p2_probe_dynamic_vaarg\n"
+        )
+        CODEGEN.verify_vaarg_assembly(assembly)
+        with self.assertRaisesRegex(CODEGEN.CodegenError, "cursor staging mismatch"):
+            CODEGEN.verify_vaarg_assembly(
+                assembly.replace("calla #\\__p2_xmem_store32\n", "")
+            )
+
     def test_negative_probe_diagnostics_must_be_deliberate(self):
-        CODEGEN.verify_rejection_diagnostic(
-            "P2 unified memory rejects dynamic atomicrmw", "atomic operation"
-        )
-        CODEGEN.verify_rejection_diagnostic(
-            "P2 unified memory rejects cmpxchg", "compare exchange"
-        )
         CODEGEN.verify_rejection_diagnostic(
             "P2 unified memory rejects an atomic load", "atomic load"
         )
@@ -130,7 +161,7 @@ class UnifiedMemoryCodegenTests(unittest.TestCase):
             "P2 unified memory rejects an inline assembly pointer", "inline asm"
         )
         CODEGEN.verify_rejection_diagnostic(
-            "P2 unified memory rejects va_arg on a non-Hub va_list", "va_arg"
+            "P2 unified memory rejects __atomic_fetch_nand", "atomic NAND"
         )
         with self.assertRaisesRegex(
             CODEGEN.CodegenError, "without an explicit"

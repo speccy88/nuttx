@@ -48,6 +48,14 @@
 #  error "The P2 xmem runtime must only be built for unified PSRAM"
 #endif
 
+#if CONFIG_P2_EC32MB_PSRAM_UNIFIED_RESERVE_SIZE > P2_PSRAM_UNIFIED_SIZE
+#  error "The unified PSRAM reserve exceeds physical PSRAM"
+#endif
+
+#if (CONFIG_P2_EC32MB_PSRAM_UNIFIED_RESERVE_SIZE & 15) != 0
+#  error "The unified PSRAM reserve must be 16-byte aligned"
+#endif
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -531,6 +539,9 @@ void up_extraheaps_init(void)
    * writes allocator guard nodes into this tagged address range.
    */
 
-  kumm_addregion((FAR void *)P2_PSRAM_UNIFIED_BASE,
-                 P2_PSRAM_UNIFIED_SIZE);
+  kumm_addregion(
+    (FAR void *)(P2_PSRAM_UNIFIED_BASE +
+                 CONFIG_P2_EC32MB_PSRAM_UNIFIED_RESERVE_SIZE),
+    P2_PSRAM_UNIFIED_SIZE -
+      CONFIG_P2_EC32MB_PSRAM_UNIFIED_RESERVE_SIZE);
 }

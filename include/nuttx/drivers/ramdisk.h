@@ -40,10 +40,14 @@
 
 #define RDFLAG_WRENABLED       (1 << 0) /* Bit 0: 1=Can write to RAM disk */
 #define RDFLAG_FUNLINK         (1 << 1) /* Bit 1: 1=Free memory when unlinked */
-
 /* For internal use by the driver only */
 
 #define RDFLAG_UNLINKED        (1 << 2) /* Bit 2: 1=Driver has been unlinked */
+
+/* Additional user input flags */
+
+#define RDFLAG_NO_XIP          (1 << 3) /* Bit 3: 1=Buffer is not directly
+                                        * addressable by the CPU */
 
 /****************************************************************************
  * Type Definitions

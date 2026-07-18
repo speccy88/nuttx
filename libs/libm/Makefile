@@ -22,6 +22,17 @@
 
 include $(TOPDIR)/Make.defs
 
+ifeq ($(CONFIG_P2_HUB_OVERLAY_LIBM),y)
+P2_LIBM_OVERLAY_SLOT_ADDRESS := $(shell printf '0x%x' \
+	$$((0x7c000 - $(CONFIG_P2_HUB_OVERLAY_SLOT_SIZE))))
+P2_LIBM_OVERLAY_FLAGS = -mllvm -p2-hub-overlays
+P2_LIBM_OVERLAY_FLAGS += -mllvm -p2-hub-overlays-all
+P2_LIBM_OVERLAY_FLAGS += -mllvm -p2-hub-overlay-auto-groups=$(CONFIG_P2_HUB_OVERLAY_GROUP_COUNT)
+P2_LIBM_OVERLAY_FLAGS += -mllvm -p2-hub-overlay-slot-address=$(P2_LIBM_OVERLAY_SLOT_ADDRESS)
+P2_LIBM_OVERLAY_FLAGS += -mllvm -p2-externalize-constant-data
+CFLAGS += $(P2_LIBM_OVERLAY_FLAGS)
+endif
+
 ifeq ($(CONFIG_LIBM),y)
 include libm/Make.defs
 else ifeq ($(CONFIG_LIBM_NEWLIB),y)

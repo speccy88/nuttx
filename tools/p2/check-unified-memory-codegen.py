@@ -17,17 +17,26 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "tools" / "p2" / "probes" / "unified-memory.c"
 PROBE_DIRECTORY = SOURCE.parent
 NEGATIVE_C_PROBES = {
-    "atomic operation": PROBE_DIRECTORY / "unified-memory-atomicrmw.c",
-    "compare exchange": PROBE_DIRECTORY / "unified-memory-cmpxchg.c",
+    "atomic NAND": PROBE_DIRECTORY / "unified-memory-atomic-nand.c",
     "inline asm": PROBE_DIRECTORY / "unified-memory-inline-asm.c",
+}
+POSITIVE_C_PROBES = {
+    "p2_probe_dynamic_atomicrmw": (
+        PROBE_DIRECTORY / "unified-memory-atomicrmw.c",
+        "__atomic_fetch_add_4",
+    ),
+    "p2_probe_dynamic_cmpxchg": (
+        PROBE_DIRECTORY / "unified-memory-cmpxchg.c",
+        "__atomic_compare_exchange_4",
+    ),
 }
 NEGATIVE_IR_PROBES = {
     "atomic load": PROBE_DIRECTORY / "unified-memory-atomic-load.ll",
     "atomic store": PROBE_DIRECTORY / "unified-memory-atomic-store.ll",
     "atomicrmw": PROBE_DIRECTORY / "unified-memory-atomicrmw.ll",
     "cmpxchg": PROBE_DIRECTORY / "unified-memory-cmpxchg.ll",
-    "va_arg": PROBE_DIRECTORY / "unified-memory-vaarg.ll",
 }
+VAARG_IR_PROBE = PROBE_DIRECTORY / "unified-memory-vaarg.ll"
 PROVENANCE_IR_PROBE = PROBE_DIRECTORY / "unified-memory-provenance.ll"
 OPTIMIZATIONS = ("O0", "Os", "O2")
 PASS_ARGUMENTS = ("-mllvm", "-p2-unified-memory")
@@ -190,23 +199,46 @@ def verify_provenance_assembly(assembly: str) -> int:
     return len(PROVENANCE_FUNCTIONS) + len(PROVENANCE_HUB_FUNCTIONS)
 
 
+def verify_atomic_libcall_assembly(
+    assembly: str, function: str, expected: str, optimization: str
+) -> None:
+    """Require an exact NuttX fixed-width atomic helper call."""
+
+    body = function_body(assembly, function)
+    references = set(re.findall(r"\b__atomic_[A-Za-z0-9_]+\b", body))
+    if references != {expected}:
+        raise CodegenError(
+            f"{optimization} {function} atomic ABI mismatch: "
+            f"expected {expected}, found {sorted(references)}"
+        )
+
+
+def verify_vaarg_assembly(assembly: str) -> None:
+    """Require xmem cursor staging around the native P2 va_arg operation."""
+
+    body = function_body(assembly, "p2_probe_dynamic_vaarg")
+    helpers = helper_references(body)
+    expected = {"__p2_xmem_load32", "__p2_xmem_store32"}
+    if helpers != expected:
+        raise CodegenError(
+            "dynamic va_arg cursor staging mismatch: "
+            f"expected {sorted(expected)}, found {sorted(helpers)}"
+        )
+    if "rdlong" not in body.lower():
+        raise CodegenError("dynamic va_arg has no native Hub cursor access")
+
+
 def verify_rejection_diagnostic(stderr: str, operation: str) -> None:
     """Require a deliberate unified-memory rejection, not an incidental error."""
 
     lowered = stderr.lower()
     operation_markers = {
-        "atomic operation": ("atomic operation", "atomicrmw", "__atomic_"),
-        "compare exchange": (
-            "compare exchange",
-            "cmpxchg",
-            "atomic_compare_exchange",
-        ),
+        "atomic NAND": ("atomic", "nand", "__atomic_fetch_nand"),
         "inline asm": ("inline asm", "inline assembly", "inlineasm"),
         "atomicrmw": ("atomicrmw",),
         "cmpxchg": ("cmpxchg", "compare exchange"),
         "atomic load": ("atomic load",),
         "atomic store": ("atomic store",),
-        "va_arg": ("va_arg", "va list", "va_list"),
     }
     markers = operation_markers[operation]
     if "unified" not in lowered or not any(
@@ -280,7 +312,9 @@ def compile_and_verify(
         raise CodegenError(f"required P2 llc is missing: {llc}")
     for probe in (
         *NEGATIVE_C_PROBES.values(),
+        *(probe for probe, _ in POSITIVE_C_PROBES.values()),
         *NEGATIVE_IR_PROBES.values(),
+        VAARG_IR_PROBE,
         PROVENANCE_IR_PROBE,
     ):
         if not probe.is_file():
@@ -313,6 +347,22 @@ def compile_and_verify(
             )
             enabled_assembly = enabled.read_text()
             checked += verify_enabled_assembly(enabled_assembly, optimization)
+
+            for function, (probe, expected) in POSITIVE_C_PROBES.items():
+                atomic_output = directory / (
+                    f"{probe.stem}-{optimization}-enabled.s"
+                )
+                command = compiler_command(
+                    clang, probe, atomic_output, optimization, True
+                )
+                command.insert(
+                    command.index("-S"), "-Wno-error=atomic-alignment"
+                )
+                _compile(command, enabled=True)
+                verify_atomic_libcall_assembly(
+                    atomic_output.read_text(), function, expected, optimization
+                )
+                checked += 1
 
             for operation, probe in NEGATIVE_C_PROBES.items():
                 rejected = directory / (
@@ -356,6 +406,21 @@ def compile_and_verify(
             enabled=True,
         )
         checked += verify_provenance_assembly(provenance.read_text())
+
+        vaarg = directory / "unified-memory-vaarg-enabled.s"
+        _compile(
+            [
+                str(llc),
+                "-mtriple=p2",
+                "-p2-unified-memory",
+                str(VAARG_IR_PROBE),
+                "-o",
+                str(vaarg),
+            ],
+            enabled=True,
+        )
+        verify_vaarg_assembly(vaarg.read_text())
+        checked += 1
     finally:
         if temporary is not None:
             temporary.cleanup()
@@ -402,12 +467,13 @@ def main() -> int:
         "and out-of-range global aliases remain conservative"
     )
     print(
-        "STATICALLY-VERIFIED: dynamic atomic operations, compare-exchange, "
-        "and inline-assembly pointer operands are rejected explicitly"
+        "STATICALLY-VERIFIED: NuttX's fixed-width serialized atomic helpers "
+        "are preserved while raw LLVM atomics, unverified atomic ABIs, and "
+        "inline-assembly pointer operands are rejected explicitly"
     )
     print(
         "STATICALLY-VERIFIED: bounded formal byval va_list storage remains "
-        "native Hub while arbitrary va_arg cursors are rejected explicitly"
+        "native Hub while arbitrary va_arg cursors use xmem-staged Hub cursors"
     )
     version = subprocess.run(
         [str(args.clang), "--version"],

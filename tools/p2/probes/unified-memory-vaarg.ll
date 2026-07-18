@@ -1,6 +1,6 @@
-; An arbitrary va_list cursor may be a tagged PSRAM pointer.  The native P2
-; va_arg expansion cannot access it through the unified-memory helper ABI and
-; must therefore fail explicitly instead of silently issuing Hub loads.
+; An arbitrary va_list cursor may be a tagged PSRAM pointer.  The unified
+; lowering stages its cursor through a Hub alloca, uses the native descending
+; P2 va_arg operation there, and writes the updated cursor back through xmem.
 
 target triple = "p2"
 

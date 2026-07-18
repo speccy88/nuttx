@@ -22,6 +22,7 @@ Parallax Propeller 2 (P2) cloud first draft
    smartpins
    psram-service
    unified-memory
+   python
    smp-evaluation
    ostest-matrix
    release-notes-v0.2.0

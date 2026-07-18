@@ -31,12 +31,13 @@
 #include <stdbool.h>
 
 #include <nuttx/board.h>
-#if defined(CONFIG_FS_PROCFS) || defined(CONFIG_P2_SMARTPIN) || \
+#if defined(CONFIG_FS_PROCFS) || defined(CONFIG_INTERPRETERS_CPYTHON) || \
+    defined(CONFIG_P2_SMARTPIN) || \
     defined(CONFIG_P2_EC32MB_STORAGE_BINDINGS) || \
     defined(CONFIG_USERLED_LOWER)
 #  include <syslog.h>
 #endif
-#ifdef CONFIG_FS_PROCFS
+#if defined(CONFIG_FS_PROCFS) || defined(CONFIG_INTERPRETERS_CPYTHON)
 #  include <nuttx/fs/fs.h>
 #endif
 #ifdef CONFIG_USERLED_LOWER
@@ -47,6 +48,13 @@
 #include <arch/board/board_flash_layout.h>
 
 #include "p2_ec32mb_pins.h"
+
+#ifdef CONFIG_INTERPRETERS_CPYTHON
+#  if !defined(CONFIG_FS_TMPFS) || !defined(CONFIG_FS_HEAP_USER_BUFFER) || \
+      !defined(CONFIG_FS_HEAPSIZE) || CONFIG_FS_HEAPSIZE < 524288
+#    error "P2 CPython requires tmpfs on a >=512-KiB user-backed FS heap"
+#  endif
+#endif
 
 #ifdef CONFIG_P2_EC32MB_PSRAM_SERVICE
 #  include <arch/board/p2_ec32mb_psram.h>
@@ -202,6 +210,26 @@ void board_late_initialize(void)
              xmem_ret);
       PANIC();
     }
+#endif
+
+#ifdef CONFIG_INTERPRETERS_CPYTHON
+  int python_tmpfs_ret;
+
+  /* Python's writable runtime path must be available on every boot without
+   * requiring an interactive NSH setup step.  nx_mount() creates the target
+   * pseudo-directory when needed.
+   */
+
+  python_tmpfs_ret = nx_mount(NULL, CONFIG_LIBC_TMPDIR, "tmpfs", 0, NULL);
+  if (python_tmpfs_ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: P2 CPython tmpfs mount failed: %d\n",
+             python_tmpfs_ret);
+      PANIC();
+    }
+
+  syslog(LOG_NOTICE, "P2PY:TMPFS:READY:PATH=%s:HEAP=%u\n",
+         CONFIG_LIBC_TMPDIR, CONFIG_FS_HEAPSIZE);
 #endif
 
 #ifdef CONFIG_USERLED_LOWER

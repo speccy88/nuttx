@@ -105,11 +105,11 @@ config P2_EC32MB_PSRAM_UNIFIED_RESERVE_SIZE
 
 config P2_EC32MB_PYTHON_CONTAINER_OFFSET
 	int
-	default 2097152
+	default 3145728
 	depends on INTERPRETERS_CPYTHON_EXTERNAL_ROMFS
 	help
 		Keep the validated P2 Python container at the fixed tagged address
-		0x10200000, two MiB after the start of PSRAM.  The preceding region is
+		0x10300000, three MiB after the start of PSRAM.  The preceding region is
 		reserved for compiler-externalized initialized and zero-filled data.
 		This hidden value is part of the resident-image/container ABI and must
 		stay synchronized with the linker and host packager checks.

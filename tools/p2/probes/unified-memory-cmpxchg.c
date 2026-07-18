@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
-/* Negative compiler probe: unified memory must reject a dynamic cmpxchg. */
+/* Positive probe for NuttX's serialized fixed-width compare-exchange ABI. */
 
 typedef unsigned int p2_probe_u32_t;
 

@@ -54,6 +54,13 @@ heap region; ``CONFIG_MM_REGIONS=2`` is therefore part of the profile
 contract.  Heap metadata stored in that second region is itself reached
 through the compiler/runtime access path.
 
+Profiles may reserve an aligned prefix for validated external data and
+container backing before adding the remainder as a user-heap region.  In
+particular, :doc:`python` assigns the first 16 MiB to CPython external data
+and its packaged runtime, then installs the upper 16 MiB as the ordinary user
+heap.  This still uses the same tagged-pointer ABI and never registers
+``/dev/psram0``.
+
 This split is deliberate:
 
 * text, read-only data, globals, BSS, TLS, interrupt state, task stacks, and

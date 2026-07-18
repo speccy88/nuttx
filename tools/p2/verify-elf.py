@@ -36,6 +36,8 @@ P2_ENTRY_JMP_COG_0X10 = 0xFD800010
 P2_COGINIT_HUB_COG0 = 0xFCE841D0
 P2_TRGINT1 = 0xFD604424
 P2_ALLOWI = 0xFD604024
+P2_PSRAM_BASE = 0x10000000
+P2_PSRAM_END = 0x12000000
 
 REQUIRED_SECTIONS = (
     ".p2.entry",
@@ -619,6 +621,17 @@ def verify_overlay_abi(sections: dict[str, object], symbols: dict[str, int]) -> 
         fail("overlay stub range is not a multiple of four bytes")
     if entries[1] - entries[0] != ((stubs[1] - stubs[0]) // 4) * 8:
         fail("overlay stub and entry-table counts differ")
+    if entries[0] & 7:
+        fail("external overlay entry table is not eight-byte aligned")
+    if not (
+        P2_PSRAM_BASE <= entries[0] <= entries[1] <= P2_PSRAM_END
+    ):
+        fail(
+            "overlay entry table is not in tagged external memory: "
+            f"0x{entries[0]:x}-0x{entries[1]:x}"
+        )
+    if ".p2.overlay.entries" in sections:
+        fail("legacy resident overlay entry section is present")
     if (groups[1] - groups[0]) % 16 != 0:
         fail("overlay group table is not a multiple of sixteen bytes")
 
@@ -629,9 +642,7 @@ def verify_overlay_abi(sections: dict[str, object], symbols: dict[str, int]) -> 
 
     required = (
         ".p2.overlay.stubs",
-        ".p2.overlay.entries",
         ".p2.overlay.groups",
-        ".p2.overlay.slot",
     )
     missing = [name for name in required if name not in sections]
     if missing:

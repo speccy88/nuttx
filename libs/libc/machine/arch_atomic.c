@@ -81,7 +81,35 @@ static spinlock_t g_atomic_lock = SP_UNLOCKED;
     return ret;                                                      \
   }
 
-#define CMP_EXCHANGE(fn, n, type)                                    \
+#define ATOMIC_CMP_EXCHANGE(fn, n, type)                             \
+                                                                     \
+  bool weak_function CONCATENATE(fn, n)(FAR volatile void *mem,      \
+                                        FAR void *expect,            \
+                                        type desired,                \
+                                        int success, int failure)    \
+  {                                                                  \
+    bool ret = false;                                                \
+    irqstate_t irqstate = spin_lock_irqsave_notrace(&g_atomic_lock); \
+    FAR type *tmpmem = (FAR type *)mem;                              \
+    FAR type *tmpexp = (FAR type *)expect;                           \
+    (void)success;                                                   \
+    (void)failure;                                                   \
+                                                                     \
+    if (*tmpmem == *tmpexp)                                          \
+      {                                                              \
+        ret = true;                                                  \
+        *tmpmem = desired;                                           \
+      }                                                              \
+    else                                                             \
+      {                                                              \
+        *tmpexp = *tmpmem;                                           \
+      }                                                              \
+                                                                     \
+    spin_unlock_irqrestore_notrace(&g_atomic_lock, irqstate);        \
+    return ret;                                                      \
+  }
+
+#define NX_CMP_EXCHANGE(fn, n, type)                                 \
                                                                      \
   bool weak_function CONCATENATE(fn, n)(FAR volatile void *mem,      \
                                         FAR void *expect,            \
@@ -92,6 +120,9 @@ static spinlock_t g_atomic_lock = SP_UNLOCKED;
     irqstate_t irqstate = spin_lock_irqsave_notrace(&g_atomic_lock); \
     FAR type *tmpmem = (FAR type *)mem;                              \
     FAR type *tmpexp = (FAR type *)expect;                           \
+    (void)weak;                                                      \
+    (void)success;                                                   \
+    (void)failure;                                                   \
                                                                      \
     if (*tmpmem == *tmpexp)                                          \
       {                                                              \
@@ -406,27 +437,27 @@ EXCHANGE(nx_atomic_exchange_, 8, int64_t)
  * Name: __atomic_compare_exchange_1
  ****************************************************************************/
 
-CMP_EXCHANGE(__atomic_compare_exchange_, 1, uint8_t)
+ATOMIC_CMP_EXCHANGE(__atomic_compare_exchange_, 1, uint8_t)
 
 /****************************************************************************
  * Name: __atomic_compare_exchange_2
  ****************************************************************************/
 
-CMP_EXCHANGE(__atomic_compare_exchange_, 2, uint16_t)
+ATOMIC_CMP_EXCHANGE(__atomic_compare_exchange_, 2, uint16_t)
 
 /****************************************************************************
  * Name: __atomic_compare_exchange_4
  ****************************************************************************/
 
-CMP_EXCHANGE(__atomic_compare_exchange_, 4, uint32_t)
-CMP_EXCHANGE(nx_atomic_compare_exchange_, 4, int32_t)
+ATOMIC_CMP_EXCHANGE(__atomic_compare_exchange_, 4, uint32_t)
+NX_CMP_EXCHANGE(nx_atomic_compare_exchange_, 4, int32_t)
 
 /****************************************************************************
  * Name: __atomic_compare_exchange_8
  ****************************************************************************/
 
-CMP_EXCHANGE(__atomic_compare_exchange_, 8, uint64_t)
-CMP_EXCHANGE(nx_atomic_compare_exchange_, 8, int64_t)
+ATOMIC_CMP_EXCHANGE(__atomic_compare_exchange_, 8, uint64_t)
+NX_CMP_EXCHANGE(nx_atomic_compare_exchange_, 8, int64_t)
 
 /****************************************************************************
  * Name: __atomic_flag_test_and_set_1

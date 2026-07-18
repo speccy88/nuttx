@@ -27,6 +27,7 @@
 #include <nuttx/config.h>
 
 #include <sys/types.h>
+#include <sys/statfs.h>
 
 #include <errno.h>
 #include <poll.h>
@@ -40,7 +41,9 @@
 #include <unistd.h>
 
 #include <nuttx/clock.h>
+#include <nuttx/drivers/ramdisk.h>
 #include <nuttx/irq.h>
+#include <nuttx/sched.h>
 
 #include <arch/board/board.h>
 #include <arch/board/p2_ec32mb_psram.h>
@@ -62,12 +65,12 @@
 #  error "The P2 Python transport requires Hub overlays"
 #endif
 
-#if CONFIG_P2_EC32MB_PYTHON_CONTAINER_OFFSET != 2097152
-#  error "The P2 Python container ABI requires tagged base 0x10200000"
+#if CONFIG_P2_EC32MB_PYTHON_CONTAINER_OFFSET != 3145728
+#  error "The P2 Python container ABI requires tagged base 0x10300000"
 #endif
 
-#if CONFIG_P2_EC32MB_PSRAM_UNIFIED_RESERVE_SIZE != 12582912
-#  error "The P2 Python container ABI requires a 12-MiB PSRAM reserve"
+#if CONFIG_P2_EC32MB_PSRAM_UNIFIED_RESERVE_SIZE != 16777216
+#  error "The P2 Python container ABI requires a 16-MiB PSRAM reserve"
 #endif
 
 #if (CONFIG_P2_EC32MB_PYTHON_CONTAINER_OFFSET & 15) != 0
@@ -83,14 +86,21 @@
 #  error "The unified PSRAM reserve exceeds the physical device"
 #endif
 
+#if CONFIG_UART0_BAUD != 230400
+#  error "The P2 Python upload pacing contract requires 230400 baud"
+#endif
+
 #define P2_PYTHON_UPLOAD_MAGIC_SIZE       8
 #define P2_PYTHON_UPLOAD_HEADER_SIZE      24
 #define P2_PYTHON_UPLOAD_FRAME_HEADER     12
-#define P2_PYTHON_UPLOAD_FRAME_SIZE       128
+#define P2_PYTHON_UPLOAD_FRAME_SIZE       1024
+#define P2_PYTHON_UPLOAD_RETRANSMISSIONS  3
 #define P2_PYTHON_CONTAINER_HEADER_SIZE   192
-#define P2_PYTHON_UPLOAD_PROTOCOL         1
+#define P2_PYTHON_UPLOAD_PROTOCOL         2
 #define P2_PYTHON_HEADER_TIMEOUT          SEC2TICK(30)
-#define P2_PYTHON_UPLOAD_TIMEOUT          SEC2TICK(900)
+#define P2_PYTHON_UPLOAD_TIMEOUT          SEC2TICK(1800)
+#define P2_PYTHON_FRAME_TIMEOUT           SEC2TICK(30)
+#define P2_PYTHON_RX_PURGE_TICKS          2
 #define P2_PYTHON_POLL_MSEC               250
 #define P2_PYTHON_MARKER_SIZE             224
 #define P2_PYTHON_CRC_POLYNOMIAL          UINT32_C(0xedb88320)
@@ -118,6 +128,17 @@ static const uint8_t g_p2_python_upload_magic[P2_PYTHON_UPLOAD_MAGIC_SIZE] =
   'P', '2', 'P', 'Y', 'U', 'P', 'L', 0
 };
 
+/* Give the linker-reserved build fingerprint a real allocatable, read-only,
+ * non-executable input section.  The host packager replaces these canonical
+ * zero bytes in both the resident ELF and raw image before either may be used.
+ */
+
+static const uint8_t g_p2_python_build_fingerprint[32]
+  __attribute__((section(".p2.python.fingerprint"), used, aligned(4))) =
+{
+  0
+};
+
 static struct p2_python_container_s g_p2_python_container;
 static struct p2_overlay_group_s
   g_p2_python_groups[CONFIG_P2_HUB_OVERLAY_GROUP_COUNT + 1];
@@ -133,6 +154,7 @@ extern const uint8_t __p2_overlay_slot_start[];
 extern const uint8_t __p2_overlay_slot_end[];
 extern const uint8_t __p2_xdata_start[];
 extern const uint8_t __p2_xbss_end[];
+extern volatile uint32_t g_p2_uart_rx_dropped;
 
 /****************************************************************************
  * Private Functions
@@ -206,6 +228,32 @@ static int p2_python_write_all(int fd, FAR const void *buffer, size_t size)
     }
 
   return 0;
+}
+
+static int p2_python_purge_input(int fd)
+{
+  int first_error = 0;
+
+  /* TCFLSH discards the upper-half serial receive buffer.  P2 also has a
+   * 256-byte lower RX ring which the 10-ms timer service promotes into that
+   * upper buffer.  Flush once, wait two complete service ticks, then flush
+   * again while the terminal is still raw.  The stop-and-wait sender has
+   * already stopped transmitting before this terminal cleanup begins.
+   */
+
+  if (tcflush(fd, TCIFLUSH) < 0)
+    {
+      first_error = -errno;
+    }
+
+  nxsched_usleep(P2_PYTHON_RX_PURGE_TICKS * USEC_PER_TICK);
+
+  if (tcflush(fd, TCIFLUSH) < 0 && first_error == 0)
+    {
+      first_error = -errno;
+    }
+
+  return first_error;
 }
 
 static void p2_python_marker(FAR const char *format, ...)
@@ -483,6 +531,10 @@ static int p2_python_receive(int fd, uint32_t size, uint32_t expected_crc)
   {
     'P', '2', 'A', 'K', 0, 0, 0, 0
   };
+  uint8_t nack[8] =
+  {
+    'P', '2', 'N', 'K', 0, 0, 0, 0
+  };
 
   uint32_t received = 0;
   uint32_t crc = UINT32_C(0xffffffff);
@@ -491,60 +543,132 @@ static int p2_python_receive(int fd, uint32_t size, uint32_t expected_crc)
   while (received < size)
     {
       uint32_t expected_size = size - received;
-      uint32_t frame_offset;
-      uint32_t frame_size;
-      uint32_t frame_crc;
-      int ret;
+      unsigned int retransmissions;
 
       if (expected_size > sizeof(buffer))
         {
           expected_size = sizeof(buffer);
         }
 
-      ret = p2_python_read_exact(fd, frame_header, sizeof(frame_header),
-                                 started, P2_PYTHON_UPLOAD_TIMEOUT);
-      if (ret < 0)
-        {
-          return ret;
-        }
+      /* Stop-and-wait is deliberately asymmetric: only an explicit NACK at
+       * this committed offset authorizes the host to retransmit.  A missing
+       * response is terminal because a valid frame advances received before
+       * its ACK is emitted and duplicate committed frames are not accepted.
+       */
 
-      frame_offset = p2_python_getle32(frame_header);
-      frame_size = p2_python_getle32(frame_header + 4);
-      frame_crc = p2_python_getle32(frame_header + 8);
-      if (frame_offset != received || frame_size != expected_size)
+      for (retransmissions = 0;
+           retransmissions <= P2_PYTHON_UPLOAD_RETRANSMISSIONS;
+           retransmissions++)
         {
-          return -EPROTO;
-        }
+          clock_t elapsed;
+          clock_t frame_started;
+          clock_t frame_timeout;
+          uint32_t frame_offset;
+          uint32_t frame_size;
+          uint32_t frame_crc;
+          uint32_t calculated_crc;
+          bool valid_header;
+          int ret;
 
-      ret = p2_python_read_exact(fd, buffer, frame_size, started,
-                                 P2_PYTHON_UPLOAD_TIMEOUT);
-      if (ret < 0)
-        {
-          return ret;
-        }
+          elapsed = clock_systime_ticks() - started;
+          if (elapsed >= P2_PYTHON_UPLOAD_TIMEOUT)
+            {
+              return -ETIMEDOUT;
+            }
 
-      if ((p2_python_crc32_update(UINT32_C(0xffffffff), buffer,
-                                  frame_size) ^ UINT32_C(0xffffffff)) !=
-          frame_crc)
-        {
-          return -EBADMSG;
-        }
+          /* A retry receives a whole new frame under a fresh per-frame
+           * deadline.  Cap that deadline at the remaining overall upload
+           * time so retries cannot extend the destructive transaction.
+           */
 
-      ret = p2_python_target_write(NULL,
-                                   BOARD_P2_PYTHON_CONTAINER_BASE + received,
-                                   buffer, frame_size);
-      if (ret < 0)
-        {
-          return ret;
-        }
+          frame_started = clock_systime_ticks();
+          elapsed = frame_started - started;
+          if (elapsed >= P2_PYTHON_UPLOAD_TIMEOUT)
+            {
+              return -ETIMEDOUT;
+            }
 
-      crc = p2_python_crc32_update(crc, buffer, frame_size);
-      received += frame_size;
-      p2_python_putle32(ack + 4, received);
-      ret = p2_python_write_all(STDOUT_FILENO, ack, sizeof(ack));
-      if (ret < 0)
-        {
-          return ret;
+          frame_timeout = P2_PYTHON_FRAME_TIMEOUT;
+          if (frame_timeout > P2_PYTHON_UPLOAD_TIMEOUT - elapsed)
+            {
+              frame_timeout = P2_PYTHON_UPLOAD_TIMEOUT - elapsed;
+            }
+
+          ret = p2_python_read_exact(fd, frame_header,
+                                     sizeof(frame_header), frame_started,
+                                     frame_timeout);
+          if (ret < 0)
+            {
+              return ret;
+            }
+
+          /* Never use an untrusted frame_size to consume the stream.  The
+           * protocol has one known payload size for this offset, including
+           * the possibly-short final frame.  Reading it before inspecting
+           * the header drains a substitution-corrupted frame that retained
+           * the expected wire length.  Byte insertion, deletion, or a
+           * partial-frame timeout cannot be realigned safely and eventually
+           * fails the bounded transfer.
+           */
+
+          ret = p2_python_read_exact(fd, buffer, expected_size,
+                                     frame_started, frame_timeout);
+          if (ret < 0)
+            {
+              return ret;
+            }
+
+          frame_offset = p2_python_getle32(frame_header);
+          frame_size = p2_python_getle32(frame_header + 4);
+          frame_crc = p2_python_getle32(frame_header + 8);
+          calculated_crc =
+            p2_python_crc32_update(UINT32_C(0xffffffff), buffer,
+                                   expected_size) ^ UINT32_C(0xffffffff);
+          valid_header = frame_offset == received &&
+                         frame_size == expected_size;
+
+          if (!valid_header || calculated_crc != frame_crc)
+            {
+              int frame_error = valid_header ? -EBADMSG : -EPROTO;
+
+              p2_python_putle32(nack + 4, received);
+              ret = p2_python_write_all(STDOUT_FILENO, nack, sizeof(nack));
+              if (ret < 0)
+                {
+                  return ret;
+                }
+
+              if (retransmissions == P2_PYTHON_UPLOAD_RETRANSMISSIONS)
+                {
+                  return frame_error;
+                }
+
+              continue;
+            }
+
+          /* The committed offset changes only after validation and a
+           * successful PSRAM write.  An ACK therefore never advertises data
+           * that was rejected or could not be stored.
+           */
+
+          ret = p2_python_target_write(
+            NULL, BOARD_P2_PYTHON_CONTAINER_BASE + received,
+            buffer, expected_size);
+          if (ret < 0)
+            {
+              return ret;
+            }
+
+          crc = p2_python_crc32_update(crc, buffer, expected_size);
+          received += expected_size;
+          p2_python_putle32(ack + 4, received);
+          ret = p2_python_write_all(STDOUT_FILENO, ack, sizeof(ack));
+          if (ret < 0)
+            {
+              return ret;
+            }
+
+          break;
         }
     }
 
@@ -563,6 +687,7 @@ int board_cpython_runtime_prepare(int fd)
   struct termios raw_termios;
   uint8_t header[P2_PYTHON_UPLOAD_HEADER_SIZE];
   FAR const char *stage = "CLAIM";
+  bool input_purged = false;
   bool raw_console = false;
   uint32_t file_size;
   uint32_t file_crc;
@@ -606,12 +731,19 @@ int board_cpython_runtime_prepare(int fd)
     }
 
   raw_console = true;
+  stage = "RX_BASELINE";
+  if (g_p2_uart_rx_dropped != 0)
+    {
+      ret = -EOVERFLOW;
+      goto fail;
+    }
+
   p2_python_marker("P2PY:UPLOAD:READY:PROTO=%u:BASE=%08lX:MAX=%lu:"
-                   "FRAME=%u\r\n",
+                   "FRAME=%u:BAUD=%u\r\n",
                    P2_PYTHON_UPLOAD_PROTOCOL,
                    (unsigned long)BOARD_P2_PYTHON_CONTAINER_BASE,
                    (unsigned long)BOARD_P2_PYTHON_CONTAINER_CAPACITY,
-                   P2_PYTHON_UPLOAD_FRAME_SIZE);
+                   P2_PYTHON_UPLOAD_FRAME_SIZE, CONFIG_UART0_BAUD);
 
   stage = "HEADER";
   started = clock_systime_ticks();
@@ -647,6 +779,21 @@ int board_cpython_runtime_prepare(int fd)
       goto fail;
     }
 
+  stage = "RX_DROPS";
+  if (g_p2_uart_rx_dropped != 0)
+    {
+      ret = -EOVERFLOW;
+      goto fail;
+    }
+
+  stage = "INPUT_PURGE";
+  ret = p2_python_purge_input(fd);
+  if (ret < 0)
+    {
+      goto fail;
+    }
+
+  input_purged = true;
   stage = "TERMIOS_RESTORE";
   if (tcsetattr(fd, TCSANOW, &saved_termios) < 0)
     {
@@ -677,7 +824,7 @@ int board_cpython_runtime_prepare(int fd)
     }
 
   p2_python_publish(true);
-  p2_python_marker("P2PY:UPLOAD:PASS:SIZE=%lu:CRC=%08lX\r\n",
+  p2_python_marker("P2PY:UPLOAD:PASS:SIZE=%lu:CRC=%08lX:RXDROPS=0\r\n",
                    (unsigned long)file_size, (unsigned long)file_crc);
   p2_python_marker("P2PY:RUNTIME:READY:ROMFS=%lu:GROUPS=%lu:"
                    "SLOT=%08lX+%lu\r\n",
@@ -690,7 +837,20 @@ int board_cpython_runtime_prepare(int fd)
 fail:
   if (raw_console)
     {
-      int restore = tcsetattr(fd, TCSANOW, &saved_termios);
+      int restore;
+
+      if (!input_purged)
+        {
+          int purge = p2_python_purge_input(fd);
+
+          if (purge < 0 && ret >= 0)
+            {
+              stage = "INPUT_PURGE";
+              ret = purge;
+            }
+        }
+
+      restore = tcsetattr(fd, TCSANOW, &saved_termios);
 
       if (restore < 0 && ret >= 0)
         {
@@ -704,6 +864,23 @@ fail:
   return ret;
 }
 
+int board_cpython_tmpfs_validate(void)
+{
+  struct statfs filesystem;
+
+  if (statfs(CONFIG_LIBC_TMPDIR, &filesystem) < 0)
+    {
+      return -errno;
+    }
+
+  if (filesystem.f_type != TMPFS_MAGIC)
+    {
+      return -ENODEV;
+    }
+
+  return 0;
+}
+
 int board_cpython_romfs_image(FAR const uint8_t **image,
                               FAR size_t *length)
 {
@@ -714,4 +891,30 @@ int board_cpython_romfs_image(FAR const uint8_t **image,
 
   return p2_python_container_get_stdlib(&g_p2_python_container,
                                         (FAR const void **)image, length);
+}
+
+int board_cpython_romdisk_register(int minor, FAR const uint8_t *image,
+                                   uint32_t nsectors, uint16_t sectsize)
+{
+  uint64_t size = (uint64_t)nsectors * sectsize;
+  uintptr_t start = (uintptr_t)image;
+
+  /* A unified-PSRAM tag is a valid data pointer only through p2llvm's
+   * lowered accesses.  It is not a CPU-addressable XIP mapping.  Register a
+   * normal buffered RAM disk and explicitly suppress BIOC_XIPBASE so ROMFS
+   * reads sectors through rd_read() and the unified memcpy helper.
+   */
+
+  if (minor < 0 || minor > UINT8_MAX || image == NULL || nsectors == 0 ||
+      sectsize == 0 || start < BOARD_P2_PYTHON_CONTAINER_BASE ||
+      start >= BOARD_P2_PYTHON_CONTAINER_BASE +
+                 BOARD_P2_PYTHON_CONTAINER_CAPACITY ||
+      size > BOARD_P2_PYTHON_CONTAINER_BASE +
+               BOARD_P2_PYTHON_CONTAINER_CAPACITY - start)
+    {
+      return -EINVAL;
+    }
+
+  return ramdisk_register(minor, (FAR uint8_t *)image, nsectors, sectsize,
+                          RDFLAG_NO_XIP);
 }

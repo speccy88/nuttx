@@ -4,12 +4,17 @@ ifeq ($(CONFIG_P2_HUB_OVERLAYS),y)
 CMN_ASRCS += p2_overlay_veneer.S
 CMN_CSRCS += p2_overlay.c
 
-# The dispatcher dereferences only fixed Hub metadata and the fixed Hub slot;
-# tagged PSRAM is passed to (but never dereferenced by) its loader callback.
-# Keeping this object native also prevents a group reload from recursively
-# entering the unified-memory helpers while the overlay slot is invalid.
+# The dispatcher explicitly reads immutable external entry records through
+# __p2_xmem_load64(), but all of its ordinary pointers and metadata remain
+# native Hub accesses.  Keeping this object out of compiler lowering prevents
+# that one explicit cache-miss transfer, or a group reload, from recursively
+# entering the overlay machinery while the execution slot is invalid.
 
 p2_overlay$(OBJEXT): P2_UNIFIED_MEMORY_FLAGS =
+endif
+
+ifeq ($(CONFIG_INTERPRETERS_CPYTHON_EXTERNAL_ROMFS),y)
+CMN_CSRCS += p2_python_container.c
 endif
 
 ifeq ($(CONFIG_ARCH_SETJMP_H),y)
@@ -20,3 +25,7 @@ CMN_CSRCS += p2_initialize.c p2_irq.c p2_timer.c p2_serial.c p2_delay.c
 CMN_CSRCS += p2_initialstate.c p2_switchcontext.c p2_allocateheap.c
 CMN_CSRCS += p2_stack.c p2_registerdump.c p2_asserts.c p2_softarith.c
 CMN_CSRCS += p2_nputs.c p2_exit.c
+
+ifneq ($(filter y,$(CONFIG_DEV_RANDOM) $(CONFIG_DEV_URANDOM_ARCH)),)
+CMN_CSRCS += p2_rng.c
+endif

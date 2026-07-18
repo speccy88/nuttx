@@ -23,8 +23,8 @@ p2_overlay_probe_second:
         calla   #\__p2_overlay_enter
         .size p2_overlay_probe_second, .-p2_overlay_probe_second
 
-        .section .p2.overlay.entries,"a",@progbits
-        .p2align 2
+        .section .p2.xdata.ro.overlay.entries,"a",@progbits
+        .p2align 3
         .long   1, 0
         .long   2, 4
 

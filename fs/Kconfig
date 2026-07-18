@@ -148,9 +148,24 @@ config FS_HEAPSIZE
 		Support for shm/tmpfs/fs_pseudofile.c ram based fs memory.
 		default 0 to use kmm directly. independent heap disabled
 
+config FS_HEAP_USER_BUFFER
+	bool "Allocate the FS heap buffer from the user heap"
+	default n
+	depends on FS_HEAPSIZE > 0
+	depends on BUILD_FLAT && MM_KERNEL_HEAP
+	---help---
+		Allocate the single buffer backing the independent file-system heap
+		from kumm instead of kmm.  This is useful on flat-build platforms
+		where the user heap has a large external-memory region but the kernel
+		heap must remain in scarce internal memory.
+
+		The architecture must add every required user-heap region before
+		fs_initialize() runs.  The allocation is permanent and reduces the
+		memory subsequently available to applications by FS_HEAPSIZE bytes.
+
 config FS_HEAPBUF_SECTION
 	string "FS heap use Userheap section"
-	depends on FS_HEAPSIZE > 0
+	depends on FS_HEAPSIZE > 0 && !FS_HEAP_USER_BUFFER
 	default ""
 	---help---
 		Allocated fs heap from the specified section. If not

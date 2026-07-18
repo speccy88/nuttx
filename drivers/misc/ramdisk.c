@@ -50,10 +50,12 @@
 
 /* User input flags */
 
-#define RDFLAG_USER            (RDFLAG_WRENABLED | RDFLAG_FUNLINK)
+#define RDFLAG_USER            (RDFLAG_WRENABLED | RDFLAG_FUNLINK | \
+                                RDFLAG_NO_XIP)
 
 #define RDFLAG_IS_WRENABLED(f) (((f) & RDFLAG_WRENABLED) != 0)
 #define RDFLAG_IS_FUNLINK(f)   (((f) & RDFLAG_FUNLINK) != 0)
+#define RDFLAG_IS_NO_XIP(f)    (((f) & RDFLAG_NO_XIP) != 0)
 
 /* Flag set when the RAM disk block driver is unlink */
 
@@ -145,7 +147,7 @@ static void rd_destroy(FAR struct rd_struct_s *dev)
     {
       /* Yes.. do it */
 
-      if (dev->rd_flags & RDFLAG_USER)
+      if (RDFLAG_IS_FUNLINK(dev->rd_flags))
         {
           kmm_free(dev->rd_buffer);
         }
@@ -354,6 +356,19 @@ static int rd_ioctl(FAR struct inode *inode, int cmd, unsigned long arg)
   if (cmd == BIOC_XIPBASE && ppv)
     {
       dev  = inode->i_private;
+
+      /* A RAM disk may be backed by storage which is byte-addressable only
+       * through architecture-specific load/store lowering.  Such an address
+       * is valid for rd_read()/rd_write(), but it is not an XIP mapping and
+       * must never escape to a filesystem as one.
+       */
+
+      if (RDFLAG_IS_NO_XIP(dev->rd_flags))
+        {
+          *ppv = NULL;
+          return -ENOTTY;
+        }
+
       *ppv = (FAR void *)dev->rd_buffer;
 
       finfo("ppv: %p\n", *ppv);

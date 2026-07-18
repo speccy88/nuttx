@@ -44,12 +44,33 @@ P2_IDLE_STACK_SIZE    = 0x00001000;
  */
 
 PROVIDE(__p2_overlay_config_slot_size = 0);
+PROVIDE(__p2_overlay_group_count = 0);
+PROVIDE(__p2_xmem_reserve_size = 0);
+PROVIDE(__p2_python_fingerprint_config_size = 0);
+PROVIDE(__p2_kernel_heap_configured = 0);
+PROVIDE(__p2_kernel_heap_config_size = 0);
 P2_OVERLAY_SLOT_SIZE  = __p2_overlay_config_slot_size;
 P2_HUB_RUNTIME_END    = P2_HUB_END - P2_OVERLAY_SLOT_SIZE;
+P2_XMEM_ORIGIN        = 0x10000000;
+P2_XMEM_SIZE          = 0x02000000;
+P2_XMEM_RESERVE_SIZE  = __p2_xmem_reserve_size;
+P2_XDATA_LOAD_ADDRESS = 0x02000000;
+
+/* LLD accounts every OVERLAY member cumulatively against the first matching
+ * MEMORY region even though all members share one VMA.  Put an executable-
+ * only synthetic accounting region before physical Hub so generated overlay
+ * sections do not consume Hub capacity N times.  Real addresses and each
+ * group's physical slot bound remain enforced by symbols and ASSERTs below.
+ */
+
+P2_OVERLAY_ACCOUNT_SIZE = 0xffffffff - P2_HUB_RUNTIME_END;
 
 MEMORY
 {
+  p2_overlay_account (rx) : ORIGIN = P2_HUB_RUNTIME_END,
+                            LENGTH = P2_OVERLAY_ACCOUNT_SIZE
   hub (rwx) : ORIGIN = P2_HUB_ORIGIN, LENGTH = P2_HUB_SIZE
+  xmem (rw) : ORIGIN = P2_XMEM_ORIGIN, LENGTH = P2_XMEM_SIZE
 }
 
 SECTIONS
@@ -117,14 +138,6 @@ SECTIONS
     __p2_overlay_stubs_end = ABSOLUTE(.);
   } > hub
 
-  .p2.overlay.entries :
-  {
-    . = ALIGN(4);
-    __p2_overlay_entries_start = ABSOLUTE(.);
-    KEEP(*(.p2.overlay.entries))
-    __p2_overlay_entries_end = ABSOLUTE(.);
-  } > hub
-
   /* This table is writable: the packed source fields begin as backing-image
    * offsets and startup relocates all of them to tagged PSRAM addresses
    * before p2_overlay_register_loader() publishes the table.
@@ -135,7 +148,18 @@ SECTIONS
     . = ALIGN(4);
     __p2_overlay_groups_start = ABSOLUTE(.);
     KEEP(*(.p2.overlay.groups))
+    . += __p2_overlay_group_count * 16;
     __p2_overlay_groups_end = ABSOLUTE(.);
+  } > hub
+
+  .p2.python.fingerprint :
+  {
+    . = ALIGN(4);
+    __p2_python_fingerprint_start = ABSOLUTE(.);
+    KEEP(*(.p2.python.fingerprint))
+    . = __p2_python_fingerprint_start +
+        __p2_python_fingerprint_config_size;
+    __p2_python_fingerprint_end = ABSOLUTE(.);
   } > hub
 
   .rodata :
@@ -231,17 +255,49 @@ SECTIONS
     _eheap = ABSOLUTE(.);
   } > hub
 
-  /* Overlay execution is always native Hub code.  The raw image has no
-   * bytes for this NOLOAD slot; a validated loader fills it from tagged
-   * PSRAM while execution is inside the resident veneer.
+  /* Compiler-generated OVERLAY output sections are supplied by a second,
+   * deterministic linker-script fragment.  These symbols reserve the shared
+   * VMA even when overlays are disabled; the resident raw image never carries
+   * the groups or any padding for the slot.
    */
 
-  .p2.overlay.slot P2_HUB_RUNTIME_END (NOLOAD) :
+  __p2_overlay_slot_start = P2_HUB_RUNTIME_END;
+  __p2_overlay_slot_end = P2_HUB_END;
+
+  /* Explicit P2 external-data definitions have tagged VMAs and extraction-
+   * only LMAs.  They are removed from the serial-loaded resident image,
+   * initialized from the validated runtime container, and excluded from the
+   * unified heap by __p2_xmem_reserve_size.
+   */
+
+  .p2.xdata P2_XMEM_ORIGIN : AT(P2_XDATA_LOAD_ADDRESS)
   {
-    __p2_overlay_slot_start = ABSOLUTE(.);
-    . += P2_OVERLAY_SLOT_SIZE;
-    __p2_overlay_slot_end = ABSOLUTE(.);
-  } > hub
+    . = ALIGN(16);
+    __p2_xdata_start = ABSOLUTE(.);
+
+    /* One immutable compiler record per resident veneer.  Keep these at the
+     * front of the initialized external image so the native dispatcher can
+     * resolve a record with one aligned eight-byte PSRAM transfer on a cache
+     * miss.  No runtime path writes this range.
+     */
+
+    __p2_overlay_entries_start = ABSOLUTE(.);
+    KEEP(*(.p2.xdata.ro.overlay.entries))
+    __p2_overlay_entries_end = ABSOLUTE(.);
+
+    *(.p2.xdata .p2.xdata.*)
+    . = ALIGN(16);
+    __p2_xdata_end = ABSOLUTE(.);
+  } > xmem
+
+  .p2.xbss (NOLOAD) :
+  {
+    . = ALIGN(16);
+    __p2_xbss_start = ABSOLUTE(.);
+    *(.p2.xbss .p2.xbss.*)
+    . = ALIGN(16);
+    __p2_xbss_end = ABSOLUTE(.);
+  } > xmem
 
   _end = _sheap;
   end = _end;
@@ -293,6 +349,10 @@ ASSERT(P2_OVERLAY_SLOT_SIZE <= 0x40000,
        "P2 overlay slot exceeds its configured maximum")
 ASSERT(_sheap < _eheap,
        "P2 resident image leaves no Hub heap before the overlay slot")
+ASSERT(__p2_kernel_heap_configured == 0 ||
+       (__p2_kernel_heap_config_size > 0 &&
+        __p2_kernel_heap_config_size + 15 < (_eheap - _sheap)),
+       "P2 configured kernel heap leaves no initial Hub user heap")
 ASSERT(_eheap == __p2_overlay_slot_start,
        "P2 heap does not end at the overlay slot")
 ASSERT(__p2_overlay_slot_end == P2_HUB_END,
@@ -302,10 +362,27 @@ ASSERT((__p2_overlay_stubs_end - __p2_overlay_stubs_start) % 4 == 0,
 ASSERT((__p2_overlay_entries_end - __p2_overlay_entries_start) ==
        ((__p2_overlay_stubs_end - __p2_overlay_stubs_start) / 4) * 8,
        "P2 overlay stub and entry counts differ")
+ASSERT((__p2_overlay_entries_start & 7) == 0,
+       "P2 external overlay entries are not eight-byte aligned")
+ASSERT(__p2_overlay_entries_start >= __p2_xdata_start &&
+       __p2_overlay_entries_end <= __p2_xdata_end,
+       "P2 overlay entries are not inside initialized external data")
 ASSERT((__p2_overlay_groups_end - __p2_overlay_groups_start) % 16 == 0,
        "P2 overlay groups are not sixteen-byte records")
+ASSERT((__p2_python_fingerprint_end - __p2_python_fingerprint_start) == 0 ||
+       (__p2_python_fingerprint_end - __p2_python_fingerprint_start) == 32,
+       "P2 Python fingerprint must be absent or exactly SHA-256 sized")
+ASSERT(__p2_overlay_group_count == 0 ||
+       (__p2_overlay_groups_end - __p2_overlay_groups_start) ==
+       __p2_overlay_group_count * 16,
+       "P2 overlay group reserve does not match compiler groups")
 ASSERT((__p2_overlay_stubs_end == __p2_overlay_stubs_start) ||
        ((__p2_overlay_groups_end - __p2_overlay_groups_start) >= 32),
        "P2 overlay stubs require resident and nonresident groups")
 ASSERT(__p2_overlay_slot_end <= P2_HUB_END,
        "P2 image exceeds physical Hub RAM")
+ASSERT(P2_XMEM_RESERVE_SIZE <= P2_XMEM_SIZE,
+       "P2 external-data reserve exceeds physical PSRAM")
+ASSERT(__p2_xbss_end <= P2_XMEM_ORIGIN + P2_XMEM_RESERVE_SIZE ||
+       __p2_xbss_end == P2_XMEM_ORIGIN,
+       "P2 external data exceeds the reserved PSRAM prefix")

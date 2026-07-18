@@ -9,6 +9,7 @@ choice
 config ARCH_CHIP_P2X8C4M64P
 	bool "P2X8C4M64P"
 	select ARCH_HAVE_RESET
+	select ARCH_HAVE_RNG
 	select ARCH_HAVE_UDELAY
 	select ARCH_HAVE_DYNAMIC_UDELAY
 	select UART0_SERIALDRIVER
@@ -16,6 +17,7 @@ config ARCH_CHIP_P2X8C4M64P
 config ARCH_CHIP_P2_CUSTOM
 	bool "Custom P2 chip"
 	select ARCH_CHIP_CUSTOM
+	select ARCH_HAVE_RNG
 	select UART0_SERIALDRIVER
 endchoice
 
@@ -43,6 +45,18 @@ config P2_BOOT_TRACE
 		CPU0 heap, idle context, interrupt channel, timer, and first context
 		restore.  This is intended for bounded hardware bring-up and may be
 		disabled once a board configuration is stable.
+
+config P2_RNG_BLAKE2S
+	bool "Condition hardware random output with BLAKE2s"
+	default y
+	depends on CRYPTO
+	depends on DEV_RANDOM || DEV_URANDOM_ARCH
+	help
+		Hash batches of the P2 GETRND hardware stream before exposing them
+		through /dev/random or /dev/urandom.  GETRND is seeded from on-chip
+		thermal noise, but its raw Xoroshiro128** state is recoverable from
+		enough output.  BLAKE2s conditioning prevents callers from observing
+		the raw generator stream.
 
 config P2_STORAGE
 	bool "P2 Edge shared flash/microSD pins"
@@ -125,7 +139,7 @@ config P2_HUB_OVERLAY_SHADOW_DEPTH
 config P2_HUB_OVERLAY_GROUP_COUNT
 	int "Compiler-generated Hub overlay groups"
 	depends on P2_HUB_OVERLAYS
-	range 1 256
+	range 1 1024
 	default 32
 	help
 		Number of deterministic overlay groups used for large translation-unit
@@ -133,6 +147,38 @@ config P2_HUB_OVERLAY_GROUP_COUNT
 		execution slot, at the cost of a larger resident descriptor table.  The
 		linker discovers the actual group IDs and rejects missing IDs or a group
 		whose linked body exceeds the configured slot.
+
+config P2_HUB_OVERLAY_ZLIB
+	bool "Place CPython's zlib library in the Hub overlay image"
+	default n
+	depends on P2_HUB_OVERLAYS
+	depends on LIB_ZLIB
+	depends on INTERPRETERS_CPYTHON_EXTERNAL_ROMFS
+	depends on !LIB_ZLIB_TEST
+	depends on !UTILS_GZIP
+	depends on !UTILS_ZIP
+	depends on !UTILS_UNZIP
+	help
+		Compile the NuttX Apps zlib implementation as compiler-generated Hub
+		overlays and keep its data in external unified memory.  This is only
+		safe for the serialized P2 CPython profile, where zlib bootstraps the
+		compressed external standard library after the container loader is
+		installed.  Standalone zlib tests and gzip/zip/unzip commands are
+		excluded because another task must never enter the single-owner overlay
+		slot while Python owns it.
+
+config P2_HUB_OVERLAY_LIBM
+	bool "Place the math library in the Hub overlay image"
+	default n
+	depends on P2_HUB_OVERLAYS
+	depends on LIBM_NEWLIB
+	help
+		Compile libm functions as compiler-generated Hub overlays and keep
+		immutable libm tables in initialized external memory.  This is intended
+		for tightly constrained application profiles where every linked libm
+		caller belongs to the single overlay ownership domain.  Do not enable
+		it when an interrupt handler or an independently running task can call
+		libm while another task owns the overlay slot.
 
 source "arch/p2/src/p2x8c4m64p/Kconfig"
 endif

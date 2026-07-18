@@ -58,7 +58,7 @@ esac
 target=$board:$cfg
 unified_profile=0
 case "$cfg" in
-  unified|unified-hil)
+  unified|unified-hil|python)
     unified_profile=1
     ;;
 esac
@@ -88,6 +88,15 @@ if [[ $unified_profile -eq 1 ]]; then
     { echo "ERROR: P2 llc not found at $P2LLVM_ROOT/bin/llc" >&2; exit 1; }
   [[ -x "$ROOT/tools/p2/check-unified-memory-codegen.py" ]] ||
     { echo "ERROR: unified-memory compiler verifier is missing" >&2; exit 1; }
+fi
+
+if [[ "$cfg" == python ]]; then
+  [[ -x "$P2LLVM_ROOT/bin/p2-overlay-link.py" ]] ||
+    { echo "ERROR: P2 overlay linker helper is missing" >&2; exit 1; }
+  [[ -f "$ROOT/tools/p2/p2_python_package.py" ]] ||
+    { echo "ERROR: P2 Python packager is missing" >&2; exit 1; }
+  "$python" "$ROOT/tools/p2/p2llvm-runtime.py" verify-archive \
+    --toolchain-root "$P2LLVM_ROOT"
 fi
 
 if command -v sysctl >/dev/null 2>&1; then
@@ -238,6 +247,13 @@ cd "$ROOT"
     --apps-commit "$apps_commit"
   ./tools/configure.sh -E -a "$apps_arg" "$target"
   make olddefconfig
+  if [[ "$cfg" == python ]]; then
+    # P2 intentionally uses null dependency files.  Rebuild application
+    # objects after regenerating the builtin registry so a command added or
+    # removed by Kconfig cannot leave a stale builtin table in libapps.a.
+
+    make apps_clean
+  fi
   if [[ $unified_profile -eq 1 ]]; then
     LC_ALL=C grep -Fqx 'CONFIG_P2_EC32MB_PSRAM_UNIFIED=y' .config ||
       { echo "ERROR: $target does not enable the unified PSRAM ABI" >&2;
@@ -250,14 +266,212 @@ cd "$ROOT"
       echo "ERROR: $target configuration contains the legacy PSRAM device path" >&2
       exit 1
     fi
+    if [[ "$cfg" == python ]]; then
+      for required in \
+        CONFIG_FS_TMPFS=y \
+        CONFIG_ARCH_HAVE_RNG=y \
+        CONFIG_DEV_RANDOM=y \
+        CONFIG_DEV_URANDOM_ARCH=y \
+		CONFIG_P2_RNG_BLAKE2S=y \
+		CONFIG_P2_HUB_OVERLAY_ZLIB=y \
+		CONFIG_CRYPTO=y \
+        CONFIG_FS_HEAPSIZE=1048576 \
+        CONFIG_FS_HEAP_USER_BUFFER=y \
+        'CONFIG_LIBC_TMPDIR="/tmp"' \
+        CONFIG_INTERPRETERS_CPYTHON_ROMFS_SECTORSIZE=512 \
+        CONFIG_STACK_COLORATION=y \
+        CONFIG_MM_KERNEL_HEAP=y \
+        CONFIG_MM_KERNEL_HEAPSIZE=65536 \
+        CONFIG_INTERPRETERS_CPYTHON_STACKSIZE=24576 \
+        CONFIG_UART0_BAUD=230400 \
+        CONFIG_UART0_RXBUFSIZE=2048 \
+        CONFIG_NFILE_DESCRIPTORS_PER_BLOCK=8 \
+        CONFIG_TLS_NELEM=16 \
+		CONFIG_TLS_TASK_NELEM=8 \
+		'# CONFIG_RAW_BINARY is not set' \
+		'# CONFIG_LIB_ZLIB_TEST is not set' \
+		'# CONFIG_UTILS_GZIP is not set' \
+		'# CONFIG_UTILS_ZIP is not set' \
+		'# CONFIG_UTILS_UNZIP is not set' \
+        '# CONFIG_NSH_DISABLE_ECHO is not set' \
+        '# CONFIG_NSH_DISABLE_MKDIR is not set' \
+        '# CONFIG_NSH_DISABLE_MOUNT is not set'
+      do
+        LC_ALL=C grep -Fqx "$required" .config ||
+          { echo "ERROR: Python runtime telemetry/heap contract is missing $required" >&2;
+            exit 1; }
+      done
+    fi
   fi
   make -j"$jobs" V=1
 } 2>&1 | tee "$log"
 
+if [[ "$cfg" == python ]]; then
+  zlib_archive=$ROOT/staging/libapps.a
+  zlib_audit_archive=$art/zlib-link-input-libapps.a
+  zlib_overlay_audit=$art/zlib-overlay-audit.txt
+  [[ -s "$zlib_archive" &&
+     -f "$ROOT/tools/p2/check-zlib-overlay.py" ]] ||
+    { echo "ERROR: P2 Python zlib overlay audit inputs are missing" >&2;
+      exit 1; }
+  cp "$zlib_archive" "$zlib_audit_archive"
+  p2_overlay_slot_start=$(
+    "$P2LLVM_ROOT/bin/llvm-nm" --defined-only "$ROOT/nuttx" |
+      LC_ALL=C awk -v symbol=__p2_overlay_slot_start '
+        $NF == symbol { value = $1; count++ }
+        END {
+          if (count != 1 || value !~ /^[0-9A-Fa-f]+$/)
+            exit 1
+          print "0x" value
+        }
+      '
+  ) ||
+    { echo "ERROR: linked P2 overlay slot start is missing or ambiguous" >&2;
+      exit 1; }
+  p2_overlay_slot_end=$(
+    "$P2LLVM_ROOT/bin/llvm-nm" --defined-only "$ROOT/nuttx" |
+      LC_ALL=C awk -v symbol=__p2_overlay_slot_end '
+        $NF == symbol { value = $1; count++ }
+        END {
+          if (count != 1 || value !~ /^[0-9A-Fa-f]+$/)
+            exit 1
+          print "0x" value
+        }
+      '
+  ) ||
+    { echo "ERROR: linked P2 overlay slot end is missing or ambiguous" >&2;
+      exit 1; }
+  if ! "$python" "$ROOT/tools/p2/check-zlib-overlay.py" \
+       --map "$ROOT/nuttx.map" \
+       --archive "$zlib_audit_archive" \
+       --slot-start "$p2_overlay_slot_start" \
+       --slot-end "$p2_overlay_slot_end" \
+       --xmem-start 0x10000000 \
+       --xmem-end 0x12000000 2>&1 | tee "$zlib_overlay_audit"; then
+    echo "ERROR: zlib code or data escaped the P2 Python overlay container" >&2
+    exit 1
+  fi
+
+  builtin_list_objects=("$apps"/builtin/builtin_list.c*.o)
+  [[ -e "${builtin_list_objects[0]}" ]] ||
+    { echo "ERROR: generated builtin command table object is missing" >&2;
+      exit 1; }
+  for object in "${builtin_list_objects[@]}"; do
+    if "$P2LLVM_ROOT/bin/llvm-readelf" --sections --wide "$object" |
+         LC_ALL=C awk '
+           /\.p2\.(xdata|xbss)/ { found = 1 }
+           END { exit !found }
+         '; then
+      echo "ERROR: builtin command table was externalized before the Python runtime can initialize PSRAM: $object" >&2
+      exit 1
+    fi
+    "$P2LLVM_ROOT/bin/llvm-nm" "$object" |
+      LC_ALL=C awk '
+        $1 == "U" && $NF == "python_main" { found = 1 }
+        END { exit !found }
+      ' ||
+      { echo "ERROR: builtin command table does not register python_main: $object" >&2;
+        exit 1; }
+  done
+
+  python_version=$(sed -n \
+    's/^CONFIG_INTERPRETERS_CPYTHON_VERSION="\(.*\)"$/\1/p' "$ROOT/.config")
+  python_minor=${python_version%.*}
+  python_setup=$apps/interpreters/python/Setup.local
+  python_target_makefile=$apps/interpreters/python/build/target/Makefile
+  python_config=$apps/interpreters/python/build/target/Modules/config.c
+  python_archive=$apps/interpreters/python/install/target/libpython${python_minor}.a
+  [[ "$python_minor" =~ ^[0-9]+\.[0-9]+$ && -s "$python_setup" &&
+     -s "$python_target_makefile" && -s "$python_config" &&
+     -s "$python_archive" ]] ||
+    { echo "ERROR: CPython module contract inputs are missing" >&2; exit 1; }
+  python_setup_active=$(LC_ALL=C awk '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    $1 == "*disabled*" { found = 1; exit }
+    { print }
+    END { if (!found) exit 1 }
+  ' "$python_setup") ||
+    { echo "ERROR: CPython Setup.local lacks the disabled-module marker" >&2;
+      exit 1; }
+  [[ "$python_setup_active" == 'zlib zlibmodule.c' ]] ||
+    { echo "ERROR: P2 CPython active builtin set must bootstrap only zlib" >&2;
+      exit 1; }
+  LC_ALL=C grep -Fqx '_thread' "$python_setup" ||
+    { echo "ERROR: P2 CPython must explicitly disable _thread" >&2; exit 1; }
+  LC_ALL=C grep -Fqx '_interpreters' "$python_setup" ||
+    { echo "ERROR: P2 CPython must explicitly disable subinterpreters" >&2;
+      exit 1; }
+  if LC_ALL=C grep -Fq 'PyInit__thread' "$python_config" ||
+     "$P2LLVM_ROOT/bin/llvm-nm" --defined-only "$python_archive" |
+       LC_ALL=C awk '
+         $NF == "PyInit__thread" { found = 1 }
+         END { exit !found }
+       '; then
+    echo "ERROR: P2 CPython unexpectedly exposes task-spawning _thread" >&2
+    exit 1
+  fi
+  if LC_ALL=C grep -Fq 'PyInit__interpreters' "$python_config" ||
+     "$P2LLVM_ROOT/bin/llvm-nm" --defined-only "$python_archive" |
+       LC_ALL=C awk '
+         $NF == "PyInit__interpreters" { found = 1 }
+         END { exit !found }
+       '; then
+    echo "ERROR: P2 CPython unexpectedly exposes subinterpreters" >&2
+    exit 1
+  fi
+  # The cross-configure probe cannot link against NuttX's apps archive, so
+  # MODULE_ZLIB_STATE remains "missing" even when Setup.local deliberately
+  # promotes zlib into the static builtin set.  Trust the generated makesetup
+  # outputs and the archive/final-link symbols below instead of that probe
+  # result: MODBUILT_NAMES is the authoritative build-plan declaration.
+  LC_ALL=C awk '
+    /^MODBUILT_NAMES=/ {
+      for (field = 2; field <= NF; field++)
+        if ($field == "zlib")
+          found = 1
+    }
+    END { exit !found }
+  ' "$python_target_makefile" ||
+    { echo "ERROR: compressed P2 stdlib requires builtin CPython zlib" >&2;
+      exit 1; }
+  LC_ALL=C grep -Fq 'PyInit_zlib' "$python_config" ||
+    { echo "ERROR: CPython builtin table does not register zlib" >&2;
+      exit 1; }
+  "$P2LLVM_ROOT/bin/llvm-nm" --defined-only "$python_archive" |
+    LC_ALL=C awk '
+      $NF == "PyInit_zlib" { found = 1 }
+      END { exit !found }
+    ' ||
+    { echo "ERROR: CPython archive does not define PyInit_zlib" >&2;
+      exit 1; }
+  LC_ALL=C grep -Eq '^prefix=[[:space:]]*/usr/local[[:space:]]*$' \
+    "$python_target_makefile" ||
+    { echo "ERROR: CPython target prefix is not /usr/local" >&2; exit 1; }
+  if LC_ALL=C grep -Fq "$apps/interpreters/python/install/target" \
+       "$python_target_makefile"; then
+    echo "ERROR: CPython target configuration embeds its host staging prefix" >&2
+    exit 1
+  fi
+fi
+
 input_relocs=$art/input-relocations.txt
 unsafe_relocs=$art/unsafe-relocations.txt
-"$P2LLVM_ROOT/bin/llvm-objdump" -r staging/*.a arch/p2/src/p2_head.o \
-  arch/p2/src/board/libboard.a \
+relocation_inputs=(staging/*.a arch/p2/src/p2_head.o
+                   arch/p2/src/board/libboard.a)
+if [[ "$cfg" == python ]]; then
+  python_version=$(sed -n \
+    's/^CONFIG_INTERPRETERS_CPYTHON_VERSION="\(.*\)"$/\1/p' "$ROOT/.config")
+  python_minor=${python_version%.*}
+  [[ "$python_minor" =~ ^[0-9]+\.[0-9]+$ ]] ||
+    { echo "ERROR: invalid configured CPython version '$python_version'" >&2;
+      exit 1; }
+  relocation_inputs+=(
+    "$apps/interpreters/python/install/target/libpython${python_minor}.a"
+    "$apps/interpreters/python/build/target/Modules/_hacl/libHacl_Hash_SHA2.a"
+    "$apps/interpreters/python/build/target/Modules/expat/libexpat.a"
+  )
+fi
+"$P2LLVM_ROOT/bin/llvm-objdump" -r "${relocation_inputs[@]}" \
   > "$input_relocs"
 if awk '
   /file format/ { source = $0 }
@@ -276,6 +490,97 @@ if awk '
 fi
 rm -f "$unsafe_relocs"
 
+if [[ "$cfg" == python ]]; then
+  python_romfs=$apps/interpreters/python/romfs_cpython_modules.img
+  python_stdlib_zip=$apps/interpreters/python/build/target/lib/python$(echo "$python_minor" | tr -d .).zip
+  python_package_dir=$ROOT/p2-python-package
+  python_manifest=$python_package_dir/manifest.json
+  python_payloads=$python_package_dir/payloads
+  python_container=$ROOT/nuttx.p2py
+  python_slot_size=$(sed -n \
+    's/^CONFIG_P2_HUB_OVERLAY_SLOT_SIZE=//p' "$ROOT/.config")
+  python_reserve_size=$(sed -n \
+    's/^CONFIG_P2_EC32MB_PSRAM_UNIFIED_RESERVE_SIZE=//p' "$ROOT/.config")
+
+  [[ -s "$python_romfs" && -s "$python_stdlib_zip" ]] ||
+    { echo "ERROR: external CPython stdlib package is missing" >&2; exit 1; }
+  "$python" - "$python_stdlib_zip" \
+    "$apps/interpreters/python/install/target" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    info = archive.getinfo("encodings/__init__.pyc")
+    if info.compress_type != zipfile.ZIP_DEFLATED:
+        raise SystemExit(
+            "ERROR: P2 stdlib bootstrap member is not DEFLATE-compressed"
+        )
+    sysconfig_members = [
+        member for member in archive.namelist()
+        if "_sysconfigdata_" in member and member.endswith(".pyc")
+    ]
+    if len(sysconfig_members) != 1:
+        raise SystemExit("ERROR: P2 stdlib has an invalid sysconfig payload")
+    sysconfig = archive.read(sysconfig_members[0])
+    if sys.argv[2].encode() in sysconfig:
+        raise SystemExit("ERROR: packaged sysconfig embeds host staging paths")
+    if b"/usr/local" not in sysconfig:
+        raise SystemExit("ERROR: packaged sysconfig lacks target /usr/local prefix")
+PY
+  [[ "$python_slot_size" =~ ^[0-9]+$ &&
+     "$python_reserve_size" =~ ^[0-9]+$ ]] ||
+    { echo "ERROR: invalid P2 Python slot/reserve configuration" >&2;
+      exit 1; }
+  [[ -s "$ROOT/p2-overlay.ld" ]] ||
+    { echo "ERROR: generated P2 overlay linker fragment is missing" >&2;
+      exit 1; }
+  "$python" "$ROOT/tools/p2/p2_python_package.py" \
+    --elf "$ROOT/nuttx" \
+    --full-elf "$ROOT/nuttx.full" \
+    --resident-elf "$ROOT/nuttx.resident" \
+    --romfs "$python_romfs" \
+    --manifest "$python_manifest" \
+    --payload-dir "$python_payloads" \
+    --container "$python_container" \
+    --objcopy "$P2LLVM_ROOT/bin/llvm-objcopy" \
+    --slot-size "$python_slot_size" \
+    --reserve-size "$python_reserve_size" \
+    --backing-address 0x10300000
+  mv -f "$ROOT/nuttx.resident" "$ROOT/nuttx"
+  "$P2LLVM_ROOT/bin/llvm-nm" --defined-only "$ROOT/nuttx.full" |
+    LC_ALL=C awk '
+      $NF == "PyInit_zlib" { found = 1 }
+      END { exit !found }
+    ' ||
+    { echo "ERROR: packaged P2 CPython does not link builtin zlib" >&2;
+      exit 1; }
+  if "$P2LLVM_ROOT/bin/llvm-nm" --defined-only "$ROOT/nuttx.full" |
+       LC_ALL=C awk '
+         $NF == "PyInit__thread" { found = 1 }
+         END { exit !found }
+       '; then
+    echo "ERROR: packaged P2 CPython unexpectedly links _thread" >&2
+    exit 1
+  fi
+  if "$P2LLVM_ROOT/bin/llvm-nm" --defined-only "$ROOT/nuttx.full" |
+       LC_ALL=C awk '
+         $NF == "PyInit__interpreters" { found = 1 }
+         END { exit !found }
+       '; then
+    echo "ERROR: packaged P2 CPython unexpectedly links subinterpreters" >&2
+    exit 1
+  fi
+  "$P2LLVM_ROOT/bin/llvm-objdump" --disassemble-symbols=p2_rng_read \
+    "$ROOT/nuttx.full" |
+    LC_ALL=C awk '
+      /[[:space:]]getrnd[[:space:]]/ { hardware = 1 }
+      /blake2s/ { conditioner = 1 }
+      END { exit !(hardware && conditioner) }
+    ' ||
+    { echo "ERROR: packaged P2 Python image lacks conditioned hardware GETRND" >&2;
+      exit 1; }
+fi
+
 [[ -s nuttx ]] || { echo "ERROR: NuttX ELF is missing or empty" >&2; exit 1; }
 [[ -s nuttx.map ]] || { echo "ERROR: nuttx.map is missing or empty" >&2; exit 1; }
 [[ -s System.map ]] || { echo "ERROR: System.map is missing or empty" >&2; exit 1; }
@@ -283,8 +588,15 @@ rm -f "$unsafe_relocs"
   { echo "ERROR: tools/p2/verify-elf.py is missing or not executable" >&2; exit 1; }
 
 cp nuttx nuttx.map System.map "$art/"
+if [[ "$cfg" == python ]]; then
+  cp nuttx.full nuttx.p2py p2-overlay.ld "$python_manifest" "$art/"
+  "$P2LLVM_ROOT/bin/llvm-readelf" -h -l -S nuttx.full > "$art/full-elf.txt"
+  "$python" ./tools/p2/p2_python_container.py list nuttx.p2py \
+    > "$art/python-container.json"
+fi
 "$P2LLVM_ROOT/bin/llvm-objcopy" -O binary nuttx nuttx.bin
-./tools/p2/report-memory.sh nuttx.map nuttx.bin | tee "$art/memory.txt"
+./tools/p2/report-memory.sh nuttx.map nuttx.bin System.map |
+  tee "$art/memory.txt"
 
 if [[ $unified_profile -eq 1 ]]; then
   unified_symbols=$art/unified-symbols.txt

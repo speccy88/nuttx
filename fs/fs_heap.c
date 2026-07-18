@@ -43,13 +43,23 @@ static FAR struct mm_heap_s *g_fs_heap;
 void fs_heap_initialize(void)
 {
   struct mm_heap_config_s config;
+  FAR void *buf;
 #ifdef FS_HEAPBUF_SECTION
-  static uint8_t buf[CONFIG_FS_HEAPSIZE] locate_data(FS_HEAPBUF_SECTION);
+  static uint8_t heapbuf[CONFIG_FS_HEAPSIZE]
+    locate_data(FS_HEAPBUF_SECTION);
+
+  buf = heapbuf;
+#elif defined(CONFIG_FS_HEAP_USER_BUFFER)
+  buf = kumm_malloc(CONFIG_FS_HEAPSIZE);
 #else
-  FAR void *buf = kmm_malloc(CONFIG_FS_HEAPSIZE);
+  buf = kmm_malloc(CONFIG_FS_HEAPSIZE);
 #endif
 
-  DEBUGASSERT(buf != NULL);
+  if (buf == NULL)
+    {
+      PANIC();
+    }
+
   memset(&config, 0, sizeof(config));
   config.name  = "heapfs";
   config.start = buf;

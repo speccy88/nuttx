@@ -65,7 +65,34 @@ BIN = libarch$(LIBEXT)
 LDSTARTGROUP ?= --start-group
 LDENDGROUP ?= --end-group
 LDENTRY ?= --entry=__entry
+ifeq ($(CONFIG_P2_HUB_OVERLAYS),y)
+P2_OVERLAY_LINK ?= $(P2LLVM_ROOT)$(DELIM)bin$(DELIM)p2-overlay-link.py
+P2_OVERLAY_SCRIPT = $(TOPDIR)$(DELIM)p2-overlay.ld
+P2_OVERLAY_SLOT_ADDRESS := $(shell printf '%d' \
+	$$((0x7c000 - $(CONFIG_P2_HUB_OVERLAY_SLOT_SIZE))))
+P2_OVERLAY_LMA_ADDRESS = 0x03000000
+ifeq ($(CONFIG_P2_HUB_OVERLAY_LIBM),y)
+P2_OVERLAY_INPUTS += $(TOPDIR)$(DELIM)staging$(DELIM)libm$(LIBEXT)
+endif
 LDFLAGS += -T $(call CONVERT_PATH,$(ARCHSCRIPT))
+LDFLAGS += -T $(call CONVERT_PATH,$(P2_OVERLAY_SCRIPT))
+P2_LINK_SCRIPTS += $(P2_OVERLAY_SCRIPT)
+
+$(P2_OVERLAY_SCRIPT): $(P2_OVERLAY_INPUTS) $(P2_OVERLAY_LINK)
+	$(Q) test -x "$(P2_OVERLAY_LINK)" || \
+		{ echo "ERROR: P2 overlay linker helper is missing: $(P2_OVERLAY_LINK)"; \
+		  exit 1; }
+	$(Q) test -n "$(strip $(P2_OVERLAY_INPUTS))" || \
+		{ echo "ERROR: no P2 overlay inputs were configured"; exit 1; }
+	$(Q) echo "P2OVERLAY: $@"
+	$(Q) $(P2_OVERLAY_LINK) --fragment-only \
+		--slot-address $(P2_OVERLAY_SLOT_ADDRESS) \
+		--slot-size $(CONFIG_P2_HUB_OVERLAY_SLOT_SIZE) \
+		--lma-address $(P2_OVERLAY_LMA_ADDRESS) -o $@ \
+		$(P2_OVERLAY_INPUTS)
+else
+LDFLAGS += -T $(call CONVERT_PATH,$(ARCHSCRIPT))
+endif
 
 BOARDMAKE = $(if $(wildcard board$(DELIM)Makefile),y,)
 
@@ -108,11 +135,28 @@ board$(DELIM)libboard$(LIBEXT):
 	$(Q) $(MAKE) -C board libboard$(LIBEXT) EXTRAFLAGS="$(EXTRAFLAGS)"
 
 nuttx$(EXEEXT): $(STARTUP_OBJS) board$(DELIM)libboard$(LIBEXT) \
-		$(ARCHSCRIPT) $(addprefix $(TOPDIR)$(DELIM)staging$(DELIM),$(LINKLIBS))
+		$(ARCHSCRIPT) $(P2_LINK_SCRIPTS) \
+		$(addprefix $(TOPDIR)$(DELIM)staging$(DELIM),$(LINKLIBS))
 	$(Q) echo "LD: nuttx"
+
+ifeq ($(CONFIG_P2_HUB_OVERLAYS),y)
+	$(Q) p2_overlay_count=$$(sed -n \
+		's/^__p2_overlay_group_count = \([0-9][0-9]*\);$$/\1/p' \
+		$(P2_OVERLAY_SCRIPT)); \
+		case "$$p2_overlay_count" in \
+		  ''|*[!0-9]*) echo "ERROR: invalid generated P2 overlay count"; \
+		    exit 1 ;; \
+		esac; \
+		$(LD) $(LDENTRY) \
+		--defsym=__p2_overlay_group_count=$$p2_overlay_count \
+		$(LDFLAGS) $(LIBPATHS) $(EXTRA_LIBPATHS) \
+		-o $(NUTTX) $(STARTUP_OBJS) $(EXTRA_OBJS) \
+		$(LDSTARTGROUP) $(LDLIBS) $(EXTRA_LIBS) $(LDENDGROUP)
+else
 	$(Q) $(LD) $(LDENTRY) $(LDFLAGS) $(LIBPATHS) $(EXTRA_LIBPATHS) \
 		-o $(NUTTX) $(STARTUP_OBJS) $(EXTRA_OBJS) \
 		$(LDSTARTGROUP) $(LDLIBS) $(EXTRA_LIBS) $(LDENDGROUP)
+endif
 ifneq ($(CONFIG_WINDOWS_NATIVE),y)
 	$(Q) $(NM) $(NUTTX) | \
 	grep -v '\(compiled\)\|\($(OBJEXT)$$\)\|\( [aUw] \)\|\(\.\.ng$$\)\|\(LASH[RL]DI\)' | \
@@ -152,6 +196,7 @@ endif
 	$(call DELFILE, $(KBIN))
 	$(call DELFILE, $(BIN))
 	$(call DELFILE, $(HEAD_OBJ))
+	$(call DELFILE, $(P2_OVERLAY_SCRIPT))
 	$(call CLEAN)
 
 distclean:: clean

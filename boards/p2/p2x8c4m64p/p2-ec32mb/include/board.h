@@ -134,8 +134,11 @@ int p2_mmcsd_initialize(void);
 
 #ifdef CONFIG_INTERPRETERS_CPYTHON_EXTERNAL_ROMFS
 int board_cpython_runtime_prepare(int fd);
+int board_cpython_tmpfs_validate(void);
 int board_cpython_romfs_image(FAR const uint8_t **image,
                               FAR size_t *length);
+int board_cpython_romdisk_register(int minor, FAR const uint8_t *image,
+                                   uint32_t nsectors, uint16_t sectsize);
 #endif
 
 #endif /* __ASSEMBLY__ */

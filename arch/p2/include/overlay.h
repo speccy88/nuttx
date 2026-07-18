@@ -63,12 +63,13 @@
  * exactly one unconditional four-byte CALLA to __p2_overlay_enter.
  */
 
-#define P2_OVERLAY_ENTRY_SECTION               ".p2.overlay.entries"
+#define P2_OVERLAY_ENTRY_SECTION               \
+  ".p2.xdata.ro.overlay.entries"
 #define P2_OVERLAY_GROUP_SECTION               ".p2.overlay.groups"
 #define P2_OVERLAY_STUB_SECTION                ".p2.overlay.stubs"
 
 #define P2_OVERLAY_ENTRY_ATTR                  \
-  __attribute__((section(P2_OVERLAY_ENTRY_SECTION), used, aligned(4)))
+  __attribute__((section(P2_OVERLAY_ENTRY_SECTION), used, aligned(8)))
 #define P2_OVERLAY_GROUP_ATTR                  \
   __attribute__((section(P2_OVERLAY_GROUP_SECTION), used, aligned(4)))
 
@@ -76,8 +77,10 @@
  * Public Types
  ****************************************************************************/
 
-/* One entry record corresponds to one four-byte stub at the same zero-based
- * index.  Offset is relative to the fixed Hub execution slot.
+/* One immutable external entry record corresponds to one four-byte resident
+ * stub at the same zero-based index.  Offset is relative to the fixed Hub
+ * execution slot.  The container installs the records as part of .p2.xdata;
+ * the resident runtime validates the complete table before publishing it.
  */
 
 struct p2_overlay_entry_s
@@ -86,13 +89,16 @@ struct p2_overlay_entry_s
   uint32_t offset;
 };
 
-/* Before relocation, source is an offset in the packed overlay backing
- * image.  p2_overlay_relocate_groups() converts every nonzero group's source
- * to a tagged PSRAM pointer in one validated publish operation.  Relocation
- * readiness is resident runtime state rather than a packed flag bit, so this
- * structure stays byte-for-byte compatible with the container table.  The
- * four version-1 flags mean required, read-only, executable, fixed-address.
- * image_crc32 is CRC-32/ISO-HDLC, matching Python zlib.crc32().
+/* Before publication, source is an offset in the packed overlay backing
+ * image.  p2_overlay_install_groups() copies a complete packer table into
+ * the writable resident table and converts every nonzero group's source to
+ * a tagged PSRAM pointer in one validated operation.  The older
+ * p2_overlay_relocate_groups() entry point remains available for linkers
+ * that pre-populate the resident table.  Readiness is resident runtime state
+ * rather than a packed flag bit, so this structure stays byte-for-byte
+ * compatible with the container table.  The four version-1 flags mean
+ * required, read-only, executable, fixed-address.  image_crc32 is
+ * CRC-32/ISO-HDLC, matching Python zlib.crc32().
  */
 
 struct p2_overlay_group_s
@@ -119,6 +125,18 @@ typedef int (*p2_overlay_loader_t)(FAR void *arg, uint32_t group,
  ****************************************************************************/
 
 #ifdef CONFIG_P2_HUB_OVERLAYS
+
+/* Install a complete packer-generated group table into the zero-initialized
+ * writable resident table.  GROUPS must point to native Hub memory; callers
+ * reading metadata from PSRAM must stage it first.  COUNT includes reserved
+ * group zero.  All records and ranges are checked before the first resident
+ * record changes, and the operation is rejected after any overlay state has
+ * been published.
+ */
+
+int p2_overlay_install_groups(
+  FAR const struct p2_overlay_group_s *groups, size_t count,
+  uintptr_t tagged_base, size_t backing_size);
 
 /* Relocate the complete writable group table from packed-image offsets to a
  * tagged PSRAM range.  This is a two-pass operation: no record is changed if
