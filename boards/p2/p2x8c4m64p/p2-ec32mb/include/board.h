@@ -30,6 +30,7 @@
 #include <nuttx/config.h>
 
 #ifndef __ASSEMBLY__
+#  include <stddef.h>
 #  include <stdint.h>
 #  include <nuttx/compiler.h>
 #endif
@@ -68,6 +69,16 @@
  */
 
 #define BOARD_P2_HUB_USABLE_END 0x0007c000
+
+#ifdef CONFIG_INTERPRETERS_CPYTHON_EXTERNAL_ROMFS
+#  define BOARD_P2_PYTHON_CONTAINER_OFFSET \
+     CONFIG_P2_EC32MB_PYTHON_CONTAINER_OFFSET
+#  define BOARD_P2_PYTHON_CONTAINER_BASE \
+     (UINT32_C(0x10000000) + BOARD_P2_PYTHON_CONTAINER_OFFSET)
+#  define BOARD_P2_PYTHON_CONTAINER_CAPACITY \
+     (CONFIG_P2_EC32MB_PSRAM_UNIFIED_RESERVE_SIZE - \
+      BOARD_P2_PYTHON_CONTAINER_OFFSET)
+#endif
 
 #define LED_STARTED           0
 #define LED_HEAPALLOCATE      1
@@ -119,6 +130,12 @@ int p2_w25_get_info(FAR struct p2_w25_info_s *info);
 #  ifdef CONFIG_MMCSD_SPI
 int p2_mmcsd_initialize(void);
 #  endif
+#endif
+
+#ifdef CONFIG_INTERPRETERS_CPYTHON_EXTERNAL_ROMFS
+int board_cpython_runtime_prepare(int fd);
+int board_cpython_romfs_image(FAR const uint8_t **image,
+                              FAR size_t *length);
 #endif
 
 #endif /* __ASSEMBLY__ */

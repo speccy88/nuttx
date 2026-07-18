@@ -46,6 +46,10 @@ ifeq ($(CONFIG_P2_EC32MB_PSRAM_UNIFIED),y)
 CSRCS += p2_ec32mb_xmem.c
 endif
 
+ifeq ($(CONFIG_INTERPRETERS_CPYTHON_EXTERNAL_ROMFS),y)
+CSRCS += p2_ec32mb_python.c
+endif
+
 ifeq ($(CONFIG_P2_EC32MB_PSRAM_UNIFIED_SELFTEST),y)
 CSRCS += p2_ec32mb_xmem_selftest.c
 endif
