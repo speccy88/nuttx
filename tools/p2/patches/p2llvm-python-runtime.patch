@@ -1,0 +1,755 @@
+From 11cac1aa0c4b32274c4f8bc0854aab2d5b4bbf68 Mon Sep 17 00:00:00 2001
+From: Frederick Blais <fred_blais5@hotmail.com>
+Date: Sat, 18 Jul 2026 03:53:54 -0400
+Subject: [PATCH] libp2: install standalone conversion builtins
+
+---
+ build.py                                      |  71 ++++-
+ libp2/lib/builtins/CMakeLists.txt             |   5 +-
+ libp2/lib/builtins/floatdidf.c                |  38 +--
+ libp2/lib/builtins/fp_fixint_impl.inc         |   7 +-
+ libp2/lib/builtins/memcpy.c                   |   1 -
+ libp2/lib/builtins/powf.c                     |   4 +-
+ libp2/lib/builtins/sqrtf.c                    |   4 +-
+ .../builtins/tests/runtime_builtins_test.c    | 177 ++++++++++++
+ .../builtins/tests/test_runtime_builtins.py   | 260 ++++++++++++++++++
+ 9 files changed, 529 insertions(+), 38 deletions(-)
+ create mode 100644 libp2/lib/builtins/tests/runtime_builtins_test.c
+ create mode 100644 libp2/lib/builtins/tests/test_runtime_builtins.py
+
+diff --git a/build.py b/build.py
+index 07567d4..a8361e3 100644
+--- a/build.py
++++ b/build.py
+@@ -1,6 +1,9 @@
+ import argparse
+ import os
++import shutil
+ import subprocess
++import sys
++import tempfile
+ 
+ DEBUG_BUILD_DIR = "llvm-project/build_debug"
+ RELEASE_BUILD_DIR = "llvm-project/build_release"
+@@ -24,6 +27,41 @@ def copy(src, dst, cwd=None, recurse=False):
+ 
+     return True
+ 
++def install_regular_file(src, dst):
++    """Atomically install one non-empty regular file with a stable mode."""
++
++    if not os.path.isfile(src) or os.path.getsize(src) == 0:
++        print("ERROR: required build artifact is missing or empty: " + src,
++              file=sys.stderr)
++        return False
++
++    destination = os.path.abspath(dst)
++    destination_dir = os.path.dirname(destination)
++    os.makedirs(destination_dir, exist_ok=True)
++    descriptor, temporary = tempfile.mkstemp(
++        prefix="." + os.path.basename(destination) + ".",
++        dir=destination_dir)
++
++    try:
++        with open(src, 'rb') as source, os.fdopen(descriptor, 'wb') as output:
++            shutil.copyfileobj(source, output)
++        os.chmod(temporary, 0o644)
++        os.replace(temporary, destination)
++    except OSError as error:
++        print("ERROR: could not install {}: {}".format(destination, error),
++              file=sys.stderr)
++        try:
++            os.close(descriptor)
++        except OSError:
++            pass
++        try:
++            os.unlink(temporary)
++        except OSError:
++            pass
++        return False
++
++    return True
++
+ def build_llvm(configure=True, debug=False, install_dest=None):
+     '''
+     if install_dest is None, then don't run install
+@@ -120,6 +158,16 @@ def build_libp2(install_dest, llvm, clean=False, configure=True):
+     if not copy(os.path.join(build_dir, 'lib', 'libp2.a'), os.path.join(install_dir, 'lib', 'libp2.a')):
+         return False
+ 
++    # NuttX links with ld.lld directly, so keep the compiler ABI runtime in a
++    # standalone archive as well as embedding it in libp2.a.  Consumers which
++    # already supply their own C runtime can then use the soft-float/integer
++    # helpers without accidentally importing libp2 startup or libc shims.
++    if not install_regular_file(
++            os.path.join(build_dir, 'lib', 'builtins',
++                         'libcompiler_builtins.a'),
++            os.path.join(install_dir, 'lib', 'libcompiler_builtins.a')):
++        return False
++
+     if not copy(os.path.join(build_dir, 'lib', 'p2db', 'libp2db.a'), os.path.join(install_dir, 'lib', 'libp2db.a')):
+         return False
+ 
+@@ -240,19 +288,20 @@ def main():
+     # build LLVM
+     if not skip_llvm:
+         if not build_llvm(configure, debug, install_dest):
+-            return
++            return 1
+ 
+     # build libp2
+     if not skip_libp2:
+         if (install_dest):
+-            r = build_libp2(install_dest, llvm, clean, configure)
+-            r = build_libp2pp(install_dest, llvm, clean, configure)
++            if not build_libp2(install_dest, llvm, clean, configure):
++                return 1
++            if not build_libp2pp(install_dest, llvm, clean, configure):
++                return 1
+         else:
+-            r = build_libp2(build_dir, llvm, clean, configure)
+-            r = build_libp2pp(build_dir, llvm, clean, configure)
+-
+-        if not r:
+-            return
++            if not build_libp2(build_dir, llvm, clean, configure):
++                return 1
++            if not build_libp2pp(build_dir, llvm, clean, configure):
++                return 1
+ 
+     # build libc
+     if not skip_libc:
+@@ -262,8 +311,10 @@ def main():
+             r = build_libc(build_dir, llvm, clean, configure)
+ 
+         if not r:
+-            return
++            return 1
++
++    return 0
+ 
+ 
+ if __name__ == "__main__":
+-    main();
++    raise SystemExit(main())
+diff --git a/libp2/lib/builtins/CMakeLists.txt b/libp2/lib/builtins/CMakeLists.txt
+index b23c3ea..61dc786 100644
+--- a/libp2/lib/builtins/CMakeLists.txt
++++ b/libp2/lib/builtins/CMakeLists.txt
+@@ -10,6 +10,7 @@ add_library(builtins OBJECT
+     divsi3.c
+     divsf3.c
+     extendsfdf2.c
++    fixdfdi.c
+     fixdfsi.c
+     fixsfdi.c
+     fixsfsi.c
+@@ -17,6 +18,7 @@ add_library(builtins OBJECT
+     fixunsdfsi.c
+     fixunssfdi.c
+     fixunssfsi.c
++    floatdidf.c
+     floatdisf.c
+     floatsidf.c
+     floatundidf.c
+@@ -37,6 +39,7 @@ add_library(builtins OBJECT
+     negdi2.c
+     subdf3.c
+     subsf3.c
++    truncdfsf2.c
+     udivdi3.c
+     udivmoddi4.c
+     umoddi3.c
+@@ -50,4 +53,4 @@ target_include_directories(builtins PRIVATE ${CMAKE_SOURCE_DIR}/include)
+ # create a compiler_builtins library for rust
+ add_library(compiler_builtins STATIC)
+ 
+-target_link_libraries(compiler_builtins builtins)
+\ No newline at end of file
++target_link_libraries(compiler_builtins builtins)
+diff --git a/libp2/lib/builtins/floatdidf.c b/libp2/lib/builtins/floatdidf.c
+index dcef670..6231ffc 100644
+--- a/libp2/lib/builtins/floatdidf.c
++++ b/libp2/lib/builtins/floatdidf.c
+@@ -24,9 +24,9 @@ COMPILER_RT_ABI double __floatdidf(di_int a) {
+   if (a == 0)
+     return 0.0;
+   const unsigned N = sizeof(di_int) * CHAR_BIT;
+-  const di_int s = a >> (N - 1);
+-  a = (a ^ s) - s;
+-  int sd = N - __builtin_clzll(a); // number of significant digits
++  const du_int s = (du_int)(a >> (N - 1));
++  du_int magnitude = ((du_int)a ^ s) - s;
++  int sd = N - __builtin_clzll(magnitude); // number of significant digits
+   int e = sd - 1;                  // exponent
+   if (sd > DBL_MANT_DIG) {
+     //  start:  0000000000000000000001xxxxxxxxxxxxxxxxxxxxxxPQxxxxxxxxxxxxxxxxxx
+@@ -38,32 +38,34 @@ COMPILER_RT_ABI double __floatdidf(di_int a) {
+     //  R = "or" of all bits to the right of Q
+     switch (sd) {
+     case DBL_MANT_DIG + 1:
+-      a <<= 1;
++      magnitude <<= 1;
+       break;
+     case DBL_MANT_DIG + 2:
+       break;
+     default:
+-      a = ((du_int)a >> (sd - (DBL_MANT_DIG + 2))) |
+-          ((a & ((du_int)(-1) >> ((N + DBL_MANT_DIG + 2) - sd))) != 0);
++      magnitude =
++          (magnitude >> (sd - (DBL_MANT_DIG + 2))) |
++          ((magnitude &
++            ((du_int)(-1) >> ((N + DBL_MANT_DIG + 2) - sd))) != 0);
+     };
+     // finish:
+-    a |= (a & 4) != 0; // Or P into R
+-    ++a;               // round - this step may add a significant bit
+-    a >>= 2;           // dump Q and R
+-    // a is now rounded to DBL_MANT_DIG or DBL_MANT_DIG+1 bits
+-    if (a & ((du_int)1 << DBL_MANT_DIG)) {
+-      a >>= 1;
++    magnitude |= (magnitude & 4) != 0; // Or P into R
++    ++magnitude;                       // round; may add a significant bit
++    magnitude >>= 2;                   // dump Q and R
++    // magnitude is now rounded to DBL_MANT_DIG or DBL_MANT_DIG+1 bits
++    if (magnitude & ((du_int)1 << DBL_MANT_DIG)) {
++      magnitude >>= 1;
+       ++e;
+     }
+-    // a is now rounded to DBL_MANT_DIG bits
++    // magnitude is now rounded to DBL_MANT_DIG bits
+   } else {
+-    a <<= (DBL_MANT_DIG - sd);
+-    // a is now rounded to DBL_MANT_DIG bits
++    magnitude <<= (DBL_MANT_DIG - sd);
++    // magnitude is now rounded to DBL_MANT_DIG bits
+   }
+   double_bits fb;
+   fb.u.s.high = ((su_int)s & 0x80000000) |        // sign
+                 ((su_int)(e + 1023) << 20) |      // exponent
+-                ((su_int)(a >> 32) & 0x000FFFFF); // mantissa-high
+-  fb.u.s.low = (su_int)a;                         // mantissa-low
++                ((su_int)(magnitude >> 32) & 0x000FFFFF); // mantissa-high
++  fb.u.s.low = (su_int)magnitude;                 // mantissa-low
+   return fb.f;
+-}
+\ No newline at end of file
++}
+diff --git a/libp2/lib/builtins/fp_fixint_impl.inc b/libp2/lib/builtins/fp_fixint_impl.inc
+index 9b794ba..3ac9bf3 100644
+--- a/libp2/lib/builtins/fp_fixint_impl.inc
++++ b/libp2/lib/builtins/fp_fixint_impl.inc
+@@ -37,7 +37,10 @@ static __attribute__ ((noinline))  fixint_t __fixint(fp_t a) {
+   // If 0 <= exponent < significandBits, right shift to get the result.
+   // Otherwise, shift left.
+   if (exponent < significandBits)
+-    return sign * (significand >> (significandBits - exponent));
++    return (fixint_t)(sign *
++                      (significand >> (significandBits - exponent)));
+   else
+-    return sign * ((fixint_t)significand << (exponent - significandBits));
++    return (fixint_t)(sign *
++                      ((fixuint_t)significand <<
++                       (exponent - significandBits)));
+ }
+diff --git a/libp2/lib/builtins/memcpy.c b/libp2/lib/builtins/memcpy.c
+index d586d71..92f4125 100755
+--- a/libp2/lib/builtins/memcpy.c
++++ b/libp2/lib/builtins/memcpy.c
+@@ -7,7 +7,6 @@
+  * MIT licensed (see terms at end of file)
+  */
+ #include <propeller.h>
+-#include <stdio.h>
+ 
+ __attribute__ ((section ("lut"), cogtext, no_builtin("memcpy")))
+ void *memcpy(void *dst, const void *src, size_t n) {
+diff --git a/libp2/lib/builtins/powf.c b/libp2/lib/builtins/powf.c
+index b3bf3a4..efcb666 100755
+--- a/libp2/lib/builtins/powf.c
++++ b/libp2/lib/builtins/powf.c
+@@ -1,10 +1,8 @@
+ #define SINGLE_PRECISION
+ #include "fp_lib.h"
+ 
+-#include "math.h"
+-
+ extern fp_t __powf(fp_t a, fp_t _b);
+ 
+ COMPILER_RT_ABI fp_t powf(fp_t a, fp_t b) {
+     return __powf(a, b);
+-}
+\ No newline at end of file
++}
+diff --git a/libp2/lib/builtins/sqrtf.c b/libp2/lib/builtins/sqrtf.c
+index ab3b3d3..11bb2f7 100644
+--- a/libp2/lib/builtins/sqrtf.c
++++ b/libp2/lib/builtins/sqrtf.c
+@@ -1,8 +1,6 @@
+ #define SINGLE_PRECISION
+ #include "fp_lib.h"
+ 
+-#include <stdio.h>
+-
+ static const fp_t one = 1.0, tiny=1.0e-30;
+ 
+ fp_t __attribute__ ((noinline)) __sqrtf(fp_t x) {
+@@ -76,4 +74,4 @@ fp_t __attribute__ ((noinline)) __sqrtf(fp_t x) {
+ 
+ COMPILER_RT_ABI fp_t sqrtf(fp_t a) {
+     return __sqrtf(a);
+-}
+\ No newline at end of file
++}
+diff --git a/libp2/lib/builtins/tests/runtime_builtins_test.c b/libp2/lib/builtins/tests/runtime_builtins_test.c
+new file mode 100644
+index 0000000..a3fd657
+--- /dev/null
++++ b/libp2/lib/builtins/tests/runtime_builtins_test.c
+@@ -0,0 +1,177 @@
++//===-- runtime_builtins_test.c - P2 runtime builtin tests ----------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#include <float.h>
++#include <inttypes.h>
++#include <limits.h>
++#include <math.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++float p2_test_truncdfsf2(double value);
++int64_t p2_test_fixdfdi(double value);
++double p2_test_floatdidf(int64_t value);
++
++static uint64_t random_state = UINT64_C(0x4d595df4d0f33173);
++
++static uint64_t next_random(void) {
++  uint64_t value = random_state;
++  value ^= value >> 12;
++  value ^= value << 25;
++  value ^= value >> 27;
++  random_state = value;
++  return value * UINT64_C(0x2545f4914f6cdd1d);
++}
++
++static double double_from_bits(uint64_t bits) {
++  double value;
++  memcpy(&value, &bits, sizeof(value));
++  return value;
++}
++
++static uint64_t double_to_bits(double value) {
++  uint64_t bits;
++  memcpy(&bits, &value, sizeof(bits));
++  return bits;
++}
++
++static uint32_t float_to_bits(float value) {
++  uint32_t bits;
++  memcpy(&bits, &value, sizeof(bits));
++  return bits;
++}
++
++static uint32_t expected_trunc_nan(uint64_t input) {
++  const uint32_t sign = (uint32_t)(input >> 32) & UINT32_C(0x80000000);
++  const uint64_t payload = input & UINT64_C(0x0007ffffffffffff);
++  return sign | UINT32_C(0x7fc00000) |
++         (uint32_t)((payload >> 29) & UINT64_C(0x003fffff));
++}
++
++static int check_trunc(uint64_t input) {
++  volatile double source = double_from_bits(input);
++  const uint64_t absolute = input & UINT64_C(0x7fffffffffffffff);
++  const uint32_t got = float_to_bits(p2_test_truncdfsf2(source));
++  uint32_t expected;
++
++  if (absolute > UINT64_C(0x7ff0000000000000))
++    expected = expected_trunc_nan(input);
++  else
++    expected = float_to_bits((float)source);
++
++  if (got == expected)
++    return 0;
++
++  fprintf(stderr,
++          "__truncdfsf2(0x%016" PRIx64 ") = 0x%08" PRIx32
++          ", expected 0x%08" PRIx32 "\n",
++          input, got, expected);
++  return 1;
++}
++
++static int check_fix(uint64_t input) {
++  volatile double source = double_from_bits(input);
++  int64_t expected;
++  int64_t got;
++
++  if (!isfinite(source) || source < -0x1p63 || source >= 0x1p63)
++    return 0;
++
++  expected = (int64_t)source;
++  got = p2_test_fixdfdi(source);
++  if (got == expected)
++    return 0;
++
++  fprintf(stderr,
++          "__fixdfdi(0x%016" PRIx64 ") = 0x%016" PRIx64
++          ", expected 0x%016" PRIx64 "\n",
++          input, (uint64_t)got, (uint64_t)expected);
++  return 1;
++}
++
++static int check_float(int64_t input) {
++  volatile int64_t source = input;
++  const uint64_t got = double_to_bits(p2_test_floatdidf(source));
++  const uint64_t expected = double_to_bits((double)source);
++
++  if (got == expected)
++    return 0;
++
++  fprintf(stderr,
++          "__floatdidf(0x%016" PRIx64 ") = 0x%016" PRIx64
++          ", expected 0x%016" PRIx64 "\n",
++          (uint64_t)input, got, expected);
++  return 1;
++}
++
++int main(void) {
++  static const uint64_t trunc_edges[] = {
++      UINT64_C(0x0000000000000000), UINT64_C(0x8000000000000000),
++      UINT64_C(0x0000000000000001), UINT64_C(0x8000000000000001),
++      UINT64_C(0x36a0000000000000), UINT64_C(0x36b0000000000000),
++      UINT64_C(0x36b8000000000000), UINT64_C(0x380fffffc8000000),
++      UINT64_C(0x380fffffe8000000), UINT64_C(0x380ffffff0000000),
++      UINT64_C(0x3810000000000000), UINT64_C(0x3ff0000010000000),
++      UINT64_C(0x3ff0000018000000), UINT64_C(0x47efffffe0000000),
++      UINT64_C(0x47effffff0000000), UINT64_C(0x47f0000000000000),
++      UINT64_C(0x7ff0000000000000), UINT64_C(0xfff0000000000000),
++      UINT64_C(0x7ff0000000000001), UINT64_C(0x7ff8000000000000),
++      UINT64_C(0xfff753b1887bcf03), UINT64_C(0xfff911d3c0abfdda),
++  };
++  static const uint64_t fix_edges[] = {
++      UINT64_C(0x0000000000000000), UINT64_C(0x8000000000000000),
++      UINT64_C(0x3fefffffffffffff), UINT64_C(0xbfefffffffffffff),
++      UINT64_C(0x3ff0000000000000), UINT64_C(0xbff0000000000000),
++      UINT64_C(0x400fffffffffffff), UINT64_C(0xc00fffffffffffff),
++      UINT64_C(0x41efffffffe00000), UINT64_C(0xc1f0000000040000),
++      UINT64_C(0x43dfffffffffffff), UINT64_C(0xc3e0000000000000),
++  };
++  static const int64_t float_edges[] = {
++      INT64_C(0),
++      INT64_C(1),
++      -INT64_C(1),
++      INT64_C(0x001fffffffffffff),
++      INT64_C(0x0020000000000000),
++      INT64_C(0x0020000000000001),
++      INT64_C(0x0020000000000002),
++      INT64_C(0x023479fd0e092da1),
++      INT64_C(0x023479fd0e092db0),
++      INT64_C(0x023479fd0e092dd1),
++      INT64_MAX,
++      INT64_MIN,
++      INT64_MIN + INT64_C(1),
++  };
++  unsigned int index;
++  unsigned int failures = 0;
++
++  if (sizeof(double) * CHAR_BIT != 64 || sizeof(float) * CHAR_BIT != 32 ||
++      DBL_MANT_DIG != 53) {
++    fprintf(stderr, "host does not use IEEE binary32/binary64\n");
++    return 77;
++  }
++
++  for (index = 0; index < sizeof(trunc_edges) / sizeof(trunc_edges[0]); index++)
++    failures += check_trunc(trunc_edges[index]);
++  for (index = 0; index < sizeof(fix_edges) / sizeof(fix_edges[0]); index++)
++    failures += check_fix(fix_edges[index]);
++  for (index = 0; index < sizeof(float_edges) / sizeof(float_edges[0]); index++)
++    failures += check_float(float_edges[index]);
++
++  for (index = 0; index < 250000; index++) {
++    const uint64_t bits = next_random();
++    failures += check_trunc(bits);
++    failures += check_fix(bits);
++    failures += check_float((int64_t)next_random());
++    if (failures != 0)
++      return 1;
++  }
++
++  puts("PASS: runtime builtin edge and randomized vectors");
++  return failures != 0;
++}
+diff --git a/libp2/lib/builtins/tests/test_runtime_builtins.py b/libp2/lib/builtins/tests/test_runtime_builtins.py
+new file mode 100644
+index 0000000..023790d
+--- /dev/null
++++ b/libp2/lib/builtins/tests/test_runtime_builtins.py
+@@ -0,0 +1,260 @@
++#!/usr/bin/env python3
++
++# Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++# See https://llvm.org/LICENSE.txt for license information.
++# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++
++"""Focused host and P2 checks for the standalone compiler builtins archive."""
++
++import importlib.util
++import io
++import os
++import pathlib
++import shutil
++import stat
++import subprocess
++import sys
++import tempfile
++import unittest
++from contextlib import redirect_stderr
++from unittest import mock
++
++BUILTINS = pathlib.Path(__file__).resolve().parents[1]
++ROOT = BUILTINS.parents[2]
++HARNESS = pathlib.Path(__file__).with_name("runtime_builtins_test.c")
++
++
++def load_build_module():
++    specification = importlib.util.spec_from_file_location(
++        "p2llvm_build", ROOT / "build.py"
++    )
++    module = importlib.util.module_from_spec(specification)
++    specification.loader.exec_module(module)
++    return module
++
++
++class RuntimeBuiltinsTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.host_cc = shutil.which(os.environ.get("CC", "clang"))
++
++    def compile_host_test(self, directory, sanitize=False):
++        common = [
++            self.host_cc,
++            "-std=c11",
++            "-O2",
++            "-Wall",
++            "-Wextra",
++            "-Werror",
++            "-I" + str(BUILTINS),
++        ]
++        if sanitize:
++            common.extend(["-fsanitize=undefined", "-fno-sanitize-recover=undefined"])
++
++        objects = []
++        sources = (
++            ("truncdfsf2.c", "__truncdfsf2", "p2_test_truncdfsf2"),
++            ("fixdfdi.c", "__fixdfdi", "p2_test_fixdfdi"),
++            ("floatdidf.c", "__floatdidf", "p2_test_floatdidf"),
++        )
++        for source, original, replacement in sources:
++            output = pathlib.Path(directory) / (source + ".o")
++            subprocess.run(
++                common
++                + [
++                    "-D{}={}".format(original, replacement),
++                    "-c",
++                    str(BUILTINS / source),
++                    "-o",
++                    str(output),
++                ],
++                check=True,
++                capture_output=True,
++                text=True,
++            )
++            objects.append(output)
++
++        executable = pathlib.Path(directory) / "runtime-builtins-test"
++        subprocess.run(
++            common
++            + [str(HARNESS)]
++            + [str(path) for path in objects]
++            + ["-o", str(executable)],
++            check=True,
++            capture_output=True,
++            text=True,
++        )
++        return executable
++
++    @unittest.skipUnless(
++        shutil.which(os.environ.get("CC", "clang")), "no host C compiler"
++    )
++    def test_host_edge_and_randomized_vectors(self):
++        with tempfile.TemporaryDirectory() as directory:
++            executable = self.compile_host_test(directory)
++            result = subprocess.run(
++                [str(executable)], check=True, capture_output=True, text=True
++            )
++        self.assertIn("PASS: runtime builtin", result.stdout)
++
++    @unittest.skipUnless(
++        shutil.which(os.environ.get("CC", "clang")), "no host C compiler"
++    )
++    def test_host_undefined_behavior_sanitizer(self):
++        with tempfile.TemporaryDirectory() as directory:
++            executable = self.compile_host_test(directory, sanitize=True)
++            result = subprocess.run(
++                [str(executable)],
++                check=True,
++                capture_output=True,
++                text=True,
++                env={**os.environ, "UBSAN_OPTIONS": "halt_on_error=1"},
++            )
++        self.assertEqual(result.stderr, "")
++
++    def test_atomic_archive_install_and_failure_propagation(self):
++        build = load_build_module()
++        with tempfile.TemporaryDirectory() as directory:
++            root = pathlib.Path(directory)
++            source = root / "source.a"
++            destination = root / "install" / "libcompiler_builtins.a"
++            payload = b"!<arch>\nP2 deterministic archive fixture\n"
++            source.write_bytes(payload)
++
++            self.assertTrue(build.install_regular_file(str(source), str(destination)))
++            self.assertEqual(destination.read_bytes(), payload)
++            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o644)
++
++            destination.write_bytes(b"stale")
++            destination.chmod(0o600)
++            self.assertTrue(build.install_regular_file(str(source), str(destination)))
++            self.assertEqual(destination.read_bytes(), payload)
++            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o644)
++
++            errors = io.StringIO()
++            with redirect_stderr(errors):
++                self.assertFalse(
++                    build.install_regular_file(
++                        str(root / "missing.a"), str(destination)
++                    )
++                )
++            self.assertIn("required build artifact is missing", errors.getvalue())
++
++        arguments = ["build.py", "--skip_llvm", "--skip_libc"]
++        with mock.patch.object(sys, "argv", arguments), mock.patch.object(
++            build, "build_libp2", return_value=False
++        ) as libp2, mock.patch.object(build, "build_libp2pp") as libp2pp:
++            self.assertEqual(build.main(), 1)
++            libp2.assert_called_once()
++            libp2pp.assert_not_called()
++
++    def test_p2_objects_and_archive_export_all_three_helpers(self):
++        p2llvm_root = os.environ.get("P2LLVM_ROOT")
++        if not p2llvm_root:
++            self.skipTest("set P2LLVM_ROOT for P2 object validation")
++
++        tools = {
++            name: pathlib.Path(p2llvm_root) / "bin" / name
++            for name in ("clang", "ld.lld", "llvm-ar", "llvm-nm")
++        }
++        if not all(path.is_file() for path in tools.values()):
++            self.skipTest("P2LLVM_ROOT lacks clang, ld.lld, llvm-ar, or llvm-nm")
++
++        with tempfile.TemporaryDirectory() as directory:
++            objects = []
++            for source in ("truncdfsf2.c", "fixdfdi.c", "floatdidf.c"):
++                output = pathlib.Path(directory) / (source + ".o")
++                subprocess.run(
++                    [
++                        str(tools["clang"]),
++                        "--target=p2",
++                        "-Oz",
++                        "-ffunction-sections",
++                        "-fdata-sections",
++                        "-fno-exceptions",
++                        "-I" + str(BUILTINS),
++                        "-c",
++                        str(BUILTINS / source),
++                        "-o",
++                        str(output),
++                    ],
++                    check=True,
++                    capture_output=True,
++                    text=True,
++                )
++                objects.append(output)
++
++            archive = pathlib.Path(directory) / "libcompiler_builtins.a"
++            subprocess.run(
++                [str(tools["llvm-ar"]), "rcsD", str(archive)]
++                + [str(path) for path in objects],
++                check=True,
++                capture_output=True,
++                text=True,
++            )
++            symbols = subprocess.run(
++                [str(tools["llvm-nm"]), "--defined-only", str(archive)],
++                check=True,
++                capture_output=True,
++                text=True,
++            ).stdout
++
++            probe_source = pathlib.Path(directory) / "conversion-probe.c"
++            probe_source.write_text(
++                "float narrow(double value) { return value; }\n"
++                "long long fix(double value) { return value; }\n"
++                "double widen(long long value) { return value; }\n"
++            )
++            probe = pathlib.Path(directory) / "conversion-probe.o"
++            subprocess.run(
++                [
++                    str(tools["clang"]),
++                    "--target=p2",
++                    "-Oz",
++                    "-ffreestanding",
++                    "-fno-builtin",
++                    "-c",
++                    str(probe_source),
++                    "-o",
++                    str(probe),
++                ],
++                check=True,
++                capture_output=True,
++                text=True,
++            )
++            before_link = subprocess.run(
++                [str(tools["llvm-nm"]), "-u", str(probe)],
++                check=True,
++                capture_output=True,
++                text=True,
++            ).stdout
++
++            linked = pathlib.Path(directory) / "conversion-linked.o"
++            subprocess.run(
++                [
++                    str(tools["ld.lld"]),
++                    "-r",
++                    str(probe),
++                    str(archive),
++                    "-o",
++                    str(linked),
++                ],
++                check=True,
++                capture_output=True,
++                text=True,
++            )
++            after_link = subprocess.run(
++                [str(tools["llvm-nm"]), "-u", str(linked)],
++                check=True,
++                capture_output=True,
++                text=True,
++            ).stdout
++
++        for symbol in ("__truncdfsf2", "__fixdfdi", "__floatdidf"):
++            self.assertRegex(symbols, r"(?m)^\S+ T " + symbol + r"$")
++            self.assertIn(symbol, before_link)
++            self.assertNotIn(symbol, after_link)
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.54.0
+

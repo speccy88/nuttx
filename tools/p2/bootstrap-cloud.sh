@@ -13,6 +13,8 @@ P2LLVM_REF=${P2LLVM_REF:-bdcefcce7860b2232c06f35726fea679a3a7309c}
 LLVM_PROJECT_REF=${LLVM_PROJECT_REF:-72a9bb1ef2656d9953d1f41a8196d425ff2ab0b1}
 P2LLVM_PREEMPT_PATCH=$ROOT/tools/p2/patches/p2llvm-preempt-safe-integer.patch
 P2LLVM_UNIFIED_PATCH=$ROOT/tools/p2/patches/p2llvm-unified-memory.patch
+P2LLVM_RUNTIME_PATCH=$ROOT/tools/p2/patches/p2llvm-python-runtime.patch
+P2LLVM_RUNTIME_TOOL=$ROOT/tools/p2/p2llvm-runtime.py
 P2LLVM_PATCHES=("$P2LLVM_PREEMPT_PATCH" "$P2LLVM_UNIFIED_PATCH")
 LOADP2_SRC=${LOADP2_SRC:-$CACHE/loadp2-src}
 LOADP2_ROOT=${LOADP2_ROOT:-$CACHE/loadp2}
@@ -37,7 +39,7 @@ clone_if_missing() {
 
 ensure_p2llvm_checkout() {
   local expected_url=https://github.com/ne75/p2llvm
-  local actual_url outer_head gitlink_head llvm_head unexpected
+  local actual_url outer_head gitlink_head llvm_head
 
   if [[ ! -d "$P2LLVM_SRC/.git" ]]; then
     clone_if_missing "$expected_url" "$P2LLVM_SRC" "$P2LLVM_REF"
@@ -47,14 +49,6 @@ ensure_p2llvm_checkout() {
     die "p2llvm checkout has no origin remote: $P2LLVM_SRC"
   [[ "${actual_url%.git}" == "${expected_url%.git}" ]] ||
     die "p2llvm origin is $actual_url; expected $expected_url"
-
-  git -C "$P2LLVM_SRC" diff --quiet --ignore-submodules=dirty -- ||
-    die "p2llvm outer checkout has tracked modifications: $P2LLVM_SRC"
-  git -C "$P2LLVM_SRC" diff --cached --quiet --ignore-submodules=dirty -- ||
-    die "p2llvm outer checkout has staged modifications: $P2LLVM_SRC"
-  unexpected=$(git -C "$P2LLVM_SRC" ls-files --others --exclude-standard)
-  [[ -z "$unexpected" ]] ||
-    die "p2llvm outer checkout has unexpected untracked files: $unexpected"
 
   outer_head=$(git -C "$P2LLVM_SRC" rev-parse HEAD) ||
     die "could not identify p2llvm HEAD"
@@ -75,6 +69,24 @@ ensure_p2llvm_checkout() {
     die "could not identify p2llvm llvm-project HEAD"
   [[ "$llvm_head" == "$LLVM_PROJECT_REF" ]] ||
     die "p2llvm llvm-project is at $llvm_head; expected $LLVM_PROJECT_REF; refusing to overwrite it"
+}
+
+apply_p2llvm_outer_patch() {
+  "$PYTHON" "$P2LLVM_RUNTIME_TOOL" apply-outer \
+    --source "$P2LLVM_SRC" --patch "$P2LLVM_RUNTIME_PATCH" \
+    --ref "$P2LLVM_REF" ||
+    die "p2llvm outer source does not match the exact runtime patch state"
+}
+
+verify_p2llvm_runtime_source() {
+  "$PYTHON" "$P2LLVM_RUNTIME_TOOL" verify-source \
+    --source "$P2LLVM_SRC" --patch "$P2LLVM_RUNTIME_PATCH" \
+    --ref "$P2LLVM_REF"
+}
+
+verify_p2llvm_runtime_archive() {
+  "$PYTHON" "$P2LLVM_RUNTIME_TOOL" verify-archive \
+    --toolchain-root "$P2LLVM_ROOT"
 }
 
 prepare_p2llvm_expected_index() {
@@ -269,6 +281,7 @@ fi
 
 if [[ -d "$P2LLVM_SRC/.git" || ${P2_BOOTSTRAP_FETCH:-1} == 1 ]]; then
   ensure_p2llvm_checkout
+  apply_p2llvm_outer_patch
   apply_p2llvm_patches
 fi
 
@@ -280,9 +293,15 @@ if [[ ${P2_BOOTSTRAP_BUILD:-0} == 1 && -d "$P2LLVM_SRC/.git" ]]; then
     -DLLVM_ENABLE_PROJECTS='clang;lld' \
     -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_LIBXML2=OFF
   cmake --build "$P2LLVM_SRC/build" --target install -j"$JOBS"
+  (
+    cd "$P2LLVM_SRC"
+    "$PYTHON" build.py --configure --skip_llvm --skip_libc \
+      --install "$P2LLVM_ROOT"
+  )
 fi
 
 unified_codegen_status=BLOCKED_not_available
+runtime_archive_status=BLOCKED_not_available
 if [[ -x "$P2LLVM_ROOT/bin/clang" ]]; then
   [[ -x "$P2LLVM_ROOT/bin/llc" ]] ||
     die "p2llvm install is missing llc required by the unified-memory verifier"
@@ -291,6 +310,9 @@ if [[ -x "$P2LLVM_ROOT/bin/clang" ]]; then
     --llc "$P2LLVM_ROOT/bin/llc" ||
     die "p2llvm install does not satisfy the unified-memory codegen contract"
   unified_codegen_status=verified
+  verify_p2llvm_runtime_archive ||
+    die "p2llvm install lacks the verified standalone compiler builtins"
+  runtime_archive_status=verified
 fi
 
 if [[ ${P2_BOOTSTRAP_BUILD:-0} == 1 && -d "$LOADP2_SRC/.git" ]]; then
@@ -316,6 +338,8 @@ write_unified_lock() {
     "$P2LLVM_ROOT/bin/llvm-readobj"
     "$P2LLVM_ROOT/bin/llvm-size"
     "$P2LLVM_ROOT/bin/llvm-strip"
+    "$P2LLVM_ROOT/libp2/lib/libcompiler_builtins.a"
+    "$P2LLVM_RUNTIME_PATCH"
     "$P2LLVM_PREEMPT_PATCH"
     "$P2LLVM_UNIFIED_PATCH"
   )
@@ -333,8 +357,12 @@ write_unified_lock() {
     die "refusing to lock unexpected p2llvm commit $p2llvm_commit"
   [[ "$llvm_commit" == "$LLVM_PROJECT_REF" ]] ||
     die "refusing to lock unexpected llvm-project commit $llvm_commit"
+  verify_p2llvm_runtime_source ||
+    die "refusing to lock p2llvm outer source outside the exact runtime patch state"
   p2llvm_patch_state_valid ||
     die "refusing to lock a compiler source that differs from the exact patch series"
+  verify_p2llvm_runtime_archive ||
+    die "refusing to lock an invalid standalone compiler builtins archive"
 
   for file in "${files[@]}"; do
     [[ -f "$file" ]] || die "unified lock input is missing: $file"
@@ -353,6 +381,8 @@ write_unified_lock() {
     echo "compiler=$("$P2LLVM_ROOT/bin/clang" --version | head -1)"
     echo "linker=$("$P2LLVM_ROOT/bin/ld.lld" --version | head -1)"
     echo "llc=$("$P2LLVM_ROOT/bin/llc" --version | head -1)"
+    echo "p2llvm_runtime_patch=$(basename "$P2LLVM_RUNTIME_PATCH")"
+    echo "p2llvm_compiler_builtins=verified standalone archive with Python conversion helpers"
     echo "p2llvm_preempt_patch=$(basename "$P2LLVM_PREEMPT_PATCH")"
     echo "p2llvm_unified_patch=$(basename "$P2LLVM_UNIFIED_PATCH")"
     echo "p2llvm_unified_memory=verified opt-in lowering contract"
@@ -392,6 +422,8 @@ fi
   echo "nuttx_apps_commit=$(git -C "$APPS_DIR" rev-parse HEAD 2>/dev/null || echo BLOCKED_not_available)"
   echo "p2llvm_commit=$(git -C "$P2LLVM_SRC" rev-parse HEAD 2>/dev/null || echo BLOCKED_not_available)"
   echo "p2llvm_llvm_project_commit=$(git -C "$P2LLVM_SRC/llvm-project" rev-parse HEAD 2>/dev/null || echo BLOCKED_not_available)"
+  echo "p2llvm_runtime_patch=$(basename "$P2LLVM_RUNTIME_PATCH")"
+  echo "p2llvm_compiler_builtins=$runtime_archive_status"
   echo "p2llvm_preempt_patch=$(basename "$P2LLVM_PREEMPT_PATCH")"
   echo "p2llvm_unified_patch=$(basename "$P2LLVM_UNIFIED_PATCH")"
   echo "p2llvm_unified_memory=$unified_codegen_status"

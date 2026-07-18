@@ -29,6 +29,8 @@ LLVM_PROJECT_REF=72a9bb1ef2656d9953d1f41a8196d425ff2ab0b1
 P2LLVM_LOADP2_REF=21e074cc7ee6fbd4fb12ef5352544b3457a6729c
 P2LLVM_PREEMPT_PATCH=$ROOT/tools/p2/patches/p2llvm-preempt-safe-integer.patch
 P2LLVM_UNIFIED_PATCH=$ROOT/tools/p2/patches/p2llvm-unified-memory.patch
+P2LLVM_RUNTIME_PATCH=$ROOT/tools/p2/patches/p2llvm-python-runtime.patch
+P2LLVM_RUNTIME_TOOL=$ROOT/tools/p2/p2llvm-runtime.py
 P2LLVM_PATCHES=("$P2LLVM_PREEMPT_PATCH" "$P2LLVM_UNIFIED_PATCH")
 FLEXPROP_REF=858f51c4a24e7ae0f6cbc78f625c731083ad304f
 SPIN2CPP_REF=28f1b80fc3a36422fb0a1f7c54465d808634abc8
@@ -110,6 +112,66 @@ ensure_checkout()
 
   git -C "$dir" submodule update --init --recursive
   require_gitlink "$dir" "$ref"
+}
+
+ensure_p2llvm_checkout()
+{
+  local expected_url=https://github.com/ne75/p2llvm.git
+  local actual_url
+  local outer_head
+  local cloned=0
+
+  if [[ ! -d "$P2LLVM_SRC/.git" ]]; then
+    mkdir -p "$(dirname "$P2LLVM_SRC")"
+    git clone --filter=blob:none --no-checkout "$expected_url" "$P2LLVM_SRC"
+    cloned=1
+  fi
+
+  actual_url=$(git -C "$P2LLVM_SRC" remote get-url origin)
+  [[ "${actual_url%.git}" == "${expected_url%.git}" ]] ||
+    die "p2llvm origin is $actual_url; expected $expected_url"
+
+  if ! git -C "$P2LLVM_SRC" cat-file -e "$P2LLVM_REF^{commit}" \
+       2>/dev/null; then
+    git -C "$P2LLVM_SRC" fetch --filter=blob:none origin
+  fi
+  git -C "$P2LLVM_SRC" cat-file -e "$P2LLVM_REF^{commit}" 2>/dev/null ||
+    die "p2llvm commit $P2LLVM_REF is not available"
+
+  outer_head=$(git -C "$P2LLVM_SRC" rev-parse HEAD 2>/dev/null || true)
+  if (( cloned != 0 )) || [[ "$outer_head" != "$P2LLVM_REF" ]]; then
+    git -C "$P2LLVM_SRC" diff --quiet --ignore-submodules=dirty -- ||
+      die "p2llvm has tracked modifications in $P2LLVM_SRC"
+    git -C "$P2LLVM_SRC" diff --cached --quiet --ignore-submodules=dirty -- ||
+      die "p2llvm has staged modifications in $P2LLVM_SRC"
+    git -C "$P2LLVM_SRC" switch --detach "$P2LLVM_REF"
+  fi
+
+  git -C "$P2LLVM_SRC" submodule update --init --recursive
+  require_gitlink "$P2LLVM_SRC" "$P2LLVM_REF"
+  require_gitlink "$P2LLVM_SRC/llvm-project" "$LLVM_PROJECT_REF"
+  require_gitlink "$P2LLVM_SRC/loadp2" "$P2LLVM_LOADP2_REF"
+}
+
+apply_p2llvm_outer_patch()
+{
+  "$PYTHON" "$P2LLVM_RUNTIME_TOOL" apply-outer \
+    --source "$P2LLVM_SRC" --patch "$P2LLVM_RUNTIME_PATCH" \
+    --ref "$P2LLVM_REF" ||
+    die "p2llvm outer source does not match the exact runtime patch state"
+}
+
+verify_p2llvm_runtime_source()
+{
+  "$PYTHON" "$P2LLVM_RUNTIME_TOOL" verify-source \
+    --source "$P2LLVM_SRC" --patch "$P2LLVM_RUNTIME_PATCH" \
+    --ref "$P2LLVM_REF"
+}
+
+verify_p2llvm_runtime_archive()
+{
+  "$PYTHON" "$P2LLVM_RUNTIME_TOOL" verify-archive \
+    --toolchain-root "$P2LLVM_ROOT"
 }
 
 ensure_apps_checkout()
@@ -509,6 +571,7 @@ p2llvm_unified_memory_valid()
 p2llvm_valid()
 {
   p2llvm_tools_valid || return 1
+  verify_p2llvm_runtime_archive >/dev/null 2>&1 || return 1
   p2llvm_preemption_valid || return 1
   p2llvm_linker_aug20_valid || return 1
   p2llvm_bool_memory_valid || return 1
@@ -841,27 +904,22 @@ selftest_p2llvm_patch_state()
 
 build_libp2()
 {
-  local include_path=$ROOT/tools/p2/libp2-shims
   local logdir=$CACHE/logs
-
-  [[ -f "$include_path/stdio.h" ]] ||
-    die "libp2 stdio build shim is missing"
-  [[ -f "$include_path/math.h" ]] ||
-    die "libp2 math build shim is missing"
 
   mkdir -p "$logdir"
   (
     cd "$P2LLVM_SRC"
-    C_INCLUDE_PATH="$include_path${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}" \
-      "$PYTHON" build.py --configure --skip_llvm --skip_libc \
-        --install "$P2LLVM_ROOT" \
-        2>&1 | tee "$logdir/p2llvm-libp2-build.log"
+    "$PYTHON" build.py --configure --skip_llvm --skip_libc \
+      --install "$P2LLVM_ROOT" \
+      2>&1 | tee "$logdir/p2llvm-libp2-build.log"
   )
 
   [[ -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]] ||
     die "p2llvm build.py did not install libp2.a"
   [[ -f "$P2LLVM_ROOT/libp2/include/propeller2.h" ]] ||
     die "p2llvm build.py did not install the libp2 headers"
+  verify_p2llvm_runtime_archive ||
+    die "p2llvm build.py did not install valid standalone compiler builtins"
 }
 
 build_p2llvm()
@@ -933,7 +991,9 @@ build_p2llvm()
     --llc "$P2LLVM_ROOT/bin/llc" ||
     die "p2llvm does not provide the required unified-memory lowering"
 
-  if [[ ! -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]]; then
+  if [[ ! -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]] ||
+     ! verify_p2llvm_runtime_archive >/dev/null 2>&1;
+  then
     build_libp2
   fi
 
@@ -986,6 +1046,15 @@ write_lock()
     kconfig_version=$(sed -n 's/^Version:[[:space:]]*//p' "$kconfig_pc")
   fi
 
+  require_gitlink "$P2LLVM_SRC" "$P2LLVM_REF"
+  require_gitlink "$P2LLVM_SRC/llvm-project" "$LLVM_PROJECT_REF"
+  verify_p2llvm_runtime_source ||
+    die "refusing to lock p2llvm outer source outside the exact runtime patch state"
+  p2llvm_patch_state_valid ||
+    die "refusing to lock llvm-project outside the exact patch-series state"
+  verify_p2llvm_runtime_archive ||
+    die "refusing to lock an invalid standalone compiler builtins archive"
+
   mkdir -p "$(dirname "$lock")"
   {
     echo "nuttx_commit=$(git_head "$ROOT")"
@@ -1006,7 +1075,9 @@ write_lock()
     echo "pyelftools=$("$PYTHON_VENV/bin/python" -c 'import elftools; print(elftools.__version__)')"
     echo "host_os=$(uname -a)"
     echo "p2llvm_libc=skipped_not_installed"
-    echo "p2llvm_libp2_shims=unused stdio.h and math.h includes only"
+    echo "p2llvm_libp2_shims=not_required by standalone builtins build"
+    echo "p2llvm_runtime_patch=$(basename "$P2LLVM_RUNTIME_PATCH")"
+    echo "p2llvm_compiler_builtins=verified standalone archive with Python conversion helpers"
     echo "p2llvm_preempt_safe_integer=verified q-free Hub libcalls and limb-expanded mulh"
     echo "p2llvm_linker_aug20_guard=verified offset-zero rejection and explicit-AUGS link"
     echo "p2llvm_bool_memory=verified global/static i1 loads and stores at O0 Os O2"
@@ -1018,7 +1089,8 @@ write_lock()
     echo "p2llvm_darwin_cmake=-DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_LIBXML2=OFF -DCMAKE_DISABLE_FIND_PACKAGE_Backtrace:BOOL=TRUE"
     echo "p2_flags=--target=p2 -fno-jump-tables -ffunction-sections -fdata-sections -fno-common -fno-builtin -Os"
     echo "p2_unified_flags=-mllvm -p2-unified-memory"
-    shasum -a 256 "$P2LLVM_PREEMPT_PATCH" "$P2LLVM_UNIFIED_PATCH" \
+    shasum -a 256 "$P2LLVM_RUNTIME_PATCH" \
+      "$P2LLVM_PREEMPT_PATCH" "$P2LLVM_UNIFIED_PATCH" \
       "$KCONFIG_CONF" \
       "$P2LLVM_ROOT/bin/clang" \
       "$P2LLVM_ROOT/bin/clang++" \
@@ -1030,6 +1102,7 @@ write_lock()
       "$P2LLVM_ROOT/bin/llvm-readobj" \
       "$P2LLVM_ROOT/bin/llvm-size" "$P2LLVM_ROOT/bin/llvm-strip" \
       "$P2LLVM_ROOT/libp2/lib/libp2.a" \
+      "$P2LLVM_ROOT/libp2/lib/libcompiler_builtins.a" \
       "$FLEXPROP_ROOT/bin/flexspin" "$FLEXPROP_ROOT/bin/loadp2" |
       sed 's/^/sha256=/'
   } > "$tmp"
@@ -1049,10 +1122,8 @@ JOBS=${JOBS:-$(host_jobs)}
 mkdir -p "$CACHE"
 
 ensure_apps_checkout
-ensure_checkout p2llvm https://github.com/ne75/p2llvm.git \
-  "$P2LLVM_SRC" "$P2LLVM_REF"
-require_gitlink "$P2LLVM_SRC/llvm-project" "$LLVM_PROJECT_REF"
-require_gitlink "$P2LLVM_SRC/loadp2" "$P2LLVM_LOADP2_REF"
+ensure_p2llvm_checkout
+apply_p2llvm_outer_patch
 apply_p2llvm_patches
 case ${P2_BOOTSTRAP_PATCH_SELFTEST:-0} in
   1|only)
