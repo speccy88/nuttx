@@ -178,28 +178,35 @@ class CheckZlibOverlayTests(unittest.TestCase):
         )
 
     def _run(
-        self, archive: pathlib.Path, map_text: str
+        self,
+        archive: pathlib.Path,
+        map_text: str,
+        *,
+        map_archive: pathlib.Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         map_path = self.work / "nuttx.map"
         map_path.write_text(map_text, encoding="utf-8")
+        command = [
+            sys.executable,
+            "-B",
+            str(CHECKER),
+            "--map",
+            str(map_path),
+            "--archive",
+            str(archive),
+            "--slot-start",
+            "0x66000",
+            "--slot-end",
+            "0x7c000",
+            "--xmem-start",
+            "0x10000000",
+            "--xmem-end",
+            "0x12000000",
+        ]
+        if map_archive is not None:
+            command += ["--map-archive", str(map_archive)]
         return subprocess.run(
-            [
-                sys.executable,
-                "-B",
-                str(CHECKER),
-                "--map",
-                str(map_path),
-                "--archive",
-                str(archive),
-                "--slot-start",
-                "0x66000",
-                "--slot-end",
-                "0x7c000",
-                "--xmem-start",
-                "0x10000000",
-                "--xmem-end",
-                "0x12000000",
-            ],
+            command,
             text=True,
             capture_output=True,
             check=False,
@@ -212,6 +219,38 @@ class CheckZlibOverlayTests(unittest.TestCase):
         self.assertIn("STATICALLY-VERIFIED P2 zlib overlay", result.stdout)
         self.assertIn("archive_members=1", result.stdout)
         self.assertIn("live_members=1", result.stdout)
+
+    def test_accepts_immutable_snapshot_for_linked_archive(self) -> None:
+        archive, body, sizes = self._fixture()
+        snapshot = self.work / "zlib-link-input-libapps.a"
+        snapshot.write_bytes(archive.read_bytes())
+        result = self._run(
+            snapshot,
+            self._map_text(archive, body, sizes),
+            map_archive=archive,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("STATICALLY-VERIFIED P2 zlib overlay", result.stdout)
+
+    def test_snapshot_requires_the_linker_map_archive_identity(self) -> None:
+        archive, body, sizes = self._fixture()
+        snapshot = self.work / "zlib-link-input-libapps.a"
+        snapshot.write_bytes(archive.read_bytes())
+        result = self._run(snapshot, self._map_text(archive, body, sizes))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no live zlib contributions", result.stderr)
+
+    def test_rejects_snapshot_that_differs_from_linked_archive(self) -> None:
+        archive, body, sizes = self._fixture()
+        snapshot = self.work / "zlib-link-input-libapps.a"
+        snapshot.write_bytes(archive.read_bytes() + b"\n")
+        result = self._run(
+            snapshot,
+            self._map_text(archive, body, sizes),
+            map_archive=archive,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not exactly match linker-map archive", result.stderr)
 
     def test_rejects_archive_without_zlib_members(self) -> None:
         member = "ordinary.o"

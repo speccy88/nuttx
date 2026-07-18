@@ -344,6 +344,7 @@ if [[ "$cfg" == python ]]; then
   if ! "$python" "$ROOT/tools/p2/check-zlib-overlay.py" \
        --map "$ROOT/nuttx.map" \
        --archive "$zlib_audit_archive" \
+       --map-archive "$zlib_archive" \
        --slot-start "$p2_overlay_slot_start" \
        --slot-end "$p2_overlay_slot_end" \
        --xmem-start 0x10000000 \

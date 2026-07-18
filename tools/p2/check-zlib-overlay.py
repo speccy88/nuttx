@@ -11,7 +11,9 @@ must live in explicit external-data sections.
 
 This checker reads, but never modifies, the application archive and LLD map.
 It audits every zlib archive member, including members that the final link did
-not extract, then checks the address of every live zlib map contribution.
+not extract, then checks the address of every live zlib map contribution.  An
+immutable archive snapshot may be audited separately from the original path
+recorded in the map, but the two files must still match byte for byte.
 """
 
 from __future__ import annotations
@@ -393,6 +395,28 @@ def _overlaps(start: int, size: int, lower: int, upper: int) -> bool:
     return size > 0 and start < upper and start + size > lower
 
 
+def require_identical_archive_snapshot(
+    snapshot: pathlib.Path, map_archive: pathlib.Path
+) -> None:
+    """Prove that a preserved audit snapshot is the archive LLD consumed."""
+
+    try:
+        if snapshot.resolve() == map_archive.resolve():
+            return
+        snapshot_bytes = snapshot.read_bytes()
+        map_archive_bytes = map_archive.read_bytes()
+    except OSError as exc:
+        raise CheckError(
+            f"cannot compare archive snapshot {snapshot} with linker-map "
+            f"archive {map_archive}: {exc.strerror}"
+        ) from exc
+    if snapshot_bytes != map_archive_bytes:
+        raise CheckError(
+            f"archive snapshot {snapshot} does not exactly match linker-map "
+            f"archive {map_archive}"
+        )
+
+
 def audit_map(
     path: pathlib.Path,
     archive: pathlib.Path,
@@ -530,6 +554,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--map", required=True, type=pathlib.Path, dest="map_path")
     parser.add_argument("--archive", required=True, type=pathlib.Path)
+    parser.add_argument(
+        "--map-archive",
+        type=pathlib.Path,
+        help=(
+            "archive path recorded in the linker map when --archive is an "
+            "immutable post-link snapshot (default: --archive)"
+        ),
+    )
     parser.add_argument("--slot-start", required=True, type=integer)
     parser.add_argument("--slot-end", required=True, type=integer)
     parser.add_argument("--xmem-start", required=True, type=integer)
@@ -557,10 +589,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         raise CheckError("overlay slot and tagged PSRAM bounds overlap")
 
+    map_archive = args.map_archive or args.archive
+    require_identical_archive_snapshot(args.archive, map_archive)
     archive_report, member_names = audit_archive(args.archive, args.member_regex)
     map_report = audit_map(
         args.map_path,
-        args.archive,
+        map_archive,
         args.member_regex,
         member_names,
         args.slot_start,

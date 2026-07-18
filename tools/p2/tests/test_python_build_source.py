@@ -172,6 +172,7 @@ class PythonBuildSourceTests(unittest.TestCase):
         self.assertIn(
             '--archive "$zlib_audit_archive"', self.build_wrapper
         )
+        self.assertIn('--map-archive "$zlib_archive"', self.build_wrapper)
         self.assertIn("--slot-start \"$p2_overlay_slot_start\"", self.build_wrapper)
         self.assertIn("--slot-end \"$p2_overlay_slot_end\"", self.build_wrapper)
         self.assertIn("--xmem-start 0x10000000", self.build_wrapper)
