@@ -23,6 +23,12 @@ ARCH_KCONFIG = ROOT / "arch/p2/Kconfig"
 
 @unittest.skipUnless(MAKEFILE.is_file(), "set NUTTX_APPS_DIR to the apps tree")
 class PythonBuildSourceTests(unittest.TestCase):
+    def test_generated_python_staging_does_not_dirty_clean_source(self):
+        ignores = (ROOT / ".gitignore").read_text()
+
+        self.assertIn("/p2-overlay.ld\n", ignores)
+        self.assertIn("/p2-python-package/\n", ignores)
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.makefile = MAKEFILE.read_text(encoding="utf-8")

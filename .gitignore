@@ -67,6 +67,8 @@ etctmp/
 /nuttx-*
 /nuttx.*
 /nuttx_user*
+/p2-overlay.ld
+/p2-python-package/
 /staging
 **/tags
 /TAGS
