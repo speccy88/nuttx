@@ -102,6 +102,14 @@ compare-exchange, and inline-assembly pointer operands.  An unpatched compiler
 is reported as ``BLOCKED``; the tool must not turn that result into a passing
 claim.
 
+A formal ``byval`` object is a bounded Hub provenance root because the P2
+calling convention copies it into the incoming stack frame.  Before instruction
+selection, unified lowering stages every unproven ``byval`` actual through a
+Hub alloca, so the backend's native copy never reads a tagged pointer.  This is
+also the supported path for NuttX ``va_list`` wrappers: ``va_arg`` remains
+native for the bounded formal copy, while an arbitrary ``va_list`` pointer is
+rejected explicitly.
+
 Known semantic limits
 ---------------------
 

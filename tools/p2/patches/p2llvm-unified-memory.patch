@@ -66,10 +66,10 @@ index 2502d7d135ad..393ac8cb267b 100644
 +}
 diff --git a/llvm/lib/Target/P2/P2UnifiedMemory.cpp b/llvm/lib/Target/P2/P2UnifiedMemory.cpp
 new file mode 100644
-index 000000000000..49121b6bba40
+index 000000000000..be7aa24f1b08
 --- /dev/null
 +++ b/llvm/lib/Target/P2/P2UnifiedMemory.cpp
-@@ -0,0 +1,796 @@
+@@ -0,0 +1,812 @@
 +//===-- P2UnifiedMemory.cpp - Route generic memory through xmem helpers ----===//
 +//
 +// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -80,8 +80,9 @@ index 000000000000..49121b6bba40
 +//
 +// P2 Hub RAM is directly addressable, but external memory is reached through
 +// board-specific transactions.  With -p2-unified-memory, pointers whose
-+// provenance is not provably a Hub alloca or global are routed through a small
-+// runtime ABI.  Only bounded constant inbounds GEPs retain Hub provenance;
++// provenance is not provably a Hub alloca, global, or bounded formal byval
++// object are routed through a small runtime ABI.  Only bounded constant
++// inbounds GEPs retain Hub provenance;
 +// integer-derived, non-inbounds, and variable-offset pointers are deliberately
 +// conservative.  The runtime is responsible for discriminating Hub and
 +// external addresses.  Atomic operations are only permitted when provenance
@@ -102,6 +103,7 @@ index 000000000000..49121b6bba40
 +#include "llvm/ADT/APInt.h"
 +#include "llvm/ADT/SmallPtrSet.h"
 +#include "llvm/ADT/SmallVector.h"
++#include "llvm/IR/Argument.h"
 +#include "llvm/IR/Constants.h"
 +#include "llvm/IR/DataLayout.h"
 +#include "llvm/IR/Function.h"
@@ -197,7 +199,13 @@ index 000000000000..49121b6bba40
 +                                          const APInt &Offset) const {
 +  // GlobalAlias and GlobalIFunc can hide an arbitrary constant-expression
 +  // address.  Only actual storage objects are eligible for a native proof.
-+  if (!isa<AllocaInst>(Object) && !isa<GlobalVariable>(Object))
++  // A formal byval argument is also such an object: the P2 calling convention
++  // copies it into the incoming Hub stack area, and this pass stages an
++  // unproven byval source into Hub before lowering the corresponding call.
++  // Do not extend this rule to ordinary pointer arguments.
++  auto *ByValArgument = dyn_cast<Argument>(Object);
++  if (!isa<AllocaInst>(Object) && !isa<GlobalVariable>(Object) &&
++      (!ByValArgument || !ByValArgument->hasByValAttr()))
 +    return false;
 +
 +  // The object itself is a native Hub address.  A derived address needs an
@@ -225,11 +233,18 @@ index 000000000000..49121b6bba40
 +        ElementBytes > std::numeric_limits<uint64_t>::max() / Count)
 +      return false;
 +    ObjectSize = ElementBytes * Count;
-+  } else {
-+    auto *Global = dyn_cast<GlobalVariable>(Object);
-+    if (!Global || !Global->getValueType()->isSized())
++  } else if (auto *Global = dyn_cast<GlobalVariable>(Object)) {
++    if (!Global->getValueType()->isSized())
 +      return false;
 +    TypeSize Size = DL.getTypeAllocSize(Global->getValueType());
++    if (Size.isScalable())
++      return false;
++    ObjectSize = Size.getFixedSize();
++  } else {
++    Type *ByValTy = ByValArgument->getParamByValType();
++    if (!ByValTy || !ByValTy->isSized())
++      return false;
++    TypeSize Size = DL.getTypeAllocSize(ByValTy);
 +    if (Size.isScalable())
 +      return false;
 +    ObjectSize = Size.getFixedSize();
@@ -254,7 +269,8 @@ index 000000000000..49121b6bba40
 +    // Never reconstruct provenance across integer arithmetic.  In particular,
 +    // ptrtoint(@hub) + P2_PSRAM_UNIFIED_BASE must remain a tagged xmem address.
 +    IsHub = false;
-+  } else if (isa<AllocaInst>(Pointer) || isa<GlobalVariable>(Pointer)) {
++  } else if (isa<AllocaInst>(Pointer) || isa<GlobalVariable>(Pointer) ||
++             isa<Argument>(Pointer)) {
 +    IsHub = isHubObjectAtOffset(Pointer, DL, Offset);
 +  } else if (auto *GEP = dyn_cast<GEPOperator>(Pointer)) {
 +    if (GEP->isInBounds()) {
@@ -868,10 +884,10 @@ index 000000000000..49121b6bba40
 +}
 diff --git a/llvm/test/CodeGen/P2/unified-memory-unsupported.ll b/llvm/test/CodeGen/P2/unified-memory-unsupported.ll
 new file mode 100644
-index 000000000000..e2b758452212
+index 000000000000..402483342651
 --- /dev/null
 +++ b/llvm/test/CodeGen/P2/unified-memory-unsupported.ll
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,139 @@
 +; RUN: split-file %s %t
 +; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/vector.ll 2>&1 | FileCheck %s --check-prefix=VECTOR
 +; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/atomic-load.ll 2>&1 | FileCheck %s --check-prefix=ATOMIC-LOAD
@@ -882,6 +898,7 @@ index 000000000000..e2b758452212
 +; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/atomic-libcall.ll 2>&1 | FileCheck %s --check-prefix=ATOMIC-LIBCALL
 +; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/inline-asm.ll 2>&1 | FileCheck %s --check-prefix=INLINE-ASM
 +; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/libc-length.ll 2>&1 | FileCheck %s --check-prefix=LIBC-LENGTH
++; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/vaarg.ll 2>&1 | FileCheck %s --check-prefix=VAARG
 +; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/musttail-byval.ll 2>&1 | FileCheck %s --check-prefix=MUSTTAIL-BYVAL
 +; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/musttail-memcpy.ll 2>&1 | FileCheck %s --check-prefix=MUSTTAIL-MEMCPY
 +; RUN: not --crash llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -o /dev/null < %t/musttail-memmove.ll 2>&1 | FileCheck %s --check-prefix=MUSTTAIL-MEMMOVE
@@ -958,6 +975,13 @@ index 000000000000..e2b758452212
 +  ret i8* %result
 +}
 +
++;--- vaarg.ll
++define i32 @unsupported_dynamic_vaarg(i8** %args) {
++; VAARG: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_dynamic_vaarg': va_arg on a non-Hub va_list is unsupported
++  %value = va_arg i8** %args, i32
++  ret i32 %value
++}
++
 +;--- musttail-byval.ll
 +%pair = type { i32, i32 }
 +
@@ -965,7 +989,9 @@ index 000000000000..e2b758452212
 +
 +define void @unsupported_musttail_byval(%pair* byval(%pair) %source) {
 +; MUSTTAIL-BYVAL: LLVM ERROR: P2 unified-memory lowering failed in function 'unsupported_musttail_byval': musttail call with a non-Hub byval argument is unsupported
-+  musttail call void @musttail_byval_callee(%pair* byval(%pair) %source)
++  %raw = ptrtoint %pair* %source to i32
++  %unproven = inttoptr i32 %raw to %pair*
++  musttail call void @musttail_byval_callee(%pair* byval(%pair) %unproven)
 +  ret void
 +}
 +
@@ -1003,13 +1029,14 @@ index 000000000000..e2b758452212
 +}
 diff --git a/llvm/test/CodeGen/P2/unified-memory.ll b/llvm/test/CodeGen/P2/unified-memory.ll
 new file mode 100644
-index 000000000000..05d85b4ef04c
+index 000000000000..b1f02c79289b
 --- /dev/null
 +++ b/llvm/test/CodeGen/P2/unified-memory.ll
-@@ -0,0 +1,313 @@
+@@ -0,0 +1,340 @@
 +; RUN: llc -march=p2 -p2-unified-memory -stop-after=p2-unified-memory-lowering -print-after=p2-unified-memory-lowering -o /dev/null < %s 2>&1 | FileCheck %s
 +
 +%pair = type { i32, i32 }
++%va_list = type { i8* }
 +
 +@hub_word = global i32 0, align 4
 +@hub_bytes = global [16 x i8] zeroinitializer, align 4
@@ -1301,6 +1328,32 @@ index 000000000000..05d85b4ef04c
 +; CHECK: call void @consume_pair(%pair* byval(%pair) align 4 %source.byval.hub)
 +  tail call void @consume_pair(%pair* byval(%pair) align 4 %source)
 +  ret void
++}
++
++define i32 @hub_byval_field(%pair* byval(%pair) align 4 %source) {
++; CHECK-LABEL: define i32 @hub_byval_field(
++; CHECK-NOT: __p2_xmem_
++; CHECK: %field = getelementptr inbounds %pair, %pair* %source, i32 0, i32 1
++; CHECK-NOT: __p2_xmem_
++; CHECK: %value = load i32, i32* %field, align 4
++; CHECK-NOT: __p2_xmem_
++; CHECK: ret i32 %value
++  %field = getelementptr inbounds %pair, %pair* %source, i32 0, i32 1
++  %value = load i32, i32* %field, align 4
++  ret i32 %value
++}
++
++define i8* @hub_byval_vaarg(%va_list* byval(%va_list) align 4 %args) {
++; CHECK-LABEL: define i8* @hub_byval_vaarg(
++; CHECK-NOT: __p2_xmem_
++; CHECK: %[[CURSOR:.*]] = bitcast %va_list* %args to i8**
++; CHECK-NOT: __p2_xmem_
++; CHECK: %value = va_arg i8** %[[CURSOR]], i8*
++; CHECK-NOT: __p2_xmem_
++; CHECK: ret i8* %value
++  %cursor = getelementptr inbounds %va_list, %va_list* %args, i32 0, i32 0
++  %value = va_arg i8** %cursor, i8*
++  ret i8* %value
 +}
 +
 +define i32 @__p2_xmem_runtime_body(i32* %pointer) {

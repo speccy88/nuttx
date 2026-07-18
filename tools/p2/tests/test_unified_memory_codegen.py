@@ -63,8 +63,8 @@ class UnifiedMemoryCodegenTests(unittest.TestCase):
             )
 
     def test_provenance_verifier_requires_helpers_for_every_escape(self):
-        def provenance_fixture(native_function=None):
-            return "".join(
+        def provenance_fixture(native_function=None, helper_function=None):
+            escaped = "".join(
                 f"{function}:\n"
                 + (
                     "        rdbyte r0, r0\n"
@@ -75,11 +75,24 @@ class UnifiedMemoryCodegenTests(unittest.TestCase):
                 + f".size {function}, .-{function}\n"
                 for function, helper in CODEGEN.PROVENANCE_FUNCTIONS.items()
             )
+            native = "".join(
+                f"{function}:\n"
+                + (
+                    "        calla #\\__p2_xmem_load32\n"
+                    if function == helper_function
+                    else "        rdlong r0, ptra\n"
+                )
+                + "        reta\n"
+                + f".size {function}, .-{function}\n"
+                for function in CODEGEN.PROVENANCE_HUB_FUNCTIONS
+            )
+            return escaped + native
 
         assembly = provenance_fixture()
         self.assertEqual(
             CODEGEN.verify_provenance_assembly(assembly),
-            len(CODEGEN.PROVENANCE_FUNCTIONS),
+            len(CODEGEN.PROVENANCE_FUNCTIONS)
+            + len(CODEGEN.PROVENANCE_HUB_FUNCTIONS),
         )
 
         for function in CODEGEN.PROVENANCE_FUNCTIONS:
@@ -89,6 +102,15 @@ class UnifiedMemoryCodegenTests(unittest.TestCase):
                 ):
                     CODEGEN.verify_provenance_assembly(
                         provenance_fixture(native_function=function)
+                    )
+
+        for function in CODEGEN.PROVENANCE_HUB_FUNCTIONS:
+            with self.subTest(function=function):
+                with self.assertRaisesRegex(
+                    CODEGEN.CodegenError, "proven Hub byval object"
+                ):
+                    CODEGEN.verify_provenance_assembly(
+                        provenance_fixture(helper_function=function)
                     )
 
     def test_negative_probe_diagnostics_must_be_deliberate(self):
@@ -106,6 +128,9 @@ class UnifiedMemoryCodegenTests(unittest.TestCase):
         )
         CODEGEN.verify_rejection_diagnostic(
             "P2 unified memory rejects an inline assembly pointer", "inline asm"
+        )
+        CODEGEN.verify_rejection_diagnostic(
+            "P2 unified memory rejects va_arg on a non-Hub va_list", "va_arg"
         )
         with self.assertRaisesRegex(
             CODEGEN.CodegenError, "without an explicit"
@@ -168,6 +193,7 @@ class UnifiedMemoryCodegenTests(unittest.TestCase):
             "alias i8",
             "268435456",
             *CODEGEN.PROVENANCE_FUNCTIONS,
+            *CODEGEN.PROVENANCE_HUB_FUNCTIONS,
         ):
             self.assertIn(token, provenance)
 

@@ -26,6 +26,7 @@ NEGATIVE_IR_PROBES = {
     "atomic store": PROBE_DIRECTORY / "unified-memory-atomic-store.ll",
     "atomicrmw": PROBE_DIRECTORY / "unified-memory-atomicrmw.ll",
     "cmpxchg": PROBE_DIRECTORY / "unified-memory-cmpxchg.ll",
+    "va_arg": PROBE_DIRECTORY / "unified-memory-vaarg.ll",
 }
 PROVENANCE_IR_PROBE = PROBE_DIRECTORY / "unified-memory-provenance.ll"
 OPTIMIZATIONS = ("O0", "Os", "O2")
@@ -59,6 +60,7 @@ PROVENANCE_FUNCTIONS = {
     "p2_probe_non_inbounds_gep_escape": "__p2_xmem_load8",
     "p2_probe_out_of_range_global_alias": "__p2_xmem_load8",
 }
+PROVENANCE_HUB_FUNCTIONS = ("p2_probe_hub_byval_vaarg",)
 EXPECTED_FUNCTIONS = {**SCALAR_FUNCTIONS, **BULK_FUNCTIONS}
 HELPER_PATTERN = re.compile(r"\b__p2_xmem_[A-Za-z0-9_]+\b")
 NATIVE_MEMORY_PATTERN = re.compile(
@@ -176,7 +178,16 @@ def verify_provenance_assembly(assembly: str) -> int:
                 f"found {sorted(actual)}"
             )
 
-    return len(PROVENANCE_FUNCTIONS)
+    for function in PROVENANCE_HUB_FUNCTIONS:
+        body = function_body(assembly, function)
+        actual = helper_references(body)
+        if actual:
+            raise CodegenError(
+                f"proven Hub byval object {function} incorrectly calls "
+                f"helpers: {sorted(actual)}"
+            )
+
+    return len(PROVENANCE_FUNCTIONS) + len(PROVENANCE_HUB_FUNCTIONS)
 
 
 def verify_rejection_diagnostic(stderr: str, operation: str) -> None:
@@ -195,6 +206,7 @@ def verify_rejection_diagnostic(stderr: str, operation: str) -> None:
         "cmpxchg": ("cmpxchg", "compare exchange"),
         "atomic load": ("atomic load",),
         "atomic store": ("atomic store",),
+        "va_arg": ("va_arg", "va list", "va_list"),
     }
     markers = operation_markers[operation]
     if "unified" not in lowered or not any(
@@ -392,6 +404,10 @@ def main() -> int:
     print(
         "STATICALLY-VERIFIED: dynamic atomic operations, compare-exchange, "
         "and inline-assembly pointer operands are rejected explicitly"
+    )
+    print(
+        "STATICALLY-VERIFIED: bounded formal byval va_list storage remains "
+        "native Hub while arbitrary va_arg cursors are rejected explicitly"
     )
     version = subprocess.run(
         [str(args.clang), "--version"],
