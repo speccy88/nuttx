@@ -1451,6 +1451,67 @@ class HilTests(unittest.TestCase):
         self.assertTrue(markers["complete"])
         self.assertEqual(markers["reset_count"], 1)
 
+    def test_full_unified_boot_accepts_exact_extended_timeout_bound(self):
+        argv = self.argv("unified-full-timeout") + [
+            "--protocol",
+            "boot",
+            "--timeout",
+            "1800",
+            "--expect",
+            "P2XMEM:START:BASE=10000000:SIZE=33554432",
+            "--expect",
+            "P2XMEM:FULL:PASS:FNV=B51C9DC5",
+        ]
+        args = hil.build_parser().parse_args(argv)
+
+        config = hil.config_from_args(
+            args,
+            self.env(),
+            self.clock.utc_now,
+            lambda port: port == "/dev/fake-p2",
+        )
+
+        self.assertEqual(config.protocol, "boot")
+        self.assertEqual(config.timeout, 1800.0)
+
+    def test_full_unified_boot_rejects_timeout_above_extended_bound(self):
+        argv = self.argv("unified-full-timeout-over") + [
+            "--protocol",
+            "boot",
+            "--timeout",
+            "1800.001",
+            "--expect",
+            "P2XMEM:START:BASE=10000000:SIZE=33554432",
+            "--expect",
+            "P2XMEM:FULL:PASS:FNV=B51C9DC5",
+        ]
+        args = hil.build_parser().parse_args(argv)
+
+        with self.assertRaisesRegex(hil.SafetyError, r"range \(0, 1800\]"):
+            hil.config_from_args(
+                args,
+                self.env(),
+                self.clock.utc_now,
+                lambda port: port == "/dev/fake-p2",
+            )
+
+    def test_ordinary_boot_retains_short_timeout_bound(self):
+        argv = self.argv("ordinary-boot-timeout-over") + [
+            "--protocol",
+            "boot",
+            "--timeout",
+            "600.001",
+        ]
+        args = hil.build_parser().parse_args(argv)
+
+        with self.assertRaisesRegex(hil.SafetyError, r"range \(0, 600\]"):
+            hil.config_from_args(
+                args,
+                self.env(),
+                self.clock.utc_now,
+                lambda port: port == "/dev/fake-p2",
+            )
+
     def test_bringup_protocol_requires_boot_and_app_markers_in_order(self):
         session = FakeSession(self.clock, [GOOD_BRINGUP_OUTPUT])
         factory = SessionFactory([session])

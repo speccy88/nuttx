@@ -116,6 +116,14 @@ EXIT_HIL_FAILURE = 3
 EXIT_LOCK_BUSY = 9
 EXIT_INTERRUPTED = 130
 
+DEFAULT_MAX_TIMEOUT = 600
+PSRAM_MAX_TIMEOUT = 1800
+LONG_RUNNING_MAX_TIMEOUT = 3600
+UNIFIED_FULL_BOOT_START_MARKER = "P2XMEM:START:BASE=10000000:SIZE=33554432"
+UNIFIED_FULL_BOOT_PASS_PATTERN = re.compile(
+    r"P2XMEM:FULL:PASS:FNV=[0-9A-F]{8}"
+)
+
 OSTEST_PROFILES = {
     "ostest-pi-assert": (True, True),
     "ostest-pi-production": (True, False),
@@ -2780,6 +2788,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def maximum_protocol_timeout(
+    protocol: str, expected_literals: Sequence[str]
+) -> int:
+    if protocol in ("storage", "ostest"):
+        return LONG_RUNNING_MAX_TIMEOUT
+    if protocol == "psram":
+        return PSRAM_MAX_TIMEOUT
+
+    # The unified-memory full boot self-test makes the same bounded whole-
+    # device pass as the destructive PSRAM protocol.  Extend the timeout only
+    # when the caller requires both its exact 32 MiB start marker and its
+    # checksum-bearing completion marker; ordinary boot remains short.
+
+    if (
+        protocol == "boot"
+        and UNIFIED_FULL_BOOT_START_MARKER in expected_literals
+        and any(
+            UNIFIED_FULL_BOOT_PASS_PATTERN.fullmatch(marker)
+            for marker in expected_literals
+        )
+    ):
+        return PSRAM_MAX_TIMEOUT
+
+    return DEFAULT_MAX_TIMEOUT
+
+
 def config_from_args(  # noqa: C901
     args,
     env: Mapping[str, str],
@@ -2981,15 +3015,7 @@ def config_from_args(  # noqa: C901
         raise SafetyError("loader and console baud must be greater than zero")
     if args.cycles <= 0 or args.cycles > 100:
         raise SafetyError("--cycles must be in the range 1..100")
-    maximum_timeout = (
-        3600
-        if args.protocol == "storage"
-        else (
-            3600
-            if args.protocol == "ostest"
-            else (1800 if args.protocol == "psram" else 600)
-        )
-    )
+    maximum_timeout = maximum_protocol_timeout(args.protocol, args.expect)
     if args.timeout <= 0 or args.timeout > maximum_timeout:
         raise SafetyError(
             "--timeout must be in the range (0, {}]".format(maximum_timeout)
