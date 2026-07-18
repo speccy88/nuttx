@@ -48,9 +48,10 @@ External 32-MiB PSRAM is never native P2 Hub address space.  In the legacy
 profile it is explicitly serviced storage and cannot hold NuttX code, C
 objects, heap allocations, or task stacks; see :doc:`psram-service`.
 
-The experimental ``p2-ec32mb:unified`` profile assigns PSRAM the tagged
-logical pointer range ``[0x10000000, 0x12000000)`` and adds it as a second
-user-heap region.  Compiler-inserted helpers implement accesses to that tag;
-the CPU does not directly map it.  Code, globals, kernel allocations, and
-stacks remain in Hub RAM.  This separate profile is **DRAFTED** and
-**HIL-REQUIRED**; see :doc:`unified-memory`.
+The opt-in ``p2-ec32mb:unified`` profile assigns PSRAM the tagged logical
+pointer range ``[0x10000000, 0x12000000)`` and adds it as a second user-heap
+region.  Compiler-inserted helpers implement accesses to that tag; the CPU
+does not directly map it.  Code, globals, kernel allocations, and stacks
+remain in Hub RAM.  One exact normal image and one destructive full-device
+image are **HIL-VERIFIED**; see :doc:`unified-memory` for their provenance and
+the remaining fault-injection limit.

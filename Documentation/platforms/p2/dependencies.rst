@@ -49,7 +49,7 @@ unified lock must also pin, are:
   ``3d4c7a031bc9d260ba9ebe93a93e287d27f6142ccb081eb3a544fa7875cb8d27``;
   and
 * the opt-in unified-memory p2llvm patch:
-  ``9a11e6a10ae8d66a970c0db94a0bacb543d4adfe023fead010a947be5181af32``.
+  ``b99b12aecbe84d62d978fe311e66a6a17a19a86c0913daae96788d41e7bc9f8f``.
 
 ``tools/p2/bootstrap-local.sh`` checks pinned repositories, applies only the
 exact preemption-safe and unified-memory patch series, builds missing tools,

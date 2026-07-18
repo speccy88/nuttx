@@ -15,10 +15,10 @@ task stacks, heap allocation, initial TCB state, save/switch/full restore,
 global interrupt-state primitives, CT1 system ticks, low-level and full UART,
 stack helpers, register dumps, reset, and board initialization.  The native
 linker/runtime window is Hub RAM ``[0, 0x7c000)``; external PSRAM is never
-hardware-mapped Hub address space.  The experimental ``p2-ec32mb:unified``
+hardware-mapped Hub address space.  The opt-in ``p2-ec32mb:unified``
 profile adds a compiler-mediated tagged user-heap region.  That profile is
-**DRAFTED / HIL-REQUIRED** and is documented separately in
-:doc:`unified-memory`.
+**HIL-VERIFIED** for one exact normal-heap image and one destructive
+full-device image and is documented separately in :doc:`unified-memory`.
 
 The public context is the fixed 38-long layout in :doc:`context-frame`.
 Interrupt processing uses INT1 only, one detached Hub frame, and a guarded
@@ -140,8 +140,9 @@ Unsupported or incomplete areas
   architecture IRQ sources are not implemented.
 * Reset-interrupted flash recovery is verified; true power-loss recovery is
   not, because no controlled power-cycle command is available.
-* The tagged unified-PSRAM user heap has no hardware evidence and remains
-  **HIL-REQUIRED**.  Legacy ``/dev/psram0`` results do not qualify it.
+* The tagged unified-PSRAM user heap is HIL-verified for the exact images in
+  :doc:`unified-memory`; its raw-lock timeout fault injection remains
+  **HIL-REQUIRED** and endurance is not claimed.
 * P2-EC Rev D has no PSRAM.  Equivalent RAM, flash, and ROM SD-boot HIL passed
   on the exact release image; the no-PSRAM runtime contract also passed.
 

@@ -1,12 +1,13 @@
 Unified PSRAM pointer model
 ===========================
 
-Status: **DRAFTED** and **HIL-REQUIRED**.  The host-side checker is
-**HOST-TESTED**, but that only tests the checker logic.  A successful P2
-compile proves code-generation shape, not PSRAM electrical operation, heap
-integrity, concurrency safety, or endurance.  The hardware results in
-:doc:`psram-service` belong to the legacy character-device profile and do not
-qualify this profile.
+Status: **HIL-VERIFIED** on the exact P2-EC32MB Rev B images identified below.
+The normal image proved the 32-MiB tagged user heap and absence of
+``/dev/psram0`` under NSH.  The full image then passed a destructive
+33,554,432-byte write/read, boundary, scalar, bulk, allocator, and concurrent
+access campaign.  The compiler checker is **HOST-TESTED**.  This result does
+not claim endurance, temperature qualification, externally measured QPI
+timing, or the separate raw-lock timeout fault injection.
 
 What ``unified`` means
 ----------------------
@@ -142,35 +143,120 @@ Forced cleanup stops the known cog before releasing and returning its orphaned
 hardware lock.  That terminal failure requires a board reset; in-place
 post-timeout recovery is not claimed.
 
-Hardware acceptance still required
------------------------------------
+Hardware evidence and remaining limit
+-------------------------------------
 
-Do not promote this profile beyond **HIL-REQUIRED** until one exact image has
-at least demonstrated:
+The 2026-07-18 campaign used a P2-EC32MB Rev B at 180 MHz on
+``/dev/cu.usbserial-P97cvdxp``.  ``loadp2`` loaded both images into RAM with
+``-ZERO -DTR -t``; no flash or SD write was performed.  The frozen source and
+compiler provenance for both firmware images was:
 
-* boot and shell operation with no ``/dev/psram0`` registration;
-* Hub-resident code, globals, kernel allocations, and task stacks;
-* allocations that exceed the Hub heap and return tagged pointers;
-* aligned and unaligned 8-, 16-, 32-, and 64-bit loads/stores across natural
-  word, chip-lane, page, and end-of-device boundaries;
-* ``memcpy``, overlapping ``memmove``, and ``memset`` for every Hub/PSRAM
-  direction;
-* allocator split/coalesce/realloc/free stress with content verification;
-* concurrent task access; and
-* a destructive full 32-MiB write/read pass on the unified image.
+* NuttX ``c19be7b5c62042a264d262de41d7ba6c1e75c37a`` and apps
+  ``71b90cca497d18e667f091bef8113343f746badf``;
+* p2llvm ``bdcefcce7860b2232c06f35726fea679a3a7309c`` with llvm-project
+  ``72a9bb1ef2656d9953d1f41a8196d425ff2ab0b1``;
+* preemption and unified patch SHA-256 values
+  ``3d4c7a031bc9d260ba9ebe93a93e287d27f6142ccb081eb3a544fa7875cb8d27``
+  and
+  ``b99b12aecbe84d62d978fe311e66a6a17a19a86c0913daae96788d41e7bc9f8f``;
+* clang/clang++ SHA-256
+  ``c3e35e36112f6528c2864a172b6871115cabbeb6fb8222f08fdb962bd0d01e87``
+  and llc SHA-256
+  ``90d78269f9575b852e417a88e1c0ce25c2764339c68f95093728cb091dac0560``;
+* exact toolchain-lock SHA-256
+  ``997cc0399829d9300f3234d9dd3d570e5d63debc22c6dd0e12fbeb07901095fe``;
+  and
+* compiler option ``-mllvm -p2-unified-memory`` on the unified builds.
 
-The full HIL profile emits ``P2XMEM:BOUNDARY:PASS`` only after helper-driven
-unaligned 16-, 32-, and 64-bit accesses cross an interleaved PSRAM page edge
-and valid 8-, 16-, 32-, and 64-bit accesses end exactly at ``0x12000000``.
-The bounded timeout/cancellation path still needs a separate fault-injection
-campaign; a normal successful memory sweep cannot exercise it.  A dedicated
-image may enable
-``CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK``.  After the normal
-self-test passes, it parks the worker while the descriptor lock is held,
-requires ``-ETIMEDOUT`` followed by terminal ``-ENODEV``, emits
+The host-only extended-timeout HIL runner was commit
+``641de4441e19ba2a26e011920ce6f41fdf1338cf``; it did not change the firmware
+source commit above.  The exact ``hil.py`` copy preserved with the passing
+full run has SHA-256
+``f5f2e290011b4355fb31b8873e16b8446b3d706966ef9ba330192167d7885ff4``.
+The superseded artifact ``/private/tmp/p2-unified-hil-full-c19be7b`` is
+correctly recorded as ``FAIL``: its original 600-second host bound expired
+after every write checkpoint and the first 8 MiB of clean readback, with no
+target failure marker.  Its status SHA-256 is
+``f2918c35da7a753cfd015b5c3dd4d2e81ef624ea7c6490cd3de5238da54c45cb``.
+It motivated the narrowly gated runner change above and is not counted as
+passing hardware evidence; the same unchanged ELF subsequently completed the
+authoritative run below.
+
+The normal ``p2-ec32mb:unified`` build is preserved at
+``/private/tmp/p2-unified-build-c19be7b``.  Its ELF SHA-256 is
+``69e22c182460b335dd9f99d63b7c85c55e797133c91033c101e555573ef94df5``
+and its raw binary SHA-256 is
+``88a6d82bd5a92f61fadc113604bd68ccc570f88bd8966e3673616dacb25a3c3c``.
+The one-cycle NSH artifact at
+``/private/tmp/p2-unified-hil-normal-c19be7b`` is ``PASS``; its top-level
+status SHA-256 is
+``8a51d085583823d31bc52cd1ca0623c1cf7f343f3dc3ce76a83674c50bb988bd``.
+The target reported:
+
+.. code-block:: text
+
+        total       used       free    maxused    maxfree  nused  nfree name
+       131068       4676     126392       7064     124384     19      2 Kmem
+     33686492       2236   33684256       2616   33554416      9      2 Umem
+
+``ls /dev`` listed only ``console``, ``null``, ``ttyS0``, and ``zero``.
+``uname`` identified NuttX commit ``c19be7b5c6``.  Shell, process, sleep, and
+mount probes also passed.  The raw serial record is
+``/private/tmp/p2-unified-hil-normal-c19be7b/cycle-001/console.raw``.
+A post-sweep reload of the same normal image repeated those results and left
+the board running that image.  Its artifact is
+``/private/tmp/p2-unified-hil-normal-postfull-c19be7b`` and its status SHA-256
+is ``66ec3ecae9d25b57077e226b8edda4b4ebbf5c8f71fe2442508e35c032410a76``.
+That reload is board-state evidence only: its generic copied ``.config`` was
+the then-current ``unified-hil`` workspace configuration, so the clean normal
+build and first normal HIL artifact above remain the configuration provenance.
+
+The destructive ``p2-ec32mb:unified-hil`` build is preserved at
+``/private/tmp/p2-unified-hil-build-c19be7b``.  The clean build-status SHA-256
+is ``ed2ee762ef0ca383d54c9d87a2bbcf50417ab2b42c6847ce335e595e36708d79``;
+the ELF and raw-binary SHA-256 values are, respectively,
+``db975694b44c0c432c1826af1ab792515500654a2ef2d3b0fafa7b84fe796b5c``
+and
+``52d1bf4344e0b9f72946f1bd4101f76fff8529e51f5f4acab22b6f09ffc1f449``.
+Both self-tests were enabled and raw-lock fault injection was disabled.
+
+The authoritative HIL artifact is
+``/private/tmp/p2-unified-hil-full-pass-c19be7b``.  It used the ``boot``
+protocol with a hard 1,800-second limit and finished ``PASS`` in
+1,271.601346 seconds.  Its top-level status SHA-256 is
+``0b80ad000fa6a3712d53519d2148e84ef1fa6e2a9fce9ab74a3e963f85e100a8``;
+the raw serial log SHA-256 is
+``853d57c927423f38f940d132124275eb1d08257144ae66f671074a6307966143``.
+All eight 4-MiB write progress markers and all eight read markers appeared in
+order, using the literal form ``P2XMEM:FULL:PROGRESS:WRITE=...`` and
+``P2XMEM:FULL:PROGRESS:READ=...`` through ``02000000``.  The decisive terminal
+markers were:
+
+.. code-block:: text
+
+   P2XMEM:BOUNDARY:PASS
+   P2XMEM:NODEV:PASS
+   P2XMEM:SCALAR:PASS
+   P2XMEM:BULK:PASS
+   P2XMEM:GEOMETRY:PASS
+   P2XMEM:CONCURRENT:PASS
+   P2XMEM:HEAP:PASS
+   P2XMEM:FULL:PASS:FNV=B51C9DC5
+   P2XMEM:PASS
+
+The boundary marker covers unaligned 16-, 32-, and 64-bit accesses across an
+interleaved PSRAM page edge and valid 8-, 16-, 32-, and 64-bit accesses ending
+exactly at ``0x12000000``.  The full test writes, reads, compares, and hashes
+every PSRAM byte before the allocator installs external-region metadata.  The
+remaining scalar, bulk, geometry, concurrent-task, realloc, fragmentation,
+and content-preservation checks then exercise the memory through ordinary
+tagged pointers and the NuttX heap.
+
+The bounded timeout/cancellation fault path remains **HIL-REQUIRED** because a
+successful memory sweep cannot exercise it.  A dedicated image may enable
+``CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK``.  It parks the worker
+while the descriptor lock is held, requires ``-ETIMEDOUT`` followed by
+terminal ``-ENODEV``, emits
 ``P2XMEM:FAULT_RAW_LOCK:PASS:TERMINAL``, and deliberately resets the board.
-The option is disabled in both checked-in unified profiles.
-
-Those results must identify the NuttX commit, p2llvm commit, compiler flags,
-profile, image hash, board revision, and raw logs.  Until then, the feature is
-a draft implementation rather than evidence of working hardware.
+The option was disabled in both verified images.  No endurance, temperature,
+or externally instrumented QPI waveform/timing claim is made.

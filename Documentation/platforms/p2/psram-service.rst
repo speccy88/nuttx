@@ -3,8 +3,9 @@ PSRAM service-cog design
 
 Status: the legacy explicit PSRAM service and ``/dev/psram0`` interface are
 **HIL-VERIFIED** for two consecutive full-device starts.  Those results do
-not qualify the separate ``unified`` profile, which is **HIL-REQUIRED**.
-PSRAM remains external to native Hub address space in both profiles.
+not qualify the separate ``unified`` profile; that profile has its own exact
+**HIL-VERIFIED** normal-heap and full-device campaign.  PSRAM remains external
+to native Hub address space in both profiles.
 
 Interface and geometry
 ----------------------
@@ -24,8 +25,8 @@ objects stay in coherent Hub RAM.
 The ``p2-ec32mb:unified`` profile reuses the internal transfer service but
 does not register this character device.  It exposes ordinary dynamically
 allocated user objects through a compiler/runtime pointer ABI instead; see
-:doc:`unified-memory`.  The hardware evidence below predates that ABI and
-cannot be transferred to it.
+:doc:`unified-memory`.  The legacy hardware evidence below and the separate
+unified-profile evidence cannot be transferred between those ABIs.
 
 Service protocol
 ----------------
