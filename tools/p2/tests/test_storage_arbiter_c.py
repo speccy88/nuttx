@@ -15,17 +15,21 @@ BOARD_SRC = (
 
 
 class StorageArbiterCTests(unittest.TestCase):
-    def test_target_transition_engine(self):
+    def _run_transition_engine(self, mode3):
         with tempfile.TemporaryDirectory() as tmpdir:
             executable = pathlib.Path(tmpdir) / "storage-arbiter-test"
-            subprocess.run(
+            command = [
+                "cc",
+                "-std=c11",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                f"-I{BOARD_SRC}",
+            ]
+            if mode3:
+                command.append("-DCONFIG_P2_STORAGE_SD_MODE3=1")
+            command.extend(
                 [
-                    "cc",
-                    "-std=c11",
-                    "-Wall",
-                    "-Wextra",
-                    "-Werror",
-                    f"-I{BOARD_SRC}",
                     str(BOARD_SRC / "p2_ec32mb_storage_arbiter.c"),
                     str(
                         ROOT
@@ -33,11 +37,16 @@ class StorageArbiterCTests(unittest.TestCase):
                     ),
                     "-o",
                     str(executable),
-                ],
-                check=True,
-                cwd=ROOT,
+                ]
             )
+            subprocess.run(command, check=True, cwd=ROOT)
             subprocess.run([str(executable)], check=True, cwd=ROOT)
+
+    def test_target_transition_engine_mode0(self):
+        self._run_transition_engine(mode3=False)
+
+    def test_target_transition_engine_mode3(self):
+        self._run_transition_engine(mode3=True)
 
 
 if __name__ == "__main__":

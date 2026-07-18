@@ -53,15 +53,20 @@ static const struct p2_storage_lines_s g_flash_lines =
   P2_STORAGE_MOSI | P2_STORAGE_FLASH_CLK
 };
 
-/* The SD card uses SPI mode 0.  P60 is lowered first to select the card,
- * then P61 is lowered to establish the clock-idle level.  The inactive
- * flash sees no clock edge on P60 while P61 is low.
+/* The stable profile uses SPI mode 0.  P60 is lowered first to select the
+ * card, then P61 is lowered to establish the clock-idle level.  The
+ * accelerated profile uses mode 3 and keeps P61 high.  In either case the
+ * inactive flash sees no clock edge on P60.
  */
 
 static const struct p2_storage_lines_s g_sd_lines =
 {
   P2_STORAGE_OUTPUTS,
+#ifdef CONFIG_P2_STORAGE_SD_MODE3
+  P2_STORAGE_MOSI | P2_STORAGE_SD_CLK
+#else
   P2_STORAGE_MOSI
+#endif
 };
 
 /****************************************************************************

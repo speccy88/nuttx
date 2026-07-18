@@ -34,23 +34,36 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* These values are the hardware-qualified 20 MHz to 180 MHz PLL sequence for
- * the P2-EC32MB Rev-B module.  Keep the compile-time checks adjacent to the
- * constants: silently using this sequence for another crystal or target rate
- * would make all Smart Pin timing wrong.
+/* Construct the documented P2 PLL mode for a 20 MHz input, XDIV=1,
+ * XDIVP=1, and an integer XMUL.  180 MHz remains the board-qualified normal
+ * operating point.  Higher rates require an explicit experimental Kconfig
+ * opt-in and are never presented as production-safe.
  */
 
 #if CONFIG_P2_XTAL_HZ != 20000000
 #  error "P2 PLL sequence requires the P2-EC32MB 20 MHz TCXO"
 #endif
 
-#if CONFIG_P2_SYSCLK_HZ != 180000000
-#  error "P2 PLL sequence is qualified only at 180 MHz"
+#if CONFIG_P2_SYSCLK_HZ % CONFIG_P2_XTAL_HZ != 0
+#  error "P2 system clock must be an integer multiple of the 20 MHz TCXO"
+#endif
+
+#if CONFIG_P2_SYSCLK_HZ < CONFIG_P2_XTAL_HZ || \
+    CONFIG_P2_SYSCLK_HZ > 360000000
+#  error "P2 PLL integer multiplier is outside the supported 1..18 range"
+#endif
+
+#if CONFIG_P2_SYSCLK_HZ > 180000000 && \
+    !defined(CONFIG_P2_EXPERIMENTAL_OVERCLOCK)
+#  error "P2 clocks above 180 MHz require the experimental overclock opt-in"
 #endif
 
 #define P2_RCFAST_MODE             0x000000f0u
-#define P2_CLOCK_SETUP             0x010008f4u
-#define P2_CLOCK_FINAL             0x010008f7u
+#define P2_PLL_MULTIPLIER          \
+  (CONFIG_P2_SYSCLK_HZ / CONFIG_P2_XTAL_HZ)
+#define P2_CLOCK_SETUP             \
+  (0x010000f4u | ((P2_PLL_MULTIPLIER - 1u) << 8))
+#define P2_CLOCK_FINAL             (P2_CLOCK_SETUP | 3u)
 #define P2_CLOCK_LOCK_WAIT_CYCLES  300000u
 
 #define P2_LOADER_CLKFREQ          (*(volatile uint32_t *)0x14u)

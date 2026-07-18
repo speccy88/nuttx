@@ -396,7 +396,16 @@ static int mmcsd_lock(FAR struct mmcsd_slot_s *slot)
 
   /* Get exclusive access to the SPI bus (if necessary) */
 
-  SPI_LOCK(slot->spi, true);
+  ret = SPI_LOCK(slot->spi, true);
+  if (ret < 0)
+    {
+      /* The lower half may use a bounded shared-bus lock.  Do not program
+       * or access the SPI controller unless ownership was actually granted.
+       */
+
+      nxmutex_unlock(&slot->lock);
+      return ret;
+    }
 
   /* Set the frequency, bit width and mode, as some other driver could have
    * changed those since the last time that we had the SPI bus.
@@ -407,7 +416,7 @@ static int mmcsd_lock(FAR struct mmcsd_slot_s *slot)
   SPI_HWFEATURES(slot->spi, 0);
   SPI_SETFREQUENCY(slot->spi, slot->spispeed);
 
-  return ret;
+  return OK;
 }
 
 /****************************************************************************
@@ -1009,6 +1018,18 @@ static int mmcsd_recvblock(FAR struct mmcsd_slot_s *slot,
       /* Receive the block */
 
       SPI_RECVBLOCK(spi, buffer, nbytes);
+
+      /* SPI block methods have no return value.  Lower halves which can
+       * detect an asynchronous/DMA/Smart-Pin failure latch the standard
+       * transfer-error status bit so the data cannot be reported as valid.
+       */
+
+      if ((SPI_STATUS(spi, SPIDEV_MMCSD(0)) &
+           SPI_STATUS_TRANSFER_ERROR) != 0)
+        {
+          ferr("ERROR: SPI lower-half block transfer failed\n");
+          return -EIO;
+        }
 
       /* Discard the CRC */
 

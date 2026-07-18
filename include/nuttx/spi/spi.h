@@ -273,6 +273,10 @@
 #define SPI_STATUS_PRESENT     0x01 /* Bit 0=1: MMC/SD card present */
 #define SPI_STATUS_WRPROTECTED 0x02 /* Bit 1=1: MMC/SD card write protected */
 
+/* Bit 2=1: Latched transfer failure */
+
+#define SPI_STATUS_TRANSFER_ERROR 0x04
+
 /****************************************************************************
  * Name: SPI_CMDDATA
  *

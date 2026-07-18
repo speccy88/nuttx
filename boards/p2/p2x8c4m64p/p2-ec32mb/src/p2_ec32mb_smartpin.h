@@ -41,6 +41,20 @@
 #define P2_SP_OE                    0x00000040u
 #define P2_SP_TT_01                 0x00000040u
 
+/* Common pad/selector fields used by the synchronous serial modes.  The
+ * B-input selector occupies bits 26..24 and encodes a signed, modulo-eight
+ * offset from the Smart Pin itself.
+ */
+
+#define P2_SP_INVERT_OUTPUT         0x00004000u
+#define P2_SP_SYNC_IO               0x00010000u
+#define P2_SP_SCHMITT_A             0x00060000u
+#define P2_SP_HIGH_15K              0x00001000u
+#define P2_SP_INVERT_B              0x08000000u
+#define P2_SP_B_INPUT_OFFSET(pin, source) \
+  ((((uint32_t)(source) - (uint32_t)(pin)) & 7u) << 24)
+
+#define P2_SP_PULSE                 0x00000008u
 #define P2_SP_PWM_SAWTOOTH          0x00000012u
 #define P2_SP_COUNT_RISES           0x0000001cu
 #define P2_SP_HIGH_TICKS            0x00000022u
@@ -49,6 +63,8 @@
 #define P2_SP_ADC                    0x00000030u
 #define P2_SP_ASYNC_TX              0x0000003cu
 #define P2_SP_ASYNC_RX              0x0000003eu
+#define P2_SP_SYNC_TX               0x00000038u
+#define P2_SP_SYNC_RX               0x0000003au
 
 #define P2_SP_DAC_DITHER_PWM         0x00000006u
 #define P2_SP_ADC_1X                 0x00118000u

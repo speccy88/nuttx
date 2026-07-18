@@ -5,6 +5,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 caller_apps=${NUTTX_APPS_DIR:-}
+caller_toolchain_lock=${P2_TOOLCHAIN_LOCK:-}
 
 if [[ -f "$HOME/.p2-nuttx-env" ]]; then
   # shellcheck disable=SC1091
@@ -16,12 +17,16 @@ if [[ -f "$ROOT/.p2-hil.env" ]]; then
   source "$ROOT/.p2-hil.env"
 fi
 
-# An explicit per-build apps checkout must win over convenience defaults from
-# the persistent environment files.  This keeps isolated release worktrees
-# paired with the intended nuttx-apps revision.
+# Explicit per-build inputs must win over convenience defaults from the
+# persistent environment files.  This keeps isolated release worktrees paired
+# with the intended nuttx-apps revision and its matching evidence lock.
 
 if [[ -n "$caller_apps" ]]; then
   NUTTX_APPS_DIR=$caller_apps
+fi
+
+if [[ -n "$caller_toolchain_lock" ]]; then
+  P2_TOOLCHAIN_LOCK=$caller_toolchain_lock
 fi
 
 requested=${1:-bringup}

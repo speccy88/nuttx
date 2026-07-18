@@ -32,6 +32,7 @@
 #include <nuttx/board.h>
 #if defined(CONFIG_FS_PROCFS) || defined(CONFIG_P2_SMARTPIN) || \
     defined(CONFIG_P2_EC32MB_STORAGE_BINDINGS) || \
+    defined(CONFIG_P2_EC32MB_SDIO_NATIVE) || \
     defined(CONFIG_USERLED_LOWER)
 #  include <syslog.h>
 #endif
@@ -298,6 +299,45 @@ void board_late_initialize(void)
     {
       syslog(LOG_ERR, "ERROR: Failed to initialize P2 I2C: %d\n",
              i2c_ret);
+    }
+#endif
+
+#ifdef CONFIG_P2_EC32MB_SDIO_NATIVE
+  struct p2_sdio_native_info_s sdio_info;
+  int sdio_ret;
+
+  sdio_ret = p2_sdio_native_initialize();
+  if (sdio_ret < 0)
+    {
+      syslog(LOG_ERR, "P2SDIO:NATIVE=FAIL:%d\n", sdio_ret);
+    }
+  else if (p2_sdio_native_get_info(&sdio_info) < 0)
+    {
+      syslog(LOG_ERR, "P2SDIO:TELEMETRY=FAIL\n");
+    }
+  else
+    {
+      syslog(LOG_NOTICE, "P2SDIO:NATIVE=/dev/mmcsd0:READONLY=YES\n");
+      syslog(LOG_NOTICE,
+             "P2SDIO:CLOCK SYSCLK=%lu REQUESTED=%lu ACTUAL=%lu "
+             "DIVISOR=%u/%u RAW_BYTES_PER_SEC=%lu\n",
+             (unsigned long)sdio_info.sysclk_hz,
+             (unsigned long)sdio_info.requested_data_clock_hz,
+             (unsigned long)sdio_info.data_clock_hz,
+             sdio_info.requested_divisor, sdio_info.active_divisor,
+             (unsigned long)sdio_info.raw_bus_bytes_per_second);
+      syslog(LOG_NOTICE,
+             "P2SDIO:NEGOTIATED WIDTH=%u HS=%u PHASE=%u SYNC=%u "
+             "RXLAG=%u OVERCLOCK=%u\n",
+             sdio_info.wide_bus ? 4 : 1, sdio_info.high_speed,
+             sdio_info.phase_calibrated, sdio_info.input_synchronized,
+             sdio_info.rx_lag, sdio_info.overclocked);
+      syslog(LOG_NOTICE,
+             "P2SDIO:INTEGRITY CMDCRC7=%u FALLBACKCRC16=%u "
+             "FASTCRC16=%u HIL_REQUIRED=%u\n",
+             sdio_info.command_crc7_verified,
+             sdio_info.fallback_crc16_verified,
+             sdio_info.fast_crc16_verified, sdio_info.hil_required);
     }
 #endif
 

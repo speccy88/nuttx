@@ -34,6 +34,104 @@ config P2_EC32MB_SDCARD_AUTOMOUNT
 		card-detect GPIO.  Mount failure is reported and never triggers
 		automatic formatting.
 
+config P2_EC32MB_SDIO_NATIVE
+	bool "Experimental P16-P23 native 4-bit SD record fixture"
+	default n
+	depends on ARCH_BOARD_P2_EC32MB
+	depends on BOARD_LATE_INITIALIZE && P2_SMARTPIN
+	depends on MMCSD
+	depends on !MMCSD_SPI
+	select ARCH_HAVE_SDIO
+	select MMCSD_SDIO
+	select MMCSD_READONLY
+	select SDIO_BLOCKSETUP
+	help
+		Bind a software-defined native SD lower half to /dev/mmcsd0.  This
+		uses an external socket/level-compatible fixture on P16-P23: DAT0-3,
+		CMD, CLK, activity, and an active-high external power-switch input.
+		P23 must drive a load switch and must never power a card directly.
+		The load switch must actively discharge the card supply while disabled;
+		CMD/DAT pull-ups must connect to that switched supply, not an always-on
+		3.3-V rail.  The build rejects enabled board peripherals whose configured
+		pins overlap the fixture's exclusive P16-P23 allocation.
+
+		The driver is deliberately read-only.  A dedicated COGEXEC streamer
+		captures 4-bit CMD17/CMD18 payloads; command CRC7 is always checked.
+		External CMD/DAT pull-ups, short traces, and a power cycle are required.
+		This is HIL-required experimental code, not a validated board feature.
+
+if P2_EC32MB_SDIO_NATIVE
+
+config P2_EC32MB_SDIO_COMMAND_HZ
+	int "Native SD command/slow-path frequency"
+	default 1000000
+	range 100000 5000000
+	help
+		Clock used by the C command engine, SCR reads, and CRC-verified
+		fallback.  Identification remains capped at 400 kHz.
+
+config P2_EC32MB_SDIO_DIVISOR
+	int "Requested native SD data-clock system divisor"
+	default 4
+	range 2 65535
+	help
+		Request sysclk/divisor for the 4-bit streamer.  The lower half first
+		negotiates SD High Speed with CMD6 and empirically calibrates the RX
+		phase using two identical, four-lane-CRC16-valid CMD6 status blocks.
+		It fails closed to the CRC-verified command/slow-path clock if
+		negotiation or calibration fails.
+
+config P2_EC32MB_SDIO_ALLOW_OVERCLOCK
+	bool "Allow requested SD clocks beyond the 50-MHz High Speed limit"
+	default n
+	help
+		Permit a successfully negotiated and calibrated card to use the
+		requested divisor above the SD High Speed 50-MHz limit.  This is an
+		out-of-spec record experiment and always requires HIL evidence.
+
+config P2_EC32MB_SDIO_VERIFY_FAST_CRC16
+	bool "Verify all four data CRC16 lanes after streamer reads"
+	default y
+	help
+		Compute and compare the four native data CRC16 values after every fast
+		read.  Disable only for explicitly labelled record runs where timed
+		throughput is the objective.  The proof command first hashes the same
+		full range with this policy enabled, then requires every timed hash to
+		match that CRC16-checked baseline.  RX phase calibration always verifies
+		CRC16, regardless of this setting, and telemetry reports the policy.
+
+config P2_EC32MB_SDIO_RESPONSE_CLOCKS
+	int "Maximum command-response start clocks"
+	default 64
+	range 8 1024
+
+config P2_EC32MB_SDIO_START_CLOCKS
+	int "Maximum data-block start scan clocks"
+	default 1000000
+	range 1000 100000000
+
+config P2_EC32MB_SDIO_BUSY_TIMEOUT_MS
+	int "R1b DAT0 busy timeout (milliseconds)"
+	default 1000
+	range 10 5000
+
+config P2_EC32MB_SDIO_SERVICE_TIMEOUT_MS
+	int "Dedicated streamer request timeout (milliseconds)"
+	default 1000
+	range 10 5000
+
+config P2_EC32MB_SDIO_MAX_TRANSFER
+	int "Maximum native SD transfer bytes"
+	default 262144
+	range 4096 1048576
+	help
+		The generic MMC/SD upper half must be configured to split larger
+		requests.  This value must be exactly divisible by 512; the build
+		fails rather than silently rounding it.  CRC sidecar storage is
+		reserved at build time for this many 512-byte blocks.
+
+endif # P2_EC32MB_SDIO_NATIVE
+
 config P2_EC32MB_W25_PROBE_FREQUENCY
 	int "W25 wake and JEDEC probe frequency"
 	default 400000

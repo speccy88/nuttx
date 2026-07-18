@@ -18,6 +18,7 @@ Parallax Propeller 2 (P2) cloud first draft
    pin-map
    hil-wiring
    storage-arbitration
+   sd-performance
    flash-layout
    smartpins
    psram-service

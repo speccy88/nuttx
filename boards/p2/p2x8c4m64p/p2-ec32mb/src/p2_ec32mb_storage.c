@@ -32,9 +32,11 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <sched.h>
 
 #include <nuttx/compiler.h>
 #include <nuttx/crc32.h>
+#include <nuttx/irq.h>
 #ifdef CONFIG_MMCSD_SPI
 #  include <nuttx/mmcsd.h>
 #endif
@@ -49,6 +51,9 @@
 #include <arch/board/board_flash_layout.h>
 
 #include "p2_ec32mb_storage_arbiter.h"
+#ifdef CONFIG_P2_STORAGE_SMARTPIN_SPI
+#  include "p2_ec32mb_smartpin.h"
+#endif
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -91,6 +96,16 @@
 #endif
 
 #define P2_STORAGE_MIN_HALF_CYCLES 4u
+
+#ifdef CONFIG_P2_STORAGE_SMARTPIN_SPI
+#  define P2_STORAGE_SMARTPIN_MIN_PERIOD_CYCLES 4u
+#  define P2_STORAGE_SMARTPIN_BLOCK_BYTES       512u
+#  define P2_STORAGE_SMARTPIN_MAX_IRQ_CYCLES \
+     (CONFIG_P2_SYSCLK_HZ / 1000u)
+#  define P2_STORAGE_SMARTPIN_MARGIN_CYCLES \
+     (CONFIG_P2_SYSCLK_HZ / 10000u)
+#  define P2_STORAGE_SMARTPIN_RX_BITS        (31u | 32u)
+#endif
 
 #define P2_W25_JEDEC_ID_COMMAND    0x9fu
 #define P2_W25_RELEASE_POWERDOWN   0xabu
@@ -142,6 +157,9 @@ struct p2_storage_spi_s
   enum spi_mode_e mode;
   uint32_t frequency;
   uint32_t half_cycles;
+#ifdef CONFIG_P2_STORAGE_SMARTPIN_SPI
+  uint32_t period_cycles;
+#endif
   int last_error;
   uint8_t nbits;
   bool selected;
@@ -233,6 +251,9 @@ static struct p2_storage_spi_s g_p2_flash_spi =
   .mode = SPIDEV_MODE3,
   .frequency = 400000,
   .half_cycles = CONFIG_P2_SYSCLK_HZ / 800000,
+#ifdef CONFIG_P2_STORAGE_SMARTPIN_SPI
+  .period_cycles = CONFIG_P2_SYSCLK_HZ / 400000,
+#endif
   .nbits = 8,
 };
 
@@ -243,9 +264,16 @@ static struct p2_storage_spi_s g_p2_sd_spi =
     .ops = &g_p2_storage_spi_ops,
   },
   .target = P2_STORAGE_TARGET_SD,
+#ifdef CONFIG_P2_STORAGE_SD_MODE3
+  .mode = SPIDEV_MODE3,
+#else
   .mode = SPIDEV_MODE0,
+#endif
   .frequency = 400000,
   .half_cycles = CONFIG_P2_SYSCLK_HZ / 800000,
+#ifdef CONFIG_P2_STORAGE_SMARTPIN_SPI
+  .period_cycles = CONFIG_P2_SYSCLK_HZ / 400000,
+#endif
   .nbits = 8,
 };
 
@@ -387,10 +415,18 @@ static bool p2_storage_devid_valid(struct p2_storage_spi_s *priv,
 
 static bool p2_storage_mode_valid(struct p2_storage_spi_s *priv)
 {
-  return (priv->target == P2_STORAGE_TARGET_FLASH &&
-          priv->mode == SPIDEV_MODE3) ||
-         (priv->target == P2_STORAGE_TARGET_SD &&
-          priv->mode == SPIDEV_MODE0);
+  if (priv->target == P2_STORAGE_TARGET_FLASH)
+    {
+      return priv->mode == SPIDEV_MODE3;
+    }
+
+#ifdef CONFIG_P2_STORAGE_SD_MODE3
+  return priv->target == P2_STORAGE_TARGET_SD &&
+         priv->mode == SPIDEV_MODE3;
+#else
+  return priv->target == P2_STORAGE_TARGET_SD &&
+         priv->mode == SPIDEV_MODE0;
+#endif
 }
 
 static void p2_storage_fault(struct p2_storage_spi_s *priv, int error)
@@ -499,6 +535,154 @@ static uint8_t p2_storage_exchange_byte(struct p2_storage_spi_s *priv,
   return rx;
 }
 
+#ifdef CONFIG_P2_STORAGE_SMARTPIN_SPI
+static uint32_t p2_storage_wire_word(uint32_t value)
+{
+  /* Synchronous receive shifts the serial bit order into the Smart Pin.
+   * Reverse the bits, then restore byte order for a little-endian Hub word.
+   */
+
+  __asm__ __volatile__("rev %0\n\tmovbyts %0, #0x1b"
+                       : "+r" (value));
+  return value;
+}
+
+static bool p2_storage_deadline_expired(uint32_t deadline)
+{
+  return (int32_t)(p2_sp_counter() - deadline) >= 0;
+}
+
+static bool p2_storage_wait_smartpin(unsigned int pin, uint32_t deadline)
+{
+  while (!p2_sp_ready(pin))
+    {
+      if (p2_storage_deadline_expired(deadline))
+        {
+          return false;
+        }
+    }
+
+  return true;
+}
+
+static void p2_storage_smartpin_stop(void)
+{
+  /* Disable the receive pin first, then stop the clock and restore the
+   * mode-3 idle level.  P59 remains an ordinary GPIO driven high throughout
+   * a read, so the card sees 0xff while the clock generator is active.
+   */
+
+  p2_sp_dir_low(BOARD_SD_MISO_PIN);
+  p2_sp_wrpin(BOARD_SD_MISO_PIN, 0);
+  p2_sp_dir_low(BOARD_SD_CLK_PIN);
+  p2_sp_wrpin(BOARD_SD_CLK_PIN, 0);
+  p2_storage_pin_high(BOARD_SD_CLK_PIN);
+  p2_storage_pin_high(BOARD_SD_MOSI_PIN);
+}
+
+static int p2_storage_smartpin_recv(
+  struct p2_storage_spi_s *priv, FAR uint8_t *buffer, size_t nbytes)
+{
+  uint64_t transfer_cycles;
+  uint32_t clock_mode;
+  uint32_t receive_mode;
+  uint32_t clock_x;
+  uint32_t deadline;
+  uint32_t word;
+  irqstate_t flags;
+  size_t offset;
+  bool ok = false;
+
+  if (priv->target != P2_STORAGE_TARGET_SD ||
+      priv->mode != SPIDEV_MODE3 || buffer == NULL ||
+      nbytes != P2_STORAGE_SMARTPIN_BLOCK_BYTES)
+    {
+      return 0;
+    }
+
+  if (!p2_storage_transfer_ready(priv))
+    {
+      memset(buffer, 0xff, nbytes);
+      return -EPERM;
+    }
+
+  /* P_PULSE uses X[15:0] as the period and X[31:16] as the asserted
+   * interval.  Inverted output gives the SD mode-3 high-idle/low-pulse
+   * clock.  The receive Smart Pin takes its B input from P61.
+   */
+
+  clock_x = ((priv->period_cycles / 2u) << 16) |
+            priv->period_cycles;
+  clock_mode = P2_SP_PULSE | P2_SP_OE | P2_SP_INVERT_OUTPUT |
+               P2_SP_SYNC_IO | P2_SP_SCHMITT_A;
+  receive_mode = P2_SP_SYNC_RX | P2_SP_HIGH_15K |
+                 P2_SP_B_INPUT_OFFSET(BOARD_SD_MISO_PIN,
+                                      BOARD_SD_CLK_PIN);
+
+  transfer_cycles = (uint64_t)nbytes * 8u * priv->period_cycles;
+  if (transfer_cycles > P2_STORAGE_SMARTPIN_MAX_IRQ_CYCLES -
+                        P2_STORAGE_SMARTPIN_MARGIN_CYCLES)
+    {
+      /* At a low requested clock, use the interruptible polled fallback.
+       * The accelerated path never masks interrupts for more than 1 ms.
+       */
+
+      return 0;
+    }
+
+  transfer_cycles += P2_STORAGE_SMARTPIN_MARGIN_CYCLES;
+
+  deadline = p2_sp_counter() + (uint32_t)transfer_cycles;
+
+  /* Smart Pin state belongs to the executing cog.  Prevent task migration
+   * or pre-emption until all generated clocks have completed.  The short,
+   * hard-bounded payload window below also masks local interrupts so C can
+   * drain every 32-bit Smart-Pin result before the next one replaces it.
+   */
+
+  sched_lock();
+  p2_storage_pin_high(BOARD_SD_MOSI_PIN);
+  p2_sp_dir_low(BOARD_SD_CLK_PIN);
+  p2_sp_dir_low(BOARD_SD_MISO_PIN);
+  p2_sp_wrpin(BOARD_SD_CLK_PIN, clock_mode);
+  p2_sp_wxpin(BOARD_SD_CLK_PIN, clock_x);
+  p2_sp_wypin(BOARD_SD_CLK_PIN, 0);
+  p2_sp_wrpin(BOARD_SD_MISO_PIN, receive_mode);
+  p2_sp_wxpin(BOARD_SD_MISO_PIN, P2_STORAGE_SMARTPIN_RX_BITS);
+  p2_sp_wypin(BOARD_SD_MISO_PIN, 0);
+  p2_sp_dir_high(BOARD_SD_MISO_PIN);
+  p2_sp_dir_high(BOARD_SD_CLK_PIN);
+  flags = enter_critical_section();
+  p2_sp_wypin(BOARD_SD_CLK_PIN, (uint32_t)nbytes * 8u);
+
+  for (offset = 0; offset < nbytes; offset += sizeof(word))
+    {
+      if (!p2_storage_wait_smartpin(BOARD_SD_MISO_PIN, deadline))
+        {
+          goto out;
+        }
+
+      word = p2_storage_wire_word(p2_sp_rdpin(BOARD_SD_MISO_PIN));
+      memcpy(&buffer[offset], &word, sizeof(word));
+    }
+
+  ok = p2_storage_wait_smartpin(BOARD_SD_CLK_PIN, deadline);
+
+out:
+  p2_storage_smartpin_stop();
+  leave_critical_section(flags);
+  sched_unlock();
+
+  if (!ok)
+    {
+      memset(buffer, 0xff, nbytes);
+      p2_storage_fault(priv, -ETIMEDOUT);
+    }
+
+  return ok ? 1 : -ETIMEDOUT;
+}
+#endif
+
 static int p2_storage_lock(FAR struct spi_dev_s *dev, bool lock)
 {
   struct p2_storage_spi_s *priv = p2_storage_priv(dev);
@@ -580,6 +764,22 @@ static void p2_storage_select(FAR struct spi_dev_s *dev, uint32_t devid,
       ret = p2_storage_arbiter_deselect(&g_p2_storage_arbiter,
                                         priv->target);
     }
+  else if (g_p2_storage_arbiter.state == P2_STORAGE_RECOVERY)
+    {
+      /* A void SPI block operation reports its latched failure through
+       * SPI_STATUS_TRANSFER_ERROR.  Generic MMC/SD deselects at that abort
+       * boundary before attempting its in-lock media reinitialization.
+       * Acknowledge the electrically safe recovery state here so that retry
+       * can make real progress without releasing shared-bus ownership.
+       */
+
+      ret = p2_storage_arbiter_recover(&g_p2_storage_arbiter,
+                                       priv->target);
+      if (ret == 0)
+        {
+          priv->last_error = 0;
+        }
+    }
   else
     {
       ret = 0;
@@ -600,6 +800,9 @@ static uint32_t p2_storage_setfrequency(FAR struct spi_dev_s *dev,
 {
   struct p2_storage_spi_s *priv = p2_storage_priv(dev);
   uint32_t half_cycles;
+#ifdef CONFIG_P2_STORAGE_SMARTPIN_SPI
+  uint32_t period_cycles;
+#endif
 
   if (frequency == 0)
     {
@@ -610,6 +813,27 @@ static uint32_t p2_storage_setfrequency(FAR struct spi_dev_s *dev,
     {
       frequency = CONFIG_P2_STORAGE_MAX_FREQUENCY;
     }
+
+#ifdef CONFIG_P2_STORAGE_SMARTPIN_SPI
+  if (priv->target == P2_STORAGE_TARGET_SD)
+    {
+      period_cycles = (CONFIG_P2_SYSCLK_HZ + frequency - 1u) / frequency;
+      if (period_cycles < P2_STORAGE_SMARTPIN_MIN_PERIOD_CYCLES)
+        {
+          period_cycles = P2_STORAGE_SMARTPIN_MIN_PERIOD_CYCLES;
+        }
+
+      /* The polled command path uses a symmetric approximation while full
+       * block reads use the exact Smart-Pin period, including odd divisors
+       * such as sysclk/5.
+       */
+
+      priv->period_cycles = period_cycles;
+      priv->half_cycles = (period_cycles + 1u) / 2u;
+      priv->frequency = CONFIG_P2_SYSCLK_HZ / period_cycles;
+      return priv->frequency;
+    }
+#endif
 
   half_cycles = (CONFIG_P2_SYSCLK_HZ + (frequency * 2u) - 1u) /
                 (frequency * 2u);
@@ -670,6 +894,7 @@ static uint8_t p2_storage_status(FAR struct spi_dev_s *dev,
                                  uint32_t devid)
 {
   struct p2_storage_spi_s *priv = p2_storage_priv(dev);
+  uint8_t status;
 
   if (!p2_storage_devid_valid(priv, devid))
     {
@@ -680,7 +905,13 @@ static uint8_t p2_storage_status(FAR struct spi_dev_s *dev,
    * an always-present policy and discovers absence by bounded commands.
    */
 
-  return SPI_STATUS_PRESENT;
+  status = SPI_STATUS_PRESENT;
+  if (priv->last_error < 0)
+    {
+      status |= SPI_STATUS_TRANSFER_ERROR;
+    }
+
+  return status;
 }
 
 #ifdef CONFIG_SPI_CMDDATA
@@ -708,6 +939,14 @@ static void p2_storage_exchange(FAR struct spi_dev_s *dev,
   FAR const uint8_t *tx = txbuffer;
   FAR uint8_t *rx = rxbuffer;
   size_t i;
+
+#ifdef CONFIG_P2_STORAGE_SMARTPIN_SPI
+  if (txbuffer == NULL && rxbuffer != NULL &&
+      p2_storage_smartpin_recv(priv, rx, nwords) != 0)
+    {
+      return;
+    }
+#endif
 
   for (i = 0; i < nwords; i++)
     {
@@ -740,6 +979,13 @@ static void p2_storage_recvblock(FAR struct spi_dev_s *dev,
   struct p2_storage_spi_s *priv = p2_storage_priv(dev);
   FAR uint8_t *rx = buffer;
   size_t i;
+
+#ifdef CONFIG_P2_STORAGE_SMARTPIN_SPI
+  if (p2_storage_smartpin_recv(priv, rx, nwords) != 0)
+    {
+      return;
+    }
+#endif
 
   for (i = 0; i < nwords; i++)
     {
@@ -872,6 +1118,11 @@ FAR struct spi_dev_s *p2_spiflash_spi_initialize(void)
 FAR struct spi_dev_s *p2_sdspi_initialize(void)
 {
   return p2_storage_initialize_once() < 0 ? NULL : &g_p2_sd_spi.spi;
+}
+
+int p2_sdspi_get_last_error(void)
+{
+  return g_p2_sd_spi.last_error;
 }
 
 #ifdef CONFIG_MTD_W25

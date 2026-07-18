@@ -23,8 +23,19 @@ config ARCH_CHIP
 	string
 	default "p2x8c4m64p" if ARCH_CHIP_P2X8C4M64P
 
+config P2_EXPERIMENTAL_OVERCLOCK
+	bool "Allow an experimental P2 system-clock overclock"
+	default n
+	help
+		Permit system clocks above the board-qualified 180 MHz operating
+		point.  This is intended only for explicitly labelled performance
+		experiments.  Operation depends on the individual P2, voltage,
+		temperature, wiring, and peripherals and is not guaranteed.
+
 config P2_SYSCLK_HZ
 	int "P2 system clock frequency"
+	range 20000000 180000000 if !P2_EXPERIMENTAL_OVERCLOCK
+	range 20000000 360000000 if P2_EXPERIMENTAL_OVERCLOCK
 	default 180000000
 
 config P2_XTAL_HZ
@@ -63,13 +74,36 @@ config P2_STORAGE_LOCK_TIMEOUT_TICKS
 		owner.  A timeout fails closed without changing line state.
 
 config P2_STORAGE_MAX_FREQUENCY
-	int "Maximum polled storage SPI frequency"
+	int "Maximum storage SPI frequency"
 	depends on P2_STORAGE
-	range 100000 5000000
+	range 100000 5000000 if !P2_STORAGE_SMARTPIN_SPI
+	range 100000 45000000 if P2_STORAGE_SMARTPIN_SPI
 	default 1000000
 	help
-		Conservative ceiling for the initial C-polled lower halves.  The
-		actual clock is returned to the generic SPI client.
+		Storage clock ceiling.  The C-polled implementation is limited to
+		5 MHz.  The optional SD receive Smart-Pin path supports clocks up to
+		sysclk/4 (45 MHz at the board's supported 180 MHz system clock).
+		The actual clock is returned to the generic SPI client.
+
+config P2_STORAGE_SMARTPIN_SPI
+	bool "Smart-Pin accelerated onboard SD reads"
+	depends on P2_STORAGE && MMCSD_SPI
+	default n
+	help
+		Accelerate full SD data-block reads on the shared P58-P61 socket with
+		a P2 pulse generator and synchronous receive Smart Pin.  Commands,
+		tokens, CRC bytes, and writes retain the conservative polled path.
+		The board socket is one-bit SPI, so this improves onboard operation
+		but cannot approach the 40 MB/s native four-bit target.
+
+config P2_STORAGE_SD_MODE3
+	bool "Use SPI mode 3 for the onboard SD card"
+	depends on P2_STORAGE_SMARTPIN_SPI
+	default y
+	help
+		Use the SD card's supported SPI mode 3 so the shared P61 line remains
+		high while idle and can be driven directly by the accelerated pulse
+		Smart Pin.  The flash remains safely deselected by the storage owner.
 
 config P2_SMARTPIN
 	bool "P2 Smart Pin ownership and lower-half support"

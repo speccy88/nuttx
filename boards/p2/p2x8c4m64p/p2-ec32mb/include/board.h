@@ -30,6 +30,7 @@
 #include <nuttx/config.h>
 
 #ifndef __ASSEMBLY__
+#  include <stdbool.h>
 #  include <stdint.h>
 #  include <nuttx/compiler.h>
 #endif
@@ -39,7 +40,7 @@
  ****************************************************************************/
 
 #define BOARD_XTAL_FREQUENCY 20000000
-#define BOARD_SYSCLK_FREQUENCY 180000000
+#define BOARD_SYSCLK_FREQUENCY CONFIG_P2_SYSCLK_HZ
 #define BOARD_UART0_BAUD 230400
 #define BOARD_CONSOLE_TX_PIN 62
 #define BOARD_CONSOLE_RX_PIN 63
@@ -58,6 +59,14 @@
 #define BOARD_SD_MOSI_PIN 59
 #define BOARD_SD_CS_PIN 60
 #define BOARD_SD_CLK_PIN 61
+#define BOARD_SDIO_DAT0_PIN 16
+#define BOARD_SDIO_DAT1_PIN 17
+#define BOARD_SDIO_DAT2_PIN 18
+#define BOARD_SDIO_DAT3_PIN 19
+#define BOARD_SDIO_CMD_PIN 20
+#define BOARD_SDIO_CLK_PIN 21
+#define BOARD_SDIO_ACTIVITY_PIN 22
+#define BOARD_SDIO_POWER_PIN 23
 #define BOARD_PSRAM_FIRST_PIN 40
 #define BOARD_PSRAM_LAST_PIN 57
 #define BOARD_HAVE_PSRAM 1
@@ -97,6 +106,33 @@ struct p2_w25_info_s
 };
 #endif
 
+#ifdef CONFIG_P2_EC32MB_SDIO_NATIVE
+struct p2_sdio_native_info_s
+{
+  uint64_t fast_bytes;
+  uint32_t sysclk_hz;
+  uint32_t command_clock_hz;
+  uint32_t requested_data_clock_hz;
+  uint32_t data_clock_hz;
+  uint32_t raw_bus_bytes_per_second;
+  uint32_t fast_requests;
+  uint32_t fast_errors;
+  uint16_t requested_divisor;
+  uint16_t active_divisor;
+  uint8_t service_cog;
+  uint8_t rx_lag;
+  uint8_t wide_bus;
+  uint8_t high_speed;
+  uint8_t phase_calibrated;
+  uint8_t input_synchronized;
+  uint8_t overclocked;
+  uint8_t hil_required;
+  uint8_t command_crc7_verified;
+  uint8_t fallback_crc16_verified;
+  uint8_t fast_crc16_verified;
+};
+#endif
+
 /****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
@@ -105,6 +141,7 @@ struct p2_w25_info_s
 void p2_storage_board_initialize(void);
 FAR struct spi_dev_s *p2_spiflash_spi_initialize(void);
 FAR struct spi_dev_s *p2_sdspi_initialize(void);
+int p2_sdspi_get_last_error(void);
 #  ifdef CONFIG_MTD_W25
 int p2_w25_initialize(void);
 int p2_w25_get_info(FAR struct p2_w25_info_s *info);
@@ -112,6 +149,12 @@ int p2_w25_get_info(FAR struct p2_w25_info_s *info);
 #  ifdef CONFIG_MMCSD_SPI
 int p2_mmcsd_initialize(void);
 #  endif
+#endif
+
+#ifdef CONFIG_P2_EC32MB_SDIO_NATIVE
+int p2_sdio_native_initialize(void);
+int p2_sdio_native_get_info(FAR struct p2_sdio_native_info_s *info);
+int p2_sdio_native_set_fast_crc16(bool enable);
 #endif
 
 #endif /* __ASSEMBLY__ */

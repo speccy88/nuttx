@@ -31,6 +31,13 @@
 
 #include "p2_ec32mb_storage_arbiter.h"
 
+#ifdef CONFIG_P2_STORAGE_SD_MODE3
+#  define P2_STORAGE_TEST_SD_LEVELS \
+     (P2_STORAGE_MOSI | P2_STORAGE_SD_CLK)
+#else
+#  define P2_STORAGE_TEST_SD_LEVELS P2_STORAGE_MOSI
+#endif
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -168,7 +175,7 @@ int main(void)
                                    P2_STORAGE_TARGET_SD) == 0);
   assert(arbiter.state == P2_STORAGE_SD_SELECTED);
   assert(arbiter.lines.outputs == P2_STORAGE_OUTPUTS);
-  assert(arbiter.lines.levels == P2_STORAGE_MOSI);
+  assert(arbiter.lines.levels == P2_STORAGE_TEST_SD_LEVELS);
   assert(p2_storage_arbiter_release(&arbiter,
                                     P2_STORAGE_TARGET_SD) == 0);
   assert_idle(&arbiter);

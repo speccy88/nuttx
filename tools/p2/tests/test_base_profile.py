@@ -132,13 +132,20 @@ class BaseProfileTests(unittest.TestCase):
         bootstrap = self.read(ROOT / "tools" / "p2" / "bootstrap-local.sh")
         self.assertIn("p2llvm_conditional_branch_valid", bootstrap)
 
-    def test_explicit_apps_worktree_overrides_persistent_default(self):
+    def test_explicit_build_inputs_override_persistent_defaults(self):
         build = self.read(ROOT / "tools" / "p2" / "build.sh")
-        saved = build.index("caller_apps=${NUTTX_APPS_DIR:-}")
-        restored = build.index("NUTTX_APPS_DIR=$caller_apps")
-        selected = build.index("apps=${NUTTX_APPS_DIR:-$ROOT/../apps}")
-        self.assertLess(saved, restored)
-        self.assertLess(restored, selected)
+        apps_saved = build.index("caller_apps=${NUTTX_APPS_DIR:-}")
+        apps_restored = build.index("NUTTX_APPS_DIR=$caller_apps")
+        apps_selected = build.index("apps=${NUTTX_APPS_DIR:-$ROOT/../apps}")
+        lock_saved = build.index("caller_toolchain_lock=${P2_TOOLCHAIN_LOCK:-}")
+        lock_restored = build.index("P2_TOOLCHAIN_LOCK=$caller_toolchain_lock")
+        lock_selected = build.index(
+            "toolchain_lock=${P2_TOOLCHAIN_LOCK:-$ROOT/tools/p2/toolchain.lock}"
+        )
+        self.assertLess(apps_saved, apps_restored)
+        self.assertLess(apps_restored, apps_selected)
+        self.assertLess(lock_saved, lock_restored)
+        self.assertLess(lock_restored, lock_selected)
 
 
 if __name__ == "__main__":

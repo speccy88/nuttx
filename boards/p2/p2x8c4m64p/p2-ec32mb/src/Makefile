@@ -42,6 +42,11 @@ CSRCS += p2_ec32mb_psram.c
 ASRCS += p2_ec32mb_psram_service.S
 endif
 
+ifeq ($(CONFIG_P2_EC32MB_SDIO_NATIVE),y)
+CSRCS += p2_ec32mb_sdio.c
+ASRCS += p2_ec32mb_sdio_service.S
+endif
+
 ifeq ($(CONFIG_P2_STORAGE),y)
 CSRCS += p2_ec32mb_storage.c p2_ec32mb_storage_arbiter.c
 endif
