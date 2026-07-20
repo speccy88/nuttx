@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import hashlib
 import os
 import pathlib
@@ -141,13 +142,41 @@ class PythonContainerRuntimeTests(unittest.TestCase):
             ctypes.c_uint32,
             ctypes.c_size_t,
             ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_size_t,
         ]
         cls.library.p2_probe_initialize.restype = ctypes.c_int
+        cls.library.p2_probe_reset.restype = None
+        cls.library.p2_probe_reuse_workspace.restype = None
+        cls.library.p2_probe_loader_published.restype = ctypes.c_int
+        cls.library.p2_probe_install_calls.restype = ctypes.c_size_t
+        cls.library.p2_probe_uninstall_calls.restype = ctypes.c_size_t
+        cls.library.p2_probe_register_calls.restype = ctypes.c_size_t
+        cls.library.p2_probe_early_register_calls.restype = ctypes.c_size_t
+        cls.library.p2_probe_set_register_result.argtypes = [ctypes.c_int]
+        cls.library.p2_probe_set_register_result.restype = None
         cls.library.p2_probe_load_group.argtypes = [ctypes.c_uint32]
         cls.library.p2_probe_load_group.restype = ctypes.c_int
+        cls.library.p2_probe_load_group_modified.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+        ]
+        cls.library.p2_probe_load_group_modified.restype = ctypes.c_int
+        cls.library.p2_probe_set_group_flags.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+        ]
+        cls.library.p2_probe_set_group_flags.restype = None
         cls.library.p2_probe_hub.restype = ctypes.POINTER(ctypes.c_uint8)
         cls.library.p2_probe_romfs_address.restype = ctypes.c_size_t
         cls.library.p2_probe_romfs_size.restype = ctypes.c_size_t
+        cls.library.p2_probe_source_read_calls.restype = ctypes.c_size_t
+        cls.library.p2_probe_backing_read_calls.restype = ctypes.c_size_t
+        cls.library.p2_probe_backing_header_reads.restype = ctypes.c_size_t
+        cls.library.p2_probe_backing_write_calls.restype = ctypes.c_size_t
+        cls.library.p2_probe_backing_write_bytes.restype = ctypes.c_size_t
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -194,14 +223,41 @@ class PythonContainerRuntimeTests(unittest.TestCase):
         backing_offset: int = BACKING_OFFSET,
         workspace_count: int = 32,
         corrupt_copy: int = 0,
+        source_is_backing: bool = False,
+        source_backing_address: int | None = None,
+        source_backing_size: int | None = None,
+        actual_alias: bool | None = None,
+        reset: bool = True,
     ) -> tuple[int, ctypes.Array[ctypes.c_uint8]]:
+        if reset:
+            self.library.p2_probe_reset()
+
         image = self.data if data is None else data
         image_buffer = ctypes.create_string_buffer(image)
         identity_buffer = ctypes.create_string_buffer(self.fingerprint)
         psram = (ctypes.c_uint8 * PSRAM_SIZE)()
         ctypes.memset(psram, 0xA5, len(psram))
+        if actual_alias is None:
+            actual_alias = source_is_backing
+        if source_backing_address is None:
+            source_backing_address = (
+                PSRAM_BASE + backing_offset if source_is_backing else 0
+            )
+        if source_backing_size is None:
+            source_backing_size = len(image) if source_is_backing else 0
+        source_buffer: ctypes.c_void_p | ctypes.Array[ctypes.c_char]
+        if actual_alias:
+            self.assertLessEqual(backing_offset + len(image), len(psram))
+            ctypes.memmove(
+                ctypes.byref(psram, backing_offset), image_buffer, len(image)
+            )
+            source_buffer = ctypes.cast(
+                ctypes.byref(psram, backing_offset), ctypes.c_void_p
+            )
+        else:
+            source_buffer = image_buffer
         result = self.library.p2_probe_initialize(
-            image_buffer,
+            source_buffer,
             len(image),
             identity_buffer,
             LOAD_ADDRESS,
@@ -211,8 +267,20 @@ class PythonContainerRuntimeTests(unittest.TestCase):
             backing_offset,
             workspace_count,
             corrupt_copy,
+            source_is_backing,
+            source_backing_address,
+            source_backing_size,
         )
         return result, psram
+
+    def io_counts(self) -> tuple[int, int, int, int, int]:
+        return (
+            self.library.p2_probe_source_read_calls(),
+            self.library.p2_probe_backing_read_calls(),
+            self.library.p2_probe_backing_header_reads(),
+            self.library.p2_probe_backing_write_calls(),
+            self.library.p2_probe_backing_write_bytes(),
+        )
 
     def test_validates_packer_v1_and_reports_bounded_metadata(self) -> None:
         result, info = self.validate()
@@ -296,6 +364,18 @@ class PythonContainerRuntimeTests(unittest.TestCase):
     def test_initialize_copies_rechecks_and_publishes_only_valid_data(self) -> None:
         result, psram = self.initialize()
         self.assertEqual(result, 0)
+        self.assertEqual(self.library.p2_probe_install_calls(), 1)
+        self.assertEqual(self.library.p2_probe_register_calls(), 1)
+        self.assertEqual(self.library.p2_probe_early_register_calls(), 0)
+        self.assertEqual(self.library.p2_probe_loader_published(), 1)
+        source_reads, backing_reads, header_reads, writes, written = (
+            self.io_counts()
+        )
+        self.assertGreater(source_reads, 0)
+        self.assertGreater(backing_reads, 0)
+        self.assertEqual(header_reads, 1)
+        self.assertGreater(writes, 0)
+        self.assertEqual(written, len(self.data))
         globals_data = self.fixture.globals_path.read_bytes()
         self.assertEqual(bytes(psram[: len(globals_data)]), globals_data)
         self.assertEqual(bytes(psram[0x100:0x180]), bytes(0x80))
@@ -317,6 +397,119 @@ class PythonContainerRuntimeTests(unittest.TestCase):
         self.assertEqual(bytes(hub[: len(overlay)]), overlay)
         self.assertLess(self.library.p2_probe_load_group(0), 0)
         self.assertLess(self.library.p2_probe_load_group(3), 0)
+
+        self.library.p2_probe_reuse_workspace()
+        self.assertEqual(self.library.p2_probe_load_group(1), 0)
+
+    def test_initialize_exact_in_place_validates_once_without_copying(self) -> None:
+        result, psram = self.initialize(source_is_backing=True)
+        self.assertEqual(result, 0)
+        source_reads, backing_reads, header_reads, writes, written = (
+            self.io_counts()
+        )
+        self.assertEqual(source_reads, 0)
+        self.assertGreater(backing_reads, 0)
+        self.assertEqual(header_reads, 1)
+        self.assertEqual(writes, 0)
+        self.assertEqual(written, 0)
+        self.assertEqual(
+            bytes(psram[BACKING_OFFSET : BACKING_OFFSET + len(self.data)]),
+            self.data,
+        )
+        globals_data = self.fixture.globals_path.read_bytes()
+        self.assertEqual(bytes(psram[: len(globals_data)]), globals_data)
+        self.assertEqual(bytes(psram[0x100:0x180]), bytes(0x80))
+        self.assertEqual(self.library.p2_probe_load_group(1), 0)
+        hub = self.library.p2_probe_hub()
+        overlay = self.fixture.group0_path.read_bytes()
+        self.assertEqual(bytes(hub[: len(overlay)]), overlay)
+
+    def test_in_place_contract_rejects_partial_or_mismatched_claims(self) -> None:
+        exact_address = PSRAM_BASE + BACKING_OFFSET
+        cases = (
+            ("short range", True, exact_address, len(self.data) - 1),
+            ("wrong base", True, exact_address + 4, len(self.data)),
+            ("missing base", True, 0, len(self.data)),
+            ("disabled address", False, exact_address, 0),
+            ("disabled size", False, 0, len(self.data)),
+        )
+        for name, enabled, address, size in cases:
+            with self.subTest(name=name):
+                result, psram = self.initialize(
+                    source_is_backing=enabled,
+                    source_backing_address=address,
+                    source_backing_size=size,
+                    actual_alias=False,
+                )
+                self.assertEqual(result, -errno.EINVAL)
+                self.assertEqual(self.io_counts(), (0, 0, 0, 0, 0))
+                self.assertEqual(
+                    bytes(psram[BACKING_OFFSET : BACKING_OFFSET + 512]),
+                    bytes([0xA5]) * 512,
+                )
+                self.assertEqual(self.library.p2_probe_romfs_address(), 0)
+
+    def test_false_exact_alias_claim_validates_target_and_never_publishes(self) -> None:
+        result, psram = self.initialize(
+            source_is_backing=True, actual_alias=False
+        )
+        self.assertLess(result, 0)
+        source_reads, backing_reads, header_reads, writes, written = (
+            self.io_counts()
+        )
+        self.assertEqual(source_reads, 0)
+        self.assertGreater(backing_reads, 0)
+        self.assertEqual(header_reads, 1)
+        self.assertEqual((writes, written), (0, 0))
+        self.assertEqual(
+            bytes(psram[BACKING_OFFSET : BACKING_OFFSET + 512]),
+            bytes([0xA5]) * 512,
+        )
+        self.assertEqual(self.library.p2_probe_romfs_address(), 0)
+        self.assertEqual(self.library.p2_probe_install_calls(), 0)
+        self.assertEqual(self.library.p2_probe_register_calls(), 0)
+        self.assertEqual(self.library.p2_probe_early_register_calls(), 0)
+        self.assertEqual(self.library.p2_probe_loader_published(), 0)
+        self.assertLess(self.library.p2_probe_load_group(1), 0)
+
+    def test_invalid_attempt_does_not_publish_and_valid_retry_succeeds(self) -> None:
+        corrupt = bytearray(self.data)
+        corrupt[self.packed.sections[0].file_offset] ^= 1
+
+        failed, _ = self.initialize(bytes(corrupt))
+        self.assertLess(failed, 0)
+        self.assertEqual(self.library.p2_probe_install_calls(), 0)
+        self.assertEqual(self.library.p2_probe_register_calls(), 0)
+        self.assertEqual(self.library.p2_probe_loader_published(), 0)
+        self.assertLess(self.library.p2_probe_load_group(1), 0)
+
+        retried, _ = self.initialize(reset=False)
+        self.assertEqual(retried, 0)
+        self.assertEqual(self.library.p2_probe_install_calls(), 1)
+        self.assertEqual(self.library.p2_probe_register_calls(), 1)
+        self.assertEqual(self.library.p2_probe_early_register_calls(), 0)
+        self.assertEqual(self.library.p2_probe_loader_published(), 1)
+        self.assertEqual(self.library.p2_probe_load_group(1), 0)
+
+    def test_loader_registration_failure_rolls_back_install_for_retry(self) -> None:
+        self.library.p2_probe_reset()
+        self.library.p2_probe_set_register_result(-errno.EILSEQ)
+
+        failed, _ = self.initialize(reset=False)
+        self.assertEqual(failed, -errno.EILSEQ)
+        self.assertEqual(self.library.p2_probe_install_calls(), 1)
+        self.assertEqual(self.library.p2_probe_register_calls(), 1)
+        self.assertEqual(self.library.p2_probe_uninstall_calls(), 1)
+        self.assertEqual(self.library.p2_probe_loader_published(), 0)
+        self.assertEqual(self.library.p2_probe_romfs_address(), 0)
+
+        self.library.p2_probe_set_register_result(0)
+        retried, _ = self.initialize(reset=False)
+        self.assertEqual(retried, 0)
+        self.assertEqual(self.library.p2_probe_install_calls(), 2)
+        self.assertEqual(self.library.p2_probe_register_calls(), 2)
+        self.assertEqual(self.library.p2_probe_uninstall_calls(), 1)
+        self.assertEqual(self.library.p2_probe_loader_published(), 1)
 
     def test_preflight_failure_never_writes_psram(self) -> None:
         corrupt = bytearray(self.data)
@@ -341,13 +534,28 @@ class PythonContainerRuntimeTests(unittest.TestCase):
         self.assertLess(corrupt_result, 0)
         self.assertEqual(bytes(corrupt[:512]), bytes([0xA5]) * 512)
 
-    def test_loader_rejects_tampered_backing_group_record(self) -> None:
+    def test_loader_uses_installed_descriptor_without_record_reread(self) -> None:
         result, psram = self.initialize()
         self.assertEqual(result, 0)
         group_table = struct.unpack_from("<Q", self.data, 0x38)[0]
         record = BACKING_OFFSET + group_table + abi.GROUP_ENTRY_SIZE
         psram[record] ^= 4
+        reads = self.library.p2_probe_backing_read_calls()
+        self.assertEqual(self.library.p2_probe_load_group(1), 0)
+        self.assertEqual(self.library.p2_probe_backing_read_calls() - reads, 1)
+        hub = self.library.p2_probe_hub()
+        overlay = self.fixture.group0_path.read_bytes()
+        self.assertEqual(bytes(hub[: len(overlay)]), overlay)
+
+    def test_loader_rejects_arguments_not_matching_installed_descriptor(self) -> None:
+        result, _ = self.initialize()
+        self.assertEqual(result, 0)
+        reads = self.library.p2_probe_backing_read_calls()
+        self.assertLess(self.library.p2_probe_load_group_modified(1, 4, 0), 0)
+        self.assertLess(self.library.p2_probe_load_group_modified(1, 0, 4), 0)
+        self.library.p2_probe_set_group_flags(1, 0)
         self.assertLess(self.library.p2_probe_load_group(1), 0)
+        self.assertEqual(self.library.p2_probe_backing_read_calls(), reads)
 
     def test_source_has_no_allocator_or_storage_dependency(self) -> None:
         source = RUNTIME.read_text()
@@ -357,13 +565,32 @@ class PythonContainerRuntimeTests(unittest.TestCase):
             source, r"(?<!>)\b(open|close|read|lseek|ioctl|mount)\s*\("
         )
         self.assertIn("p2_overlay_install_groups", source)
+        self.assertIn("p2_overlay_get_group", source)
+        self.assertIn("p2_overlay_uninstall_groups", source)
         self.assertIn("p2_overlay_register_loader", source)
         self.assertIn("__has_attribute(p2_hub_resident)", source)
         self.assertIn("apply_to = function", source)
         self.assertIn("group_workspace", header)
+        self.assertIn("source_is_backing", header)
+        self.assertIn("source_backing_address", header)
+        self.assertIn("source_backing_size", header)
         first_validate = source.index("p2_container_validate_internal(")
         first_copy = source.index("p2_container_copy_to_backing(")
         self.assertLess(first_validate, first_copy)
+        loader = source[source.index("int p2_python_container_overlay_loader") :]
+        self.assertEqual(loader.count("p2_container_target_read("), 1)
+        self.assertNotIn("container->group_table_offset", loader)
+
+    def test_p2_crc_acceleration_preserves_portable_host_fallback(self) -> None:
+        source = RUNTIME.read_text()
+        self.assertIn("#ifdef CONFIG_ARCH_P2", source)
+        self.assertIn("#  include <arch/hub_crc32.h>", source)
+        self.assertIn("return p2_hub_crc32_update(crc, data, size);", source)
+        self.assertIn("#ifndef CONFIG_ARCH_P2", source)
+        self.assertIn("P2_CONTAINER_CRC_POLYNOMIAL", source)
+        self.assertIn(
+            "crc = p2_container_crc32_update(crc, buffer, chunk);", source
+        )
 
     @unittest.skipUnless(
         os.environ.get("P2LLVM_ROOT"), "set P2LLVM_ROOT for P2 codegen check"
@@ -409,6 +636,8 @@ class PythonContainerRuntimeTests(unittest.TestCase):
         ).stdout
         self.assertIn("__p2_xmem_memcpy", undefined)
         self.assertIn("p2_overlay_install_groups", undefined)
+        self.assertIn("p2_overlay_get_group", undefined)
+        self.assertIn("p2_overlay_uninstall_groups", undefined)
         self.assertNotRegex(undefined, r"\b(malloc|calloc|realloc|free)\b")
 
 

@@ -1,4 +1,4 @@
-CMN_ASRCS += p2_context.S p2_serial_rx.S
+CMN_ASRCS += p2_context.S p2_hub_crc32.S p2_serial_rx.S
 
 ifeq ($(CONFIG_P2_HUB_OVERLAYS),y)
 CMN_ASRCS += p2_overlay_veneer.S
@@ -25,6 +25,13 @@ CMN_CSRCS += p2_initialize.c p2_irq.c p2_timer.c p2_serial.c p2_delay.c
 CMN_CSRCS += p2_initialstate.c p2_switchcontext.c p2_allocateheap.c
 CMN_CSRCS += p2_stack.c p2_registerdump.c p2_asserts.c p2_softarith.c
 CMN_CSRCS += p2_nputs.c p2_exit.c
+
+# The serial lower ring, upper-half buffers, uart_dev state, and the exclusive
+# RX destination are native Hub objects.  The exclusive API explicitly rejects
+# use outside that contract.  Keep this translation unit native so streaming a
+# 2-Mbaud byte does not call the unified-memory load/store helpers twice.
+
+p2_serial$(OBJEXT): P2_UNIFIED_MEMORY_FLAGS =
 
 ifneq ($(filter y,$(CONFIG_DEV_RANDOM) $(CONFIG_DEV_URANDOM_ARCH)),)
 CMN_CSRCS += p2_rng.c

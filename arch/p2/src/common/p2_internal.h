@@ -27,6 +27,8 @@
  * Included Files
  ****************************************************************************/
 
+#include <nuttx/config.h>
+
 #ifndef __ASSEMBLY__
 #  include <stdint.h>
 
@@ -42,10 +44,23 @@
 #define P2_INITIAL_STACK_SIZE 4096u
 #define P2_STACK_COLOR 0x1bad1deau
 #define P2_UART_ASYNC_RX_MODE 0x3e
-#define P2_UART_RX_BIT_TICKS \
-  (BOARD_SYSCLK_FREQUENCY / BOARD_UART0_BAUD)
-#define P2_UART_RX_RING_SIZE 256
+#ifndef P2_UART_RX_BIT_TICKS
+#  define P2_UART_RX_BIT_TICKS \
+    ((CONFIG_P2_SYSCLK_HZ + CONFIG_UART0_BAUD / 2) / CONFIG_UART0_BAUD)
+#endif
+#define P2_UART_RX_CONFIG \
+  (((P2_UART_RX_BIT_TICKS << 16) & 0xfffffc00) | 7)
+#define P2_UART_RX_RING_SIZE CONFIG_P2_UART_RX_RING_SIZE
 #define P2_UART_RX_RING_MASK (P2_UART_RX_RING_SIZE - 1)
+
+#if CONFIG_UART0_BAUD <= 0 || P2_UART_RX_BIT_TICKS <= 8
+#  error "P2 console baud leaves too few clocks for Smart Pin RX"
+#endif
+
+#if P2_UART_RX_RING_SIZE < 2 || \
+    (P2_UART_RX_RING_SIZE & P2_UART_RX_RING_MASK) != 0
+#  error "CONFIG_P2_UART_RX_RING_SIZE must be a power of two"
+#endif
 
 #ifndef __ASSEMBLY__
 
@@ -55,7 +70,7 @@
 
 uintptr_t p2_getsp(void);
 void p2_lowsetup(void);
-void p2_lowputc(int ch);
+void p2_lowputc(int ch) noinline_function;
 void p2_serialinit(void);
 void p2_serialpoll(void);
 int p2_serialinterrupt(int irq, void *context, void *arg);
@@ -63,7 +78,14 @@ int p2_uart_rx_cog_start(void);
 void up_fullcontextrestore(void *restoreregs) noreturn_function;
 
 #ifdef CONFIG_P2_BOOT_TRACE
-void p2_boot_trace(const char *message);
+/* The assembly name is part of the unified-memory recursion boundary.  The
+ * compiler pass skips __p2_xmem_* functions, so this raw fatal-path console
+ * helper must retain that linked name even though callers use the stable C
+ * API below.
+ */
+
+void p2_boot_trace(const char *message)
+  __asm__("__p2_xmem_boot_trace");
 #else
 #  define p2_boot_trace(message) ((void)0)
 #endif

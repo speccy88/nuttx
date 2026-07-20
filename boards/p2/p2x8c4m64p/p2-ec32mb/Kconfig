@@ -71,6 +71,18 @@ config P2_EC32MB_PSRAM
 		an explicit character-device bulk store, not native address space;
 		applications must use read, write, seek, or the board transfer API.
 
+config P2_EC32MB_PSRAM_FAULT_INJECT_TIMEOUT
+	bool "Enable one-request PSRAM timeout fault injection"
+	default n
+	depends on P2_EC32MB_PSRAM
+	help
+		Expose a board API which arms the next submitted request to stall
+		cooperatively in the service cog until the normal scheduler-tick
+		deadline publishes cancellation.  The ordinary timeout, cancellation,
+		grace-period, and failed-cog paths are unchanged.  Enable this only in
+		a dedicated HIL image which verifies -ETIMEDOUT and a subsequent real
+		PSRAM transfer.
+
 config P2_EC32MB_PSRAM_UNIFIED
 	bool "Use onboard PSRAM as unified user memory"
 	default n
@@ -119,11 +131,13 @@ config P2_EC32MB_PSRAM_UNIFIED_SELFTEST
 	default n
 	depends on P2_EC32MB_PSRAM_UNIFIED && BOARD_LATE_INITIALIZE
 	help
-		Run scalar, bulk-memory, allocator, fragmentation, realloc, free,
-		and concurrent-task checks against tagged PSRAM during board late
-		initialization.  Deterministic P2XMEM markers report the result.  This
-		is an opt-in HIL diagnostic and is not enabled by the normal unified
-		profile.
+		Run scalar, deterministic scalar-cache coherence/counter, bulk-memory,
+		allocator, fragmentation, realloc, free, and concurrent-task checks
+		against tagged PSRAM during board late initialization.  The cache check
+		proves exact hit, miss, fill, write-through, and bypass deltas, including
+		a write which crosses two resident lines.  Deterministic P2XMEM markers
+		report the result.  This is an opt-in HIL diagnostic and is not enabled
+		by the normal unified profile.
 
 config P2_EC32MB_PSRAM_UNIFIED_SELFTEST_FULL
 	bool "Destructively test every PSRAM byte before heap registration"

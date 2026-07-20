@@ -39,6 +39,43 @@
 #define P2_PSRAM_WIRE_WRITE_WORD         3
 #define P2_PSRAM_WIRE_SAFE               4
 
+/* Aligned bulk requests use the P2 streamer's Hub FIFO instead of the
+ * HUBEXEC bit-bang loop.  One logical long spans the four byte-interleaved
+ * chips and takes four system clocks (two QPI clocks).  APS6404L linear
+ * burst is rated to only 84 MHz.  Recovery therefore resets the chips and
+ * issues exactly one C0 toggle to select their 32-byte wrapped mode, which
+ * is rated to at least 109 MHz at 3.3 V.  End every CE-low interval at that
+ * per-chip wrap boundary: 32 chip bytes are 32 logical longs, or 128
+ * interleaved Hub bytes.  The service falls back to the 5-MHz scalar path
+ * for every unaligned or short edge.
+ */
+
+#define P2_PSRAM_STREAM_MIN_BYTES          32
+#define P2_PSRAM_STREAM_CHIP_WRAP_BYTES    32
+#define P2_PSRAM_STREAM_FRAGMENT_LONGS     32
+#define P2_PSRAM_STREAM_FRAGMENT_BYTES     \
+  (P2_PSRAM_STREAM_FRAGMENT_LONGS * 4)
+#define P2_PSRAM_STREAM_READ                1
+#define P2_PSRAM_STREAM_WRITE               2
+#define P2_PSRAM_STREAM_COG_ENTRY          0x040
+#define P2_PSRAM_STREAM_LUT_TABLE_LONGS       16
+#define P2_PSRAM_STREAM_COG_IMAGE_LONGS      128
+#define P2_PSRAM_STREAM_QPI_CLOCK_HZ       90000000
+#ifndef P2_PSRAM_STREAM_READ_OFFSET
+#define P2_PSRAM_STREAM_READ_OFFSET          22
+#endif
+#define P2_PSRAM_STREAM_READ_DELAY_COMMAND \
+  (0x20d00000 + P2_PSRAM_STREAM_READ_OFFSET)
+#define P2_PSRAM_STREAM_READ_QPI_CLOCKS    13
+#define P2_PSRAM_STREAM_CYCLES_PER_LONG    4
+#define P2_PSRAM_STREAM_CE_GUARD_CYCLES    64
+#define P2_PSRAM_STREAM_CE_MARGIN_CYCLES   200
+#define P2_PSRAM_STREAM_CE_BOUND_CYCLES    \
+  (P2_PSRAM_STREAM_FRAGMENT_LONGS * \
+   P2_PSRAM_STREAM_CYCLES_PER_LONG + \
+   P2_PSRAM_STREAM_READ_QPI_CLOCKS * 2 + \
+   P2_PSRAM_STREAM_CE_GUARD_CYCLES)
+
 #define P2_PSRAM_DATA_FIRST_PIN          40
 #define P2_PSRAM_DATA_LAST_PIN           55
 #define P2_PSRAM_CLOCK_PIN               56

@@ -30,7 +30,6 @@
 #include <sys/statfs.h>
 
 #include <errno.h>
-#include <poll.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -47,7 +46,9 @@
 
 #include <arch/board/board.h>
 #include <arch/board/p2_ec32mb_psram.h>
+#include <arch/hub_crc32.h>
 #include <arch/python_container.h>
+#include <arch/serial.h>
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -86,24 +87,30 @@
 #  error "The unified PSRAM reserve exceeds the physical device"
 #endif
 
-#if CONFIG_UART0_BAUD != 230400
-#  error "The P2 Python upload pacing contract requires 230400 baud"
+#if CONFIG_UART0_BAUD != 2000000
+#  error "The P2 Python upload transport requires 2000000 baud"
 #endif
 
 #define P2_PYTHON_UPLOAD_MAGIC_SIZE       8
 #define P2_PYTHON_UPLOAD_HEADER_SIZE      24
 #define P2_PYTHON_UPLOAD_FRAME_HEADER     12
-#define P2_PYTHON_UPLOAD_FRAME_SIZE       1024
+#define P2_PYTHON_UPLOAD_FRAME_SIZE       65536
 #define P2_PYTHON_UPLOAD_RETRANSMISSIONS  3
 #define P2_PYTHON_CONTAINER_HEADER_SIZE   192
-#define P2_PYTHON_UPLOAD_PROTOCOL         2
+#define P2_PYTHON_UPLOAD_PROTOCOL         3
 #define P2_PYTHON_HEADER_TIMEOUT          SEC2TICK(30)
 #define P2_PYTHON_UPLOAD_TIMEOUT          SEC2TICK(1800)
 #define P2_PYTHON_FRAME_TIMEOUT           SEC2TICK(30)
 #define P2_PYTHON_RX_PURGE_TICKS          2
-#define P2_PYTHON_POLL_MSEC               250
+#define P2_PYTHON_RX_DRAIN_IDLE_TICKS     SEC2TICK(1)
+#define P2_PYTHON_RX_DRAIN_TIMEOUT        SEC2TICK(30)
+#define P2_PYTHON_RX_DRAIN_SIZE           256
+#define P2_PYTHON_ZERO_SIZE               1000
 #define P2_PYTHON_MARKER_SIZE             224
-#define P2_PYTHON_CRC_POLYNOMIAL          UINT32_C(0xedb88320)
+
+#if P2_PYTHON_UPLOAD_FRAME_SIZE > CONFIG_P2_HUB_OVERLAY_SLOT_SIZE
+#  error "A P2 Python logical upload block must fit in the Hub overlay slot"
+#endif
 
 #define P2_PYTHON_STATE_EMPTY             0
 #define P2_PYTHON_STATE_LOADING           1
@@ -130,7 +137,8 @@ static const uint8_t g_p2_python_upload_magic[P2_PYTHON_UPLOAD_MAGIC_SIZE] =
 
 /* Give the linker-reserved build fingerprint a real allocatable, read-only,
  * non-executable input section.  The host packager replaces these canonical
- * zero bytes in both the resident ELF and raw image before either may be used.
+ * zero bytes in both the resident ELF and raw image before either may be
+ * used.
  */
 
 static const uint8_t g_p2_python_build_fingerprint[32]
@@ -140,8 +148,6 @@ static const uint8_t g_p2_python_build_fingerprint[32]
 };
 
 static struct p2_python_container_s g_p2_python_container;
-static struct p2_overlay_group_s
-  g_p2_python_groups[CONFIG_P2_HUB_OVERLAY_GROUP_COUNT + 1];
 static volatile uint32_t g_p2_python_state;
 
 /****************************************************************************
@@ -150,8 +156,8 @@ static volatile uint32_t g_p2_python_state;
 
 extern const uint8_t __p2_python_fingerprint_start[];
 extern const uint8_t __p2_python_fingerprint_end[];
-extern const uint8_t __p2_overlay_slot_start[];
-extern const uint8_t __p2_overlay_slot_end[];
+extern uint8_t __p2_overlay_slot_start[];
+extern uint8_t __p2_overlay_slot_end[];
 extern const uint8_t __p2_xdata_start[];
 extern const uint8_t __p2_xbss_end[];
 extern volatile uint32_t g_p2_uart_rx_dropped;
@@ -183,21 +189,7 @@ static uint32_t p2_python_crc32_update(uint32_t crc,
                                        FAR const uint8_t *data,
                                        size_t size)
 {
-  size_t index;
-
-  for (index = 0; index < size; index++)
-    {
-      unsigned int bit;
-
-      crc ^= data[index];
-      for (bit = 0; bit < 8; bit++)
-        {
-          crc = crc >> 1 ^
-                ((crc & 1) != 0 ? P2_PYTHON_CRC_POLYNOMIAL : 0);
-        }
-    }
-
-  return crc;
+  return p2_hub_crc32_update(crc, data, size);
 }
 
 static int p2_python_write_all(int fd, FAR const void *buffer, size_t size)
@@ -235,10 +227,10 @@ static int p2_python_purge_input(int fd)
   int first_error = 0;
 
   /* TCFLSH discards the upper-half serial receive buffer.  P2 also has a
-   * 256-byte lower RX ring which the 10-ms timer service promotes into that
-   * upper buffer.  Flush once, wait two complete service ticks, then flush
-   * again while the terminal is still raw.  The stop-and-wait sender has
-   * already stopped transmitting before this terminal cleanup begins.
+   * configurable lower RX ring which the timer and idle services promote
+   * into that upper buffer.  Flush once, wait two complete service ticks,
+   * then flush again while the terminal is still raw.  The stop-and-wait
+   * sender has already stopped transmitting before this cleanup begins.
    */
 
   if (tcflush(fd, TCIFLUSH) < 0)
@@ -279,72 +271,138 @@ static void p2_python_marker(FAR const char *format, ...)
   p2_python_write_all(STDOUT_FILENO, buffer, (size_t)length);
 }
 
-static int p2_python_read_exact(int fd, FAR void *buffer, size_t size,
-                                clock_t started, clock_t timeout)
+static int p2_python_read_rxraw_exact(FAR void *buffer, size_t size,
+                                      clock_t started, clock_t timeout,
+                                      FAR size_t *consumed)
 {
   FAR uint8_t *cursor = buffer;
 
+  if (consumed != NULL)
+    {
+      *consumed = 0;
+    }
+
+  /* In exclusive mode scheduler cog 0 is the lower-ring consumer.  Busy
+   * draining is intentional: at 2 Mbaud the 1024-byte SPSC ring represents
+   * only 5.12 ms of wire time.  Timer interrupts remain enabled and keep the
+   * bounded deadline live, but the serial upper half no longer competes for
+   * the ring or adds another finite buffer to the streaming contract.
+   */
+
   while (size > 0)
     {
-      struct pollfd descriptor;
-      clock_t elapsed = clock_systime_ticks() - started;
-      int ret;
+      ssize_t received;
 
-      if (elapsed >= timeout)
+      if (clock_systime_ticks() - started >= timeout)
         {
           return -ETIMEDOUT;
         }
 
-      descriptor.fd = fd;
-      descriptor.events = POLLIN;
-      descriptor.revents = 0;
-      ret = poll(&descriptor, 1, P2_PYTHON_POLL_MSEC);
-      if (ret < 0)
+      if (g_p2_uart_rx_dropped != 0)
         {
-          if (errno == EINTR)
-            {
-              continue;
-            }
-
-          return -errno;
+          return -EOVERFLOW;
         }
 
-      if (ret == 0)
+      received = p2_uart_rxraw_read(cursor, size);
+      if (received < 0)
         {
-          continue;
+          return (int)received;
         }
 
-      if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+      cursor += received;
+      size -= received;
+      if (consumed != NULL)
         {
-          return -EIO;
+          *consumed += received;
         }
-
-      if ((descriptor.revents & POLLIN) == 0)
-        {
-          continue;
-        }
-
-      ret = read(fd, cursor, size);
-      if (ret < 0)
-        {
-          if (errno == EINTR || errno == EAGAIN)
-            {
-              continue;
-            }
-
-          return -errno;
-        }
-
-      if (ret == 0)
-        {
-          return -EPIPE;
-        }
-
-      cursor += ret;
-      size -= ret;
     }
 
   return 0;
+}
+
+/* Once a logical frame has started, every byte on its fixed wire extent must
+ * remain owned by the exclusive raw consumer even after the producer reports
+ * a ring overflow.  DROPPED_BASE counts bytes which arrived but could not be
+ * stored; CONSUMED counts bytes already removed from the ring.  Together
+ * they let this cleanup account for the complete frame without treating a
+ * missing byte as input belonging to the later NSH console.
+ */
+
+static int p2_python_drain_rxraw_frame(size_t wire_size, size_t consumed,
+                                       uint32_t dropped_base,
+                                       clock_t started, clock_t timeout)
+{
+  uint8_t discard[P2_PYTHON_RX_DRAIN_SIZE];
+
+  for (; ; )
+    {
+      uint32_t dropped = g_p2_uart_rx_dropped - dropped_base;
+      size_t accounted;
+      size_t request;
+      ssize_t received;
+
+      if (dropped >= wire_size || consumed >= wire_size - dropped)
+        {
+          return -EOVERFLOW;
+        }
+
+      if (clock_systime_ticks() - started >= timeout)
+        {
+          return -ETIMEDOUT;
+        }
+
+      accounted = consumed + dropped;
+      request = wire_size - accounted;
+      if (request > sizeof(discard))
+        {
+          request = sizeof(discard);
+        }
+
+      received = p2_uart_rxraw_read(discard, request);
+      if (received < 0)
+        {
+          return (int)received;
+        }
+
+      consumed += received;
+    }
+}
+
+/* Drain any unframed tail while exclusive ownership is still held.  The
+ * exact frame drain above handles RX overflow.  This idle guard covers early
+ * preamble/tty failures and the small race between the final transfer check
+ * and raw-reader release.  Ordinary upper-half receive is not re-enabled
+ * until a full second passes without another binary byte.
+ */
+
+static int p2_python_drain_rxraw_idle(void)
+{
+  uint8_t discard[P2_PYTHON_RX_DRAIN_SIZE];
+  clock_t started = clock_systime_ticks();
+  clock_t idle_started = started;
+
+  sched_lock();
+  while (clock_systime_ticks() - started < P2_PYTHON_RX_DRAIN_TIMEOUT &&
+         clock_systime_ticks() - idle_started <
+           P2_PYTHON_RX_DRAIN_IDLE_TICKS)
+    {
+      ssize_t received = p2_uart_rxraw_read(discard, sizeof(discard));
+
+      if (received < 0)
+        {
+          sched_unlock();
+          return (int)received;
+        }
+
+      if (received > 0)
+        {
+          idle_started = clock_systime_ticks();
+        }
+    }
+
+  sched_unlock();
+  return clock_systime_ticks() - started >= P2_PYTHON_RX_DRAIN_TIMEOUT ?
+         -ETIMEDOUT : 0;
 }
 
 static int p2_python_psram_transfer(enum p2_psram_operation_e operation,
@@ -378,6 +436,13 @@ static int p2_python_psram_transfer(enum p2_psram_operation_e operation,
           return ret;
         }
 
+      /* A unified request masks interrupts on the NuttX cog while the
+       * dedicated PSRAM cog owns the caller's Hub buffer.  Yield after each
+       * bounded request so an equal-priority resident observer can run even
+       * when CPython performs a long sequence of overlay transitions.
+       */
+
+      sched_yield();
       offset += chunk;
       buffer = (FAR uint8_t *)buffer + chunk;
       size -= chunk;
@@ -420,7 +485,7 @@ static int p2_python_target_write(FAR void *arg, uint64_t address,
 static int p2_python_target_zero(FAR void *arg, uint64_t address,
                                  size_t size)
 {
-  uint8_t zeroes[P2_PYTHON_UPLOAD_FRAME_SIZE];
+  uint8_t zeroes[P2_PYTHON_ZERO_SIZE];
 
   UNUSED(arg);
   memset(zeroes, 0, sizeof(zeroes));
@@ -523,14 +588,66 @@ static void p2_python_publish(bool ready)
   up_irq_restore(flags);
 }
 
-static int p2_python_receive(int fd, uint32_t size, uint32_t expected_crc)
+/* The group table is needed only until p2_overlay_install_groups() copies it
+ * into the link-sized resident table.  Before loader registration the Hub
+ * execution slot is unreachable through every overlay veneer, so it is the
+ * natural bounded staging area.  This avoids retaining a maximum-sized group
+ * workspace in BSS for the lifetime of the system.
+ */
+
+static int p2_python_stage_groups_in_overlay_slot(
+  FAR struct p2_python_container_config_s *config)
+{
+  struct p2_overlay_stats_s stats;
+  uintptr_t slot_start = (uintptr_t)__p2_overlay_slot_start;
+  uintptr_t slot_end = (uintptr_t)__p2_overlay_slot_end;
+  size_t required_count = CONFIG_P2_HUB_OVERLAY_GROUP_COUNT + 1u;
+  size_t capacity;
+  int ret;
+
+  if (slot_start >= slot_end || slot_end > BOARD_P2_HUB_USABLE_END ||
+      (slot_start & (sizeof(uintptr_t) - 1u)) != 0)
+    {
+      return -ENOEXEC;
+    }
+
+  capacity = (slot_end - slot_start) / sizeof(struct p2_overlay_group_s);
+  if (capacity < required_count)
+    {
+      return -ENOSPC;
+    }
+
+  /* A READY or transitioning dispatcher could be executing from, or about
+   * to publish, this slot.  The board claim serializes Python initializers;
+   * this runtime check also fails closed if those state machines ever drift.
+   */
+
+  ret = p2_overlay_get_stats(&stats);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (stats.ready || stats.transition || stats.current_depth != 0)
+    {
+      return -EBUSY;
+    }
+
+  config->group_workspace =
+    (FAR struct p2_overlay_group_s *)__p2_overlay_slot_start;
+  config->group_workspace_count = required_count;
+  return 0;
+}
+
+static int p2_python_receive(uint32_t size, uint32_t expected_crc,
+                             FAR uint8_t *buffer, size_t buffer_size)
 {
   uint8_t frame_header[P2_PYTHON_UPLOAD_FRAME_HEADER];
-  uint8_t buffer[P2_PYTHON_UPLOAD_FRAME_SIZE];
   uint8_t ack[8] =
   {
     'P', '2', 'A', 'K', 0, 0, 0, 0
   };
+
   uint8_t nack[8] =
   {
     'P', '2', 'N', 'K', 0, 0, 0, 0
@@ -540,14 +657,19 @@ static int p2_python_receive(int fd, uint32_t size, uint32_t expected_crc)
   uint32_t crc = UINT32_C(0xffffffff);
   clock_t started = clock_systime_ticks();
 
+  if (buffer == NULL || buffer_size < P2_PYTHON_UPLOAD_FRAME_SIZE)
+    {
+      return -ENOSPC;
+    }
+
   while (received < size)
     {
       uint32_t expected_size = size - received;
       unsigned int retransmissions;
 
-      if (expected_size > sizeof(buffer))
+      if (expected_size > P2_PYTHON_UPLOAD_FRAME_SIZE)
         {
-          expected_size = sizeof(buffer);
+          expected_size = P2_PYTHON_UPLOAD_FRAME_SIZE;
         }
 
       /* Stop-and-wait is deliberately asymmetric: only an explicit NACK at
@@ -567,6 +689,9 @@ static int p2_python_receive(int fd, uint32_t size, uint32_t expected_crc)
           uint32_t frame_size;
           uint32_t frame_crc;
           uint32_t calculated_crc;
+          uint32_t dropped_base;
+          size_t header_consumed = 0;
+          size_t payload_consumed = 0;
           bool valid_header;
           int ret;
 
@@ -594,13 +719,41 @@ static int p2_python_receive(int fd, uint32_t size, uint32_t expected_crc)
               frame_timeout = P2_PYTHON_UPLOAD_TIMEOUT - elapsed;
             }
 
-          ret = p2_python_read_exact(fd, frame_header,
-                                     sizeof(frame_header), frame_started,
-                                     frame_timeout);
+          /* Keep scheduler cog 0 on the sole-consumer path from the first
+           * frame-header byte through the last payload byte.  Timer IRQs and
+           * the bounded deadline remain live, but a newly-ready task cannot
+           * consume the lower ring's 5.12-ms headroom before this task runs
+           * again.
+           */
+
+          sched_lock();
+          dropped_base = g_p2_uart_rx_dropped;
+          ret = p2_python_read_rxraw_exact(frame_header,
+                                           sizeof(frame_header),
+                                           frame_started, frame_timeout,
+                                           &header_consumed);
           if (ret < 0)
             {
+              if (ret == -EOVERFLOW)
+                {
+                  ret = p2_python_drain_rxraw_frame(
+                    sizeof(frame_header) + expected_size, header_consumed,
+                    dropped_base, frame_started, frame_timeout);
+                }
+
+              sched_unlock();
               return ret;
             }
+
+          /* Decode the fixed-size header while its dedicated storage is
+           * still the only receive destination.  The known payload is still
+           * drained before validation so a substitution-corrupted header
+           * cannot desynchronize the stop-and-wait stream.
+           */
+
+          frame_offset = p2_python_getle32(frame_header);
+          frame_size = p2_python_getle32(frame_header + 4);
+          frame_crc = p2_python_getle32(frame_header + 8);
 
           /* Never use an untrusted frame_size to consume the stream.  The
            * protocol has one known payload size for this offset, including
@@ -611,19 +764,27 @@ static int p2_python_receive(int fd, uint32_t size, uint32_t expected_crc)
            * fails the bounded transfer.
            */
 
-          ret = p2_python_read_exact(fd, buffer, expected_size,
-                                     frame_started, frame_timeout);
+          ret = p2_python_read_rxraw_exact(buffer, expected_size,
+                                           frame_started, frame_timeout,
+                                           &payload_consumed);
+          if (ret == -EOVERFLOW)
+            {
+              ret = p2_python_drain_rxraw_frame(
+                sizeof(frame_header) + expected_size,
+                header_consumed + payload_consumed, dropped_base,
+                frame_started, frame_timeout);
+            }
+
+          sched_unlock();
           if (ret < 0)
             {
               return ret;
             }
 
-          frame_offset = p2_python_getle32(frame_header);
-          frame_size = p2_python_getle32(frame_header + 4);
-          frame_crc = p2_python_getle32(frame_header + 8);
           calculated_crc =
             p2_python_crc32_update(UINT32_C(0xffffffff), buffer,
                                    expected_size) ^ UINT32_C(0xffffffff);
+
           valid_header = frame_offset == received &&
                          frame_size == expected_size;
 
@@ -689,10 +850,13 @@ int board_cpython_runtime_prepare(int fd)
   FAR const char *stage = "CLAIM";
   bool input_purged = false;
   bool raw_console = false;
+  bool rxraw = false;
   uint32_t file_size;
   uint32_t file_crc;
   uint16_t protocol;
   uint16_t header_size;
+  uint32_t header_dropped_base;
+  size_t header_consumed = 0;
   clock_t started;
   int ret;
 
@@ -710,6 +874,13 @@ int board_cpython_runtime_prepare(int fd)
   memset(&config, 0, sizeof(config));
   stage = "CONTRACT";
   ret = p2_python_contract(&config.contract);
+  if (ret < 0)
+    {
+      goto fail;
+    }
+
+  stage = "WORKSPACE";
+  ret = p2_python_stage_groups_in_overlay_slot(&config);
   if (ret < 0)
     {
       goto fail;
@@ -738,6 +909,19 @@ int board_cpython_runtime_prepare(int fd)
       goto fail;
     }
 
+  /* The host does not send the preamble until READY.  Claim the empty lower
+   * ring first, then use the same exclusive path for the fixed preamble and
+   * every logical block.  No binary byte can race upper-half promotion.
+   */
+
+  stage = "RXRAW_BEGIN";
+  ret = p2_uart_rxraw_begin();
+  if (ret < 0)
+    {
+      goto fail;
+    }
+
+  rxraw = true;
   p2_python_marker("P2PY:UPLOAD:READY:PROTO=%u:BASE=%08lX:MAX=%lu:"
                    "FRAME=%u:BAUD=%u\r\n",
                    P2_PYTHON_UPLOAD_PROTOCOL,
@@ -747,8 +931,19 @@ int board_cpython_runtime_prepare(int fd)
 
   stage = "HEADER";
   started = clock_systime_ticks();
-  ret = p2_python_read_exact(fd, header, sizeof(header), started,
-                             P2_PYTHON_HEADER_TIMEOUT);
+  header_dropped_base = g_p2_uart_rx_dropped;
+  ret = p2_python_read_rxraw_exact(header, sizeof(header), started,
+                                   P2_PYTHON_HEADER_TIMEOUT,
+                                   &header_consumed);
+  if (ret == -EOVERFLOW)
+    {
+      sched_lock();
+      ret = p2_python_drain_rxraw_frame(sizeof(header), header_consumed,
+                                        header_dropped_base, started,
+                                        P2_PYTHON_HEADER_TIMEOUT);
+      sched_unlock();
+    }
+
   if (ret < 0)
     {
       goto fail;
@@ -773,7 +968,9 @@ int board_cpython_runtime_prepare(int fd)
                    (unsigned long)file_size, (unsigned long)file_crc);
 
   stage = "TRANSFER";
-  ret = p2_python_receive(fd, file_size, file_crc);
+  ret = p2_python_receive(file_size, file_crc,
+                          (FAR uint8_t *)config.group_workspace,
+                          config.contract.overlay_slot_size);
   if (ret < 0)
     {
       goto fail;
@@ -786,6 +983,8 @@ int board_cpython_runtime_prepare(int fd)
       goto fail;
     }
 
+  p2_uart_rxraw_end();
+  rxraw = false;
   stage = "INPUT_PURGE";
   ret = p2_python_purge_input(fd);
   if (ret < 0)
@@ -802,6 +1001,9 @@ int board_cpython_runtime_prepare(int fd)
     }
 
   raw_console = false;
+  p2_python_marker("P2PY:UPLOAD:RECEIVED:SIZE=%lu:CRC=%08lX:"
+                   "RXDROPS=0\r\n",
+                   (unsigned long)file_size, (unsigned long)file_crc);
 
   source.base = BOARD_P2_PYTHON_CONTAINER_BASE;
   source.size = file_size;
@@ -813,10 +1015,12 @@ int board_cpython_runtime_prepare(int fd)
   config.target.zero = p2_python_target_zero;
   config.backing_address = BOARD_P2_PYTHON_CONTAINER_BASE;
   config.backing_capacity = BOARD_P2_PYTHON_CONTAINER_CAPACITY;
-  config.group_workspace = g_p2_python_groups;
-  config.group_workspace_count = CONFIG_P2_HUB_OVERLAY_GROUP_COUNT + 1;
+  config.source_is_backing = true;
+  config.source_backing_address = source.base;
+  config.source_backing_size = source.size;
 
   stage = "INITIALIZE";
+  p2_python_marker("P2PY:INIT:START:MODE=INPLACE\r\n");
   ret = p2_python_container_initialize(&g_p2_python_container, &config);
   if (ret < 0)
     {
@@ -824,6 +1028,7 @@ int board_cpython_runtime_prepare(int fd)
     }
 
   p2_python_publish(true);
+  p2_python_marker("P2PY:INIT:PASS:MODE=INPLACE\r\n");
   p2_python_marker("P2PY:UPLOAD:PASS:SIZE=%lu:CRC=%08lX:RXDROPS=0\r\n",
                    (unsigned long)file_size, (unsigned long)file_crc);
   p2_python_marker("P2PY:RUNTIME:READY:ROMFS=%lu:GROUPS=%lu:"
@@ -835,6 +1040,20 @@ int board_cpython_runtime_prepare(int fd)
   return 0;
 
 fail:
+  if (rxraw)
+    {
+      int drain = p2_python_drain_rxraw_idle();
+
+      if (drain < 0 && ret >= 0)
+        {
+          stage = "RX_DRAIN";
+          ret = drain;
+        }
+
+      p2_uart_rxraw_end();
+      rxraw = false;
+    }
+
   if (raw_console)
     {
       int restore;

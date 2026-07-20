@@ -13,9 +13,10 @@ P2LLVM_REF=${P2LLVM_REF:-bdcefcce7860b2232c06f35726fea679a3a7309c}
 LLVM_PROJECT_REF=${LLVM_PROJECT_REF:-72a9bb1ef2656d9953d1f41a8196d425ff2ab0b1}
 P2LLVM_PREEMPT_PATCH=$ROOT/tools/p2/patches/p2llvm-preempt-safe-integer.patch
 P2LLVM_UNIFIED_PATCH=$ROOT/tools/p2/patches/p2llvm-unified-memory.patch
+P2LLVM_OVERLAY_PATCH=$ROOT/tools/p2/patches/p2llvm-python-overlays.patch
 P2LLVM_RUNTIME_PATCH=$ROOT/tools/p2/patches/p2llvm-python-runtime.patch
 P2LLVM_RUNTIME_TOOL=$ROOT/tools/p2/p2llvm-runtime.py
-P2LLVM_PATCHES=("$P2LLVM_PREEMPT_PATCH" "$P2LLVM_UNIFIED_PATCH")
+P2LLVM_PATCHES=("$P2LLVM_PREEMPT_PATCH" "$P2LLVM_UNIFIED_PATCH" "$P2LLVM_OVERLAY_PATCH")
 LOADP2_SRC=${LOADP2_SRC:-$CACHE/loadp2-src}
 LOADP2_ROOT=${LOADP2_ROOT:-$CACHE/loadp2}
 RUNTIME_LOCK=${P2_TOOLCHAIN_LOCK:-$CACHE/toolchain.lock}
@@ -25,6 +26,19 @@ mkdir -p "$CACHE" "$P2LLVM_ROOT" "$LOADP2_ROOT" "$ROOT/artifacts/cloud-p2"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 need_cmd() { command -v "$1" >/dev/null 2>&1 || echo "BLOCKED_missing_$1"; }
+
+parse_p2llvm_compiler_version_commit() {
+  local version=$1
+  local revision_re='(^|[^[:xdigit:]])([[:xdigit:]]{40})([^[:xdigit:]]|$)'
+
+  if [[ "$version" =~ $revision_re ]]; then
+    printf '%s\n' "${BASH_REMATCH[2]}"
+    return 0
+  fi
+
+  return 1
+}
+
 clone_if_missing() {
   local url=$1 dir=$2 ref=${3:-}
   if [[ ! -d "$dir/.git" ]]; then
@@ -301,6 +315,7 @@ if [[ ${P2_BOOTSTRAP_BUILD:-0} == 1 && -d "$P2LLVM_SRC/.git" ]]; then
 fi
 
 unified_codegen_status=BLOCKED_not_available
+overlay_codegen_status=BLOCKED_not_available
 runtime_archive_status=BLOCKED_not_available
 if [[ -x "$P2LLVM_ROOT/bin/clang" ]]; then
   [[ -x "$P2LLVM_ROOT/bin/llc" ]] ||
@@ -310,6 +325,10 @@ if [[ -x "$P2LLVM_ROOT/bin/clang" ]]; then
     --llc "$P2LLVM_ROOT/bin/llc" ||
     die "p2llvm install does not satisfy the unified-memory codegen contract"
   unified_codegen_status=verified
+  "$PYTHON" "$ROOT/tools/p2/check-hub-overlay-codegen.py" \
+    --toolchain-root "$P2LLVM_ROOT" ||
+    die "p2llvm install does not satisfy the Hub-overlay identity/link contract"
+  overlay_codegen_status=verified
   verify_p2llvm_runtime_archive ||
     die "p2llvm install lacks the verified standalone compiler builtins"
   runtime_archive_status=verified
@@ -324,6 +343,7 @@ write_unified_lock() {
   local lock=$RUNTIME_LOCK
   local tmp=$lock.tmp
   local apps_commit nuttx_commit p2llvm_commit llvm_commit
+  local compiler_version compiler_version_commit
   local file digest
   local files=(
     "$P2LLVM_ROOT/bin/clang"
@@ -338,10 +358,12 @@ write_unified_lock() {
     "$P2LLVM_ROOT/bin/llvm-readobj"
     "$P2LLVM_ROOT/bin/llvm-size"
     "$P2LLVM_ROOT/bin/llvm-strip"
+    "$P2LLVM_ROOT/bin/p2-overlay-link.py"
     "$P2LLVM_ROOT/libp2/lib/libcompiler_builtins.a"
     "$P2LLVM_RUNTIME_PATCH"
     "$P2LLVM_PREEMPT_PATCH"
     "$P2LLVM_UNIFIED_PATCH"
+    "$P2LLVM_OVERLAY_PATCH"
   )
 
   nuttx_commit=$(git -C "$ROOT" rev-parse HEAD) ||
@@ -372,13 +394,20 @@ write_unified_lock() {
     files+=("$LOADP2_ROOT/bin/loadp2")
   fi
 
+  compiler_version=$("$P2LLVM_ROOT/bin/clang" --version | head -1) ||
+    die "cannot read the installed clang version for the unified lock"
+  compiler_version_commit=$(
+    parse_p2llvm_compiler_version_commit "$compiler_version"
+  ) || die "installed clang version lacks a 40-hex LLVM revision"
+
   mkdir -p "$(dirname "$lock")"
   {
     echo "nuttx_commit=$nuttx_commit"
     echo "nuttx_apps_commit=$apps_commit"
     echo "p2llvm_commit=$p2llvm_commit"
     echo "p2llvm_llvm_project_commit=$llvm_commit"
-    echo "compiler=$("$P2LLVM_ROOT/bin/clang" --version | head -1)"
+    echo "p2llvm_compiler_version_commit=$compiler_version_commit"
+    echo "compiler=$compiler_version"
     echo "linker=$("$P2LLVM_ROOT/bin/ld.lld" --version | head -1)"
     echo "llc=$("$P2LLVM_ROOT/bin/llc" --version | head -1)"
     echo "p2llvm_runtime_patch=$(basename "$P2LLVM_RUNTIME_PATCH")"
@@ -386,6 +415,8 @@ write_unified_lock() {
     echo "p2llvm_preempt_patch=$(basename "$P2LLVM_PREEMPT_PATCH")"
     echo "p2llvm_unified_patch=$(basename "$P2LLVM_UNIFIED_PATCH")"
     echo "p2llvm_unified_memory=verified opt-in lowering contract"
+    echo "p2llvm_overlay_patch=$(basename "$P2LLVM_OVERLAY_PATCH")"
+    echo "p2llvm_overlay_link_identity=verified stable source identity, duplicate rejection, and end-to-end link contract"
     echo "p2_flags=--target=p2 -fno-jump-tables -ffunction-sections -fdata-sections -fno-common -fno-builtin -nostdlib"
     echo "p2_unified_flags=-mllvm -p2-unified-memory"
     for file in "${files[@]}"; do
@@ -427,6 +458,8 @@ fi
   echo "p2llvm_preempt_patch=$(basename "$P2LLVM_PREEMPT_PATCH")"
   echo "p2llvm_unified_patch=$(basename "$P2LLVM_UNIFIED_PATCH")"
   echo "p2llvm_unified_memory=$unified_codegen_status"
+  echo "p2llvm_overlay_patch=$(basename "$P2LLVM_OVERLAY_PATCH")"
+  echo "p2llvm_overlay_link_identity=$overlay_codegen_status"
   echo "p2llvm_unified_toolchain_lock=$unified_lock_status"
   echo "loadp2_commit=$(git -C "$LOADP2_SRC" rev-parse HEAD 2>/dev/null || echo BLOCKED_not_available)"
   echo "host_os=$(uname -a)"

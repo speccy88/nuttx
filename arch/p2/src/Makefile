@@ -88,6 +88,7 @@ $(P2_OVERLAY_SCRIPT): $(P2_OVERLAY_INPUTS) $(P2_OVERLAY_LINK)
 	$(Q) $(P2_OVERLAY_LINK) --fragment-only \
 		--slot-address $(P2_OVERLAY_SLOT_ADDRESS) \
 		--slot-size $(CONFIG_P2_HUB_OVERLAY_SLOT_SIZE) \
+		--max-groups $(CONFIG_P2_HUB_OVERLAY_GROUP_COUNT) \
 		--lma-address $(P2_OVERLAY_LMA_ADDRESS) -o $@ \
 		$(P2_OVERLAY_INPUTS)
 else

@@ -38,6 +38,10 @@ except ImportError as exc:  # pragma: no cover - exercised only on broken hosts
 AR_MAGIC = b"!<arch>\n"
 ELF_MAGIC = b"\x7fELF"
 BODY_RE = re.compile(r"^\.p2\.overlay\.body\.([0-9a-f]{8})$")
+AUTO_BODY_RE = re.compile(
+    r"^\.p2\.overlay\.auto\."
+    r"[0-9a-f]{64}\.[0-9a-f]{8}\.[0-9a-f]{64}$"
+)
 STUB_SECTION = ".p2.overlay.stubs"
 XDATA_RE = re.compile(r"^\.p2\.xdata(?:\.[A-Za-z0-9_]+)*$")
 XBSS_RE = re.compile(r"^\.p2\.xbss(?:\.[A-Za-z0-9_]+)*$")
@@ -181,8 +185,15 @@ def _external_kind(name: str) -> str | None:
     return None
 
 
+def _is_body(name: str) -> bool:
+    return (
+        _body_group(name) is not None
+        or AUTO_BODY_RE.fullmatch(name) is not None
+    )
+
+
 def _allowed_code(name: str) -> bool:
-    return name == STUB_SECTION or _body_group(name) is not None
+    return name == STUB_SECTION or _is_body(name)
 
 
 def audit_archive(
@@ -324,7 +335,7 @@ def audit_archive(
                     )
                 elif section_name == STUB_SECTION:
                     member_stub_functions += 1
-                elif BODY_RE.fullmatch(section_name):
+                elif _is_body(section_name):
                     member_body_functions += 1
             else:
                 report.objects += 1
@@ -486,11 +497,11 @@ def audit_map(
             continue
 
         try:
-            group = _body_group(section)
+            is_body = _is_body(section)
         except CheckError as exc:
             errors.append(f"{location}: {exc}")
             continue
-        if group is not None:
+        if is_body:
             saw_body = saw_body or size > 0
             report.body_bytes += size
             if not _inside(vma, size, slot_start, slot_end):

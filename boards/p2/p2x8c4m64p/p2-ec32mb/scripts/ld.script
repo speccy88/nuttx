@@ -39,12 +39,22 @@ P2_HUB_TEXT_ORIGIN    = 0x00000a00;
 P2_INITIAL_STACK_SIZE = 0x00001000;
 P2_IDLE_STACK_SIZE    = 0x00001000;
 
+/* umm_initialize() stores struct mm_heap_s and the initial region guards in
+ * the Hub user-heap range before up_extraheaps_init() can add tagged PSRAM.
+ * Keep one conservative KiB for that bootstrap state and small early
+ * allocations.  p2_allocateheap.c consumes this same absolute symbol for
+ * its release-runtime guard.
+ */
+
+__p2_initial_user_heap_min_size = 0x00000400;
+
 /* Make.defs supplies this absolute symbol only for an enabled overlay
  * profile.  The zero default preserves every existing profile's memory map.
  */
 
 PROVIDE(__p2_overlay_config_slot_size = 0);
 PROVIDE(__p2_overlay_group_count = 0);
+PROVIDE(__p2_overlay_group_workspace_count = 0);
 PROVIDE(__p2_xmem_reserve_size = 0);
 PROVIDE(__p2_python_fingerprint_config_size = 0);
 PROVIDE(__p2_kernel_heap_configured = 0);
@@ -351,12 +361,18 @@ ASSERT(_sheap < _eheap,
        "P2 resident image leaves no Hub heap before the overlay slot")
 ASSERT(__p2_kernel_heap_configured == 0 ||
        (__p2_kernel_heap_config_size > 0 &&
-        __p2_kernel_heap_config_size + 15 < (_eheap - _sheap)),
-       "P2 configured kernel heap leaves no initial Hub user heap")
+        __p2_kernel_heap_config_size + 15 +
+          __p2_initial_user_heap_min_size <= (_eheap - _sheap)),
+       "P2 configured kernel heap leaves less than 1024 bytes for the initial Hub user heap")
 ASSERT(_eheap == __p2_overlay_slot_start,
        "P2 heap does not end at the overlay slot")
 ASSERT(__p2_overlay_slot_end == P2_HUB_END,
        "P2 overlay slot does not end at the loader-safe Hub limit")
+ASSERT(__p2_python_fingerprint_config_size == 0 ||
+       (__p2_overlay_group_workspace_count > 0 &&
+        (__p2_overlay_group_workspace_count + 1) * 16 <=
+          (__p2_overlay_slot_end - __p2_overlay_slot_start)),
+       "P2 overlay slot cannot stage configured Python group workspace")
 ASSERT((__p2_overlay_stubs_end - __p2_overlay_stubs_start) % 4 == 0,
        "P2 overlay stubs are not four-byte records")
 ASSERT((__p2_overlay_entries_end - __p2_overlay_entries_start) ==

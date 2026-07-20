@@ -46,6 +46,17 @@ config P2_BOOT_TRACE
 		restore.  This is intended for bounded hardware bring-up and may be
 		disabled once a board configuration is stable.
 
+config P2_UART_RX_RING_SIZE
+	int "Dedicated console RX cog ring size"
+	range 256 2048
+	default 256
+	help
+		Number of bytes in the Hub-resident single-producer/single-consumer
+		ring filled by the dedicated console RX cog.  The value must be a
+		power of two; the architecture header rejects any other value.  A
+		larger ring can absorb a complete high-baud stop-and-wait transfer
+		frame while scheduler cog 0 is delayed.
+
 config P2_RNG_BLAKE2S
 	bool "Condition hardware random output with BLAKE2s"
 	default y
@@ -137,16 +148,18 @@ config P2_HUB_OVERLAY_SHADOW_DEPTH
 		12288 bytes.  Shadow records are never placed in PSRAM.
 
 config P2_HUB_OVERLAY_GROUP_COUNT
-	int "Compiler-generated Hub overlay groups"
+	int "Maximum link-assigned Hub overlay groups"
 	depends on P2_HUB_OVERLAYS
 	range 1 1024
 	default 32
 	help
-		Number of deterministic overlay groups used for large translation-unit
-		sets such as CPython.  More groups reduce the maximum bytes sharing one
-		execution slot, at the cost of a larger resident descriptor table.  The
-		linker discovers the actual group IDs and rejects missing IDs or a group
-		whose linked body exceeds the configured slot.
+		Maximum number of deterministic overlay groups allowed for large
+		translation-unit sets such as CPython.  The compiler preserves local
+		call affinity in stable per-function sections; after exact machine-code
+		sizes are known, the linker packs those sections into dense groups no
+		larger than the execution slot.  The actual count may be lower.  Raising
+		this limit permits smaller groups at the cost of a larger resident
+		descriptor table.
 
 config P2_HUB_OVERLAY_ZLIB
 	bool "Place CPython's zlib library in the Hub overlay image"

@@ -5,10 +5,10 @@ Status: the legacy macOS local toolchain is **COMPILED**, hash-pinned, and was
 used by the recorded builds and HIL campaigns.  The tracked
 ``tools/p2/toolchain.lock`` remains the authoritative record for those legacy
 artifacts, but it does not claim the opt-in unified-memory compiler pass.  A
-``unified`` or ``unified-hil`` build must use a newly generated exact lock for
-the rebuilt compiler; ``tools/p2/build.sh`` rejects the legacy compiler before
-configuration.  ``tools/p2/dependencies.lock`` is a historical cloud snapshot
-and may still contain old ``BLOCKED_missing`` entries.
+``unified``, ``unified-hil``, or ``python`` build must use a newly generated
+exact lock for the rebuilt compiler; ``tools/p2/build.sh`` rejects the legacy
+compiler before configuration.  ``tools/p2/dependencies.lock`` is a historical
+cloud snapshot and may still contain old ``BLOCKED_missing`` entries.
 
 Pinned source revisions
 -----------------------
@@ -47,14 +47,17 @@ unified lock must also pin, are:
 
 * the regenerated preemption-safe p2llvm patch:
   ``3d4c7a031bc9d260ba9ebe93a93e287d27f6142ccb081eb3a544fa7875cb8d27``;
-  and
 * the opt-in unified-memory p2llvm patch:
-  ``b99b12aecbe84d62d978fe311e66a6a17a19a86c0913daae96788d41e7bc9f8f``.
+  ``b99b12aecbe84d62d978fe311e66a6a17a19a86c0913daae96788d41e7bc9f8f``;
+  and
+* the stable link-assigned Python-overlay p2llvm patch:
+  ``a1cff3b5039579ac22987b0934319a2b1abeb399039e06611fa7968686d20e14``.
 
 ``tools/p2/bootstrap-local.sh`` checks pinned repositories, applies only the
-exact preemption-safe and unified-memory patch series, builds missing tools,
-runs both the existing backend postconditions and the unified-memory codegen
-contract, installs a hash-locked Python environment, writes
+exact preemption-safe, unified-memory, and Python-overlay patch series, builds
+missing tools, and runs the existing backend postconditions, unified-memory
+codegen contract, and complete overlay compiler/helper/LLD link probe.  It
+installs a hash-locked Python environment, writes
 ``~/.p2-nuttx-env``, and regenerates the selected runtime lock.  Patch-state
 validation uses an isolated temporary index and object database, accepts only
 an exact series prefix for safe upgrades, and never resets the compiler
@@ -64,16 +67,18 @@ Python HIL requirements are pyserial 3.5 and pyelftools 0.32 with hashes in
 ``tools/p2/requirements-hil.txt``.
 
 ``tools/p2/bootstrap-cloud.sh`` enforces the same exact p2llvm outer commit,
-llvm-project gitlink/checkout, and two-patch source state before building.  An
+llvm-project gitlink/checkout, and three-patch source state before building.  An
 existing checkout at another commit, with outer-tree changes, or with an
 unexpected llvm-project checkout is rejected without resetting it.  Once the
 unified code-generation postcondition passes, the cloud bootstrap writes the
 selected ``P2_TOOLCHAIN_LOCK`` (default ``$P2_CACHE/toolchain.lock``) with the
 exact NuttX, apps, p2llvm, and llvm-project commits plus SHA-256 entries for
 clang/clang++, ld.lld, llc, the LLVM archive, symbol, object-copy,
-disassembly, ELF-inspection, size, and strip utilities, and both compiler
-patches.  The local bootstrap pins the same complete set.  The unified build
-rejects a lock missing any of those exact paths and hashes before
+disassembly, ELF-inspection, size, and strip utilities, the installed
+``p2-overlay-link.py``, and all three compiler patches.  The local bootstrap
+pins the same complete set.  A unified or Python build rejects a lock missing
+any of those exact paths and hashes before configuration.  The Python profile
+also reruns ``check-hub-overlay-codegen.py`` and records its result before
 configuration.  The cloud bootstrap exports that lock through
 ``~/.p2-nuttx-env`` so ``tools/p2/build.sh unified`` consumes the same record;
 if loadp2 was built, its exact executable is included for RAM-load HIL as well.

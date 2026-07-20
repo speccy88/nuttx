@@ -34,6 +34,7 @@
 #include <nuttx/serial/serial.h>
 
 #include <arch/board/board.h>
+#include <arch/serial.h>
 
 #include "p2_clock.h"
 #include "p2_internal.h"
@@ -61,6 +62,7 @@ struct p2_uart_priv_s
   volatile uint32_t rxenabled;
   uint32_t rxcog;
   bool servicing;
+  volatile bool rxexclusive;
 };
 
 /****************************************************************************
@@ -132,9 +134,9 @@ static struct uart_dev_s g_p2_uart_dev =
  * Public Data
  ****************************************************************************/
 
-/* A dedicated peripheral cog samples the asynchronous RX pin into this SPSC
- * ring.  Only that cog advances head; only scheduler cog 0 advances tail.
- * P2 Hub accesses are coherent and ordered.
+/* A dedicated peripheral cog drains the asynchronous RX Smart Pin into this
+ * SPSC ring.  Only that cog advances head; only scheduler cog 0 advances
+ * tail.  P2 Hub accesses are coherent and ordered.
  */
 
 volatile uint8_t g_p2_uart_rx_ring[P2_UART_RX_RING_SIZE] aligned_data(4);
@@ -334,7 +336,8 @@ static void p2_uart_service(void)
     }
 
   g_p2_uart_priv.servicing = true;
-  receive = g_p2_uart_priv.rxenabled &&
+  receive = !g_p2_uart_priv.rxexclusive &&
+            g_p2_uart_priv.rxenabled &&
             p2_uart_rxavailable(&g_p2_uart_dev);
   leave_critical_section(flags);
 
@@ -357,6 +360,114 @@ static void p2_uart_service(void)
 uint32_t p2_console_baud_ticks(void)
 {
   return p2_baud_ticks(CONFIG_P2_SYSCLK_HZ, CONFIG_UART0_BAUD);
+}
+
+int p2_uart_rxraw_begin(void)
+{
+#ifdef USE_SERIALDRIVER
+  int ret;
+
+  /* Both normal promotion and the exclusive consumer run on scheduler cog
+   * 0.  A timer service cannot remain active after its ISR returns to this
+   * caller, and setting the volatile gate prevents every later service from
+   * touching tail.  The Smart Pin producer remains the sole head writer.
+   */
+
+  /* rxenabled gates promotion into the ordinary NuttX tty ring; it is not
+   * the hardware producer state.  The dedicated cog continues filling this
+   * lower ring while the upper half temporarily disables receive callbacks,
+   * which is exactly when an exclusive raw consumer must still be usable.
+   */
+
+  if (!g_p2_uart_priv.rxcog || g_p2_uart_rx_alive == 0)
+    {
+      ret = -ENODEV;
+    }
+  else if (g_p2_uart_priv.rxexclusive)
+    {
+      ret = -EBUSY;
+    }
+  else if (g_p2_uart_rx_tail != g_p2_uart_rx_head)
+    {
+      /* The caller must synchronize the ordinary tty path before changing
+       * consumers.  Silently discarding lower-ring bytes here could turn a
+       * stream-boundary error into accepted payload.
+       */
+
+      ret = -EAGAIN;
+    }
+  else
+    {
+      g_p2_uart_priv.rxexclusive = true;
+      ret = 0;
+    }
+
+  return ret;
+#else
+  return -ENOSYS;
+#endif
+}
+
+ssize_t p2_uart_rxraw_read(FAR void *buffer, size_t size)
+{
+#ifdef USE_SERIALDRIVER
+  FAR uint8_t *destination = buffer;
+  uintptr_t address = (uintptr_t)buffer;
+  uint32_t available;
+  uint32_t head;
+  uint32_t tail;
+  size_t count;
+  size_t index;
+
+  if (buffer == NULL && size != 0)
+    {
+      return -EINVAL;
+    }
+
+  if (size != 0 &&
+      (address >= P2_HUB_RAM_SIZE || size > P2_HUB_RAM_SIZE - address))
+    {
+      return -ERANGE;
+    }
+
+  if (!g_p2_uart_priv.rxexclusive)
+    {
+      return -EPERM;
+    }
+
+  tail = g_p2_uart_rx_tail;
+  head = g_p2_uart_rx_head;
+  available = head - tail;
+  if (available > P2_UART_RX_RING_SIZE)
+    {
+      return -EOVERFLOW;
+    }
+
+  count = size < available ? size : available;
+  for (index = 0; index < count; index++)
+    {
+      destination[index] =
+        g_p2_uart_rx_ring[(tail + index) & P2_UART_RX_RING_MASK];
+
+      /* Publish each consumed byte only after its destination store.  The
+       * producer can then reuse ring space while a long available run is
+       * copied instead of observing a falsely-full ring until the end.
+       */
+
+      g_p2_uart_rx_tail = tail + index + 1;
+    }
+
+  return (ssize_t)count;
+#else
+  return -ENOSYS;
+#endif
+}
+
+void p2_uart_rxraw_end(void)
+{
+#ifdef USE_SERIALDRIVER
+  g_p2_uart_priv.rxexclusive = false;
+#endif
 }
 
 void p2_lowsetup(void)
@@ -435,6 +546,7 @@ void p2_serialinit(void)
 {
 #ifdef USE_SERIALDRIVER
   uint32_t deadline;
+  bool rxcog;
 
   p2_lowsetup();
 
@@ -447,15 +559,15 @@ void p2_serialinit(void)
   g_p2_uart_rx_dropped = 0;
   g_p2_uart_rx_alive = 0;
   g_p2_uart_priv.servicing = false;
-  g_p2_uart_priv.rxcog = p2_uart_rx_cog_start() == 0;
+  g_p2_uart_priv.rxexclusive = false;
+  rxcog = p2_uart_rx_cog_start() == 0;
   deadline = p2_counter() + P2_UART_TIMEOUT_TICKS;
-  while (g_p2_uart_priv.rxcog && g_p2_uart_rx_alive == 0 &&
+  while (rxcog && g_p2_uart_rx_alive == 0 &&
          (int32_t)(p2_counter() - deadline) < 0)
     {
     }
 
-  g_p2_uart_priv.rxcog = g_p2_uart_priv.rxcog &&
-                         g_p2_uart_rx_alive != 0;
+  g_p2_uart_priv.rxcog = rxcog && g_p2_uart_rx_alive != 0;
   p2_boot_trace(g_p2_uart_priv.rxcog ? "P2K:UART:RXCOG=OK" :
                                       "P2K:UART:RXCOG=FAILED");
 

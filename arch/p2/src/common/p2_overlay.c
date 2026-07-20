@@ -36,11 +36,13 @@
 #include <nuttx/sched.h>
 
 #include <arch/context.h>
+#include <arch/hub_crc32.h>
 #include <arch/irq.h>
 #include <arch/overlay.h>
 
 #include "sched/sched.h"
 #include "p2_internal.h"
+#include "p2_overlay_hot_logic.h"
 #include "p2_overlay_internal.h"
 
 /****************************************************************************
@@ -51,7 +53,6 @@
 #define P2_OVERLAY_PSRAM_END          UINT32_C(0x12000000)
 #define P2_OVERLAY_CALLA_MASK         UINT32_C(0xfff00000)
 #define P2_OVERLAY_CALLA_OPCODE       UINT32_C(0xfdc00000)
-#define P2_OVERLAY_CRC_POLYNOMIAL     UINT32_C(0xedb88320)
 #define P2_OVERLAY_ENTRY_CACHE_LINES  16u
 #define P2_OVERLAY_ENTRY_CACHE_MASK   \
   (P2_OVERLAY_ENTRY_CACHE_LINES - 1u)
@@ -120,6 +121,14 @@ static struct p2_overlay_entry_cache_s
   g_p2_overlay_entry_cache[P2_OVERLAY_ENTRY_CACHE_LINES]
   __attribute__((section(".bss.p2_overlay_entry_cache"), aligned(16)));
 
+/* Space-Saving accounting is native resident state.  The fixed eight-record
+ * table costs 256 Hub bytes; no counter or key is placed in unified PSRAM.
+ */
+
+static struct p2_overlay_hot_entry_s
+  g_p2_overlay_hot[P2_OVERLAY_HOT_CAPACITY]
+  __attribute__((section(".bss.p2_overlay_hot"), aligned(16)));
+
 static FAR struct tcb_s *g_p2_overlay_owner;
 static p2_overlay_loader_t g_p2_overlay_loader;
 static FAR void *g_p2_overlay_loader_arg;
@@ -130,6 +139,19 @@ static bool g_p2_overlay_entries_valid;
 static bool g_p2_overlay_relocated;
 static bool g_p2_overlay_transition;
 static int g_p2_overlay_error;
+static uint64_t g_p2_overlay_entry_count;
+static uint64_t g_p2_overlay_exit_count;
+static uint64_t g_p2_overlay_direct_count;
+static uint64_t g_p2_overlay_load_attempt_count;
+static uint64_t g_p2_overlay_load_count;
+static uint64_t g_p2_overlay_load_bytes;
+static uint32_t g_p2_overlay_maximum_depth;
+static uint32_t g_p2_overlay_loading_group;
+static uint32_t g_p2_overlay_loading_bytes;
+static uint32_t g_p2_overlay_last_requested_group;
+static uint32_t g_p2_overlay_last_stub_index;
+static uint32_t g_p2_overlay_hot_used;
+static uint64_t g_p2_overlay_hot_total_count;
 
 /****************************************************************************
  * Private Functions
@@ -284,21 +306,8 @@ static int p2_overlay_validate_packed_group(
 
 static uint32_t p2_overlay_crc32(FAR const uint8_t *data, size_t size)
 {
-  uint32_t crc = UINT32_C(0xffffffff);
-  size_t index;
-  unsigned int bit;
-
-  for (index = 0; index < size; index++)
-    {
-      crc ^= data[index];
-      for (bit = 0; bit < 8; bit++)
-        {
-          crc = (crc >> 1) ^
-                ((crc & 1) != 0 ? P2_OVERLAY_CRC_POLYNOMIAL : 0);
-        }
-    }
-
-  return crc ^ UINT32_C(0xffffffff);
+  return p2_hub_crc32_update(UINT32_C(0xffffffff), data, size) ^
+         UINT32_C(0xffffffff);
 }
 
 static int p2_overlay_validate_group(uint32_t group, bool relocated)
@@ -517,6 +526,48 @@ static int p2_overlay_validate_resume(uint32_t resume)
   return 0;
 }
 
+/* Convert an exact CALLA resume into a stable telemetry key without changing
+ * the pageable group recorded by the dispatch shadow.  A resident helper can
+ * call an overlay while that shadow still needs to restore the currently
+ * loaded group; the resident caller is nevertheless telemetry group zero.
+ * Reject every inconsistent slot-relative offset before updating telemetry.
+ */
+
+static int p2_overlay_hot_callsite(uint32_t reload_group,
+                                   uint32_t caller_resume,
+                                   FAR uint32_t *hot_caller_group,
+                                   FAR uint32_t *hot_caller_offset)
+{
+  uintptr_t slot_start = (uintptr_t)__p2_overlay_slot_start;
+  uintptr_t pc = caller_resume & P2_RESUME_PC_MASK;
+  size_t reload_image_size = 0;
+
+  if (hot_caller_group == NULL || hot_caller_offset == NULL ||
+      p2_overlay_validate_resume(caller_resume) < 0)
+    {
+      return -EINVAL;
+    }
+
+  /* A resident caller does not need pageable descriptor validation. */
+
+  if (pc > slot_start)
+    {
+      if (reload_group == P2_OVERLAY_RESIDENT_GROUP ||
+          reload_group >= p2_overlay_group_count() ||
+          p2_overlay_validate_group(reload_group, true) < 0)
+        {
+          return -EINVAL;
+        }
+
+      reload_image_size =
+        __p2_overlay_groups_start[reload_group].image_size;
+    }
+
+  return p2_overlay_hot_decode_callsite(
+    reload_group, pc, slot_start, reload_image_size,
+    hot_caller_group, hot_caller_offset);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -580,6 +631,74 @@ int p2_overlay_install_groups(
     }
 
   g_p2_overlay_relocated = true;
+  leave_critical_section(irqstate);
+  return 0;
+}
+
+int p2_overlay_get_group(uint32_t group,
+                         FAR struct p2_overlay_group_s *descriptor)
+{
+  irqstate_t irqstate;
+  int ret;
+
+  if (descriptor == NULL || group == P2_OVERLAY_RESIDENT_GROUP ||
+      group >= p2_overlay_group_count())
+    {
+      return -EINVAL;
+    }
+
+  irqstate = enter_critical_section();
+  if (!g_p2_overlay_relocated)
+    {
+      ret = -ENOSYS;
+    }
+  else
+    {
+      ret = p2_overlay_validate_group(group, true);
+      if (ret == 0)
+        {
+          *descriptor = __p2_overlay_groups_start[group];
+        }
+    }
+
+  leave_critical_section(irqstate);
+  return ret;
+}
+
+int p2_overlay_uninstall_groups(void)
+{
+  FAR struct p2_overlay_group_s *resident =
+    &__p2_overlay_groups_start[P2_OVERLAY_RESIDENT_GROUP];
+  size_t linked_count = p2_overlay_group_count();
+  irqstate_t irqstate;
+  size_t index;
+
+  if (up_interrupt_context() || linked_count < 2)
+    {
+      return -EINVAL;
+    }
+
+  irqstate = enter_critical_section();
+  if (g_p2_overlay_ready || g_p2_overlay_loader != NULL ||
+      g_p2_overlay_owner != NULL || g_p2_overlay_depth != 0 ||
+      g_p2_overlay_transition || g_p2_overlay_entries_valid ||
+      !g_p2_overlay_relocated)
+    {
+      leave_critical_section(irqstate);
+      return -EBUSY;
+    }
+
+  for (index = 0; index < linked_count; index++)
+    {
+      resident[index].source = 0;
+      resident[index].image_size = 0;
+      resident[index].image_crc32 = 0;
+      resident[index].flags = 0;
+    }
+
+  g_p2_overlay_relocated = false;
+  g_p2_overlay_loaded_group = P2_OVERLAY_RESIDENT_GROUP;
+  p2_overlay_entry_cache_reset();
   leave_critical_section(irqstate);
   return 0;
 }
@@ -678,7 +797,20 @@ int p2_overlay_register_loader(p2_overlay_loader_t loader, FAR void *arg)
   g_p2_overlay_loaded_group = P2_OVERLAY_RESIDENT_GROUP;
   g_p2_overlay_entries_valid = false;
   g_p2_overlay_transition = true;
+  g_p2_overlay_entry_count = 0;
+  g_p2_overlay_exit_count = 0;
+  g_p2_overlay_direct_count = 0;
+  g_p2_overlay_load_attempt_count = 0;
+  g_p2_overlay_load_count = 0;
+  g_p2_overlay_load_bytes = 0;
+  g_p2_overlay_maximum_depth = 0;
+  g_p2_overlay_loading_group = P2_OVERLAY_RESIDENT_GROUP;
+  g_p2_overlay_loading_bytes = 0;
+  g_p2_overlay_last_requested_group = P2_OVERLAY_RESIDENT_GROUP;
+  g_p2_overlay_last_stub_index = UINT32_MAX;
   p2_overlay_entry_cache_reset();
+  p2_overlay_hot_reset(g_p2_overlay_hot, &g_p2_overlay_hot_used,
+                       &g_p2_overlay_hot_total_count);
   leave_critical_section(irqstate);
 
   /* A complete immutable table scan can require thousands of PSRAM reads.
@@ -723,6 +855,60 @@ int p2_overlay_last_error(void)
   return g_p2_overlay_error;
 }
 
+int p2_overlay_get_stats(FAR struct p2_overlay_stats_s *stats)
+{
+  irqstate_t irqstate;
+
+  if (stats == NULL)
+    {
+      return -EINVAL;
+    }
+
+  irqstate = enter_critical_section();
+  stats->entry_count = g_p2_overlay_entry_count;
+  stats->exit_count = g_p2_overlay_exit_count;
+  stats->direct_count = g_p2_overlay_direct_count;
+  stats->load_attempt_count = g_p2_overlay_load_attempt_count;
+  stats->load_count = g_p2_overlay_load_count;
+  stats->load_bytes = g_p2_overlay_load_bytes;
+  stats->current_depth = g_p2_overlay_depth;
+  stats->maximum_depth = g_p2_overlay_maximum_depth;
+  stats->loaded_group = g_p2_overlay_loaded_group;
+  stats->loading_group = g_p2_overlay_loading_group;
+  stats->loading_bytes = g_p2_overlay_loading_bytes;
+  stats->last_requested_group = g_p2_overlay_last_requested_group;
+  stats->last_stub_index = g_p2_overlay_last_stub_index;
+  stats->last_error = g_p2_overlay_error;
+  stats->transition = g_p2_overlay_transition;
+  stats->ready = g_p2_overlay_ready;
+  leave_critical_section(irqstate);
+  return 0;
+}
+
+int p2_overlay_get_hot_snapshot(
+  FAR struct p2_overlay_hot_snapshot_s *snapshot)
+{
+  irqstate_t irqstate;
+  uint32_t index;
+
+  if (snapshot == NULL)
+    {
+      return -EINVAL;
+    }
+
+  irqstate = enter_critical_section();
+  snapshot->total_count = g_p2_overlay_hot_total_count;
+  snapshot->used = g_p2_overlay_hot_used;
+  snapshot->capacity = P2_OVERLAY_HOT_CAPACITY;
+  for (index = 0; index < P2_OVERLAY_HOT_CAPACITY; index++)
+    {
+      snapshot->entries[index] = g_p2_overlay_hot[index];
+    }
+
+  leave_critical_section(irqstate);
+  return 0;
+}
+
 /* Called only by the register-preserving assembly veneer. */
 
 uintptr_t p2_overlay_dispatch_enter(uint32_t stub_resume,
@@ -730,11 +916,14 @@ uintptr_t p2_overlay_dispatch_enter(uint32_t stub_resume,
 {
   FAR struct tcb_s *task;
   struct p2_overlay_entry_s entry;
+  struct p2_overlay_hot_entry_s hot_key;
   FAR struct p2_overlay_shadow_s *shadow;
   irqstate_t irqstate;
   size_t stub_index;
-  uint32_t caller_group;
   uint32_t group;
+  uint32_t hot_caller_group;
+  uint32_t hot_caller_offset;
+  uint32_t reload_group;
   bool direct;
   bool needs_load;
   int ret;
@@ -806,6 +995,10 @@ uintptr_t p2_overlay_dispatch_enter(uint32_t stub_resume,
       p2_overlay_fail(error);
     }
 
+  g_p2_overlay_entry_count++;
+  g_p2_overlay_last_requested_group = group;
+  g_p2_overlay_last_stub_index = (uint32_t)stub_index;
+
   /* Calls within the currently loaded group need neither a reload nor a
    * shadow record.  The veneer leaves the original CALLA resume untouched,
    * and the callee consumes it directly with RETA.  Require the top record
@@ -825,6 +1018,7 @@ uintptr_t p2_overlay_dispatch_enter(uint32_t stub_resume,
           p2_overlay_fail(-EFAULT);
         }
 
+      g_p2_overlay_direct_count++;
       leave_critical_section(irqstate);
       return ((uintptr_t)__p2_overlay_slot_start + entry.offset) |
              P2_OVERLAY_DIRECT_TARGET_FLAG;
@@ -838,29 +1032,58 @@ uintptr_t p2_overlay_dispatch_enter(uint32_t stub_resume,
 
   if (g_p2_overlay_depth == 0)
     {
-      g_p2_overlay_owner = task;
-      caller_group = P2_OVERLAY_RESIDENT_GROUP;
+      reload_group = P2_OVERLAY_RESIDENT_GROUP;
     }
   else
     {
-      caller_group = g_p2_overlay_loaded_group;
-      if (caller_group == P2_OVERLAY_RESIDENT_GROUP)
+      reload_group = g_p2_overlay_loaded_group;
+      if (reload_group == P2_OVERLAY_RESIDENT_GROUP)
         {
           leave_critical_section(irqstate);
           p2_overlay_fail(-EFAULT);
         }
     }
 
+  ret = p2_overlay_hot_callsite(reload_group, caller_resume,
+                                &hot_caller_group, &hot_caller_offset);
+  if (ret < 0)
+    {
+      leave_critical_section(irqstate);
+      p2_overlay_fail(ret);
+    }
+
+  if (g_p2_overlay_depth == 0)
+    {
+      g_p2_overlay_owner = task;
+    }
+
+  hot_key.caller_group = hot_caller_group;
+  hot_key.caller_offset = hot_caller_offset;
+  hot_key.target_group = group;
+  hot_key.target_stub = (uint32_t)stub_index;
+  hot_key.count = 0;
+  hot_key.error = 0;
+  p2_overlay_hot_update(g_p2_overlay_hot, &g_p2_overlay_hot_used,
+                        &g_p2_overlay_hot_total_count, &hot_key);
+
   shadow = &g_p2_overlay_shadow[g_p2_overlay_depth++];
   shadow->resume = caller_resume;
-  shadow->caller_group = caller_group;
+  shadow->caller_group = reload_group;
   shadow->callee_group = group;
+  if (g_p2_overlay_depth > g_p2_overlay_maximum_depth)
+    {
+      g_p2_overlay_maximum_depth = g_p2_overlay_depth;
+    }
 
   needs_load = g_p2_overlay_loaded_group != group;
   if (needs_load)
     {
       g_p2_overlay_loaded_group = P2_OVERLAY_RESIDENT_GROUP;
       g_p2_overlay_transition = true;
+      g_p2_overlay_load_attempt_count++;
+      g_p2_overlay_loading_group = group;
+      g_p2_overlay_loading_bytes =
+        __p2_overlay_groups_start[group].image_size;
     }
 
   leave_critical_section(irqstate);
@@ -884,6 +1107,11 @@ uintptr_t p2_overlay_dispatch_enter(uint32_t stub_resume,
 
       g_p2_overlay_loaded_group = group;
       g_p2_overlay_transition = false;
+      g_p2_overlay_load_count++;
+      g_p2_overlay_load_bytes +=
+        __p2_overlay_groups_start[group].image_size;
+      g_p2_overlay_loading_group = P2_OVERLAY_RESIDENT_GROUP;
+      g_p2_overlay_loading_bytes = 0;
       leave_critical_section(irqstate);
     }
 
@@ -938,6 +1166,10 @@ uint32_t p2_overlay_dispatch_exit(void)
     {
       g_p2_overlay_loaded_group = P2_OVERLAY_RESIDENT_GROUP;
       g_p2_overlay_transition = true;
+      g_p2_overlay_load_attempt_count++;
+      g_p2_overlay_loading_group = caller_group;
+      g_p2_overlay_loading_bytes =
+        __p2_overlay_groups_start[caller_group].image_size;
     }
 
   leave_critical_section(irqstate);
@@ -961,6 +1193,11 @@ uint32_t p2_overlay_dispatch_exit(void)
 
       g_p2_overlay_loaded_group = caller_group;
       g_p2_overlay_transition = false;
+      g_p2_overlay_load_count++;
+      g_p2_overlay_load_bytes +=
+        __p2_overlay_groups_start[caller_group].image_size;
+      g_p2_overlay_loading_group = P2_OVERLAY_RESIDENT_GROUP;
+      g_p2_overlay_loading_bytes = 0;
       leave_critical_section(irqstate);
     }
 
@@ -972,6 +1209,7 @@ uint32_t p2_overlay_dispatch_exit(void)
       p2_overlay_fail(-EFAULT);
     }
 
+  g_p2_overlay_exit_count++;
   g_p2_overlay_depth--;
   if (g_p2_overlay_depth == 0)
     {
@@ -988,3 +1226,9 @@ static_assert(sizeof(struct p2_overlay_group_s) == P2_OVERLAY_GROUP_BYTES,
               "P2 overlay group ABI changed");
 static_assert(sizeof(struct p2_overlay_shadow_s) == 12,
               "P2 overlay shadow record changed");
+static_assert(sizeof(struct p2_overlay_hot_entry_s) == 32,
+              "P2 overlay hot record changed");
+static_assert(sizeof(g_p2_overlay_hot) == 256,
+              "P2 overlay hot table exceeds its resident budget");
+static_assert(sizeof(g_p2_overlay_hot) <= 512,
+              "P2 overlay hot table must remain below 512 bytes");

@@ -102,11 +102,25 @@ struct p2_psram_geometry_s
   uint32_t chip_size_bytes;
   uint32_t natural_word_bytes;
   uint32_t max_request_bytes;
+  /* Scalar/recovery QPI clock, followed by the aligned bulk-stream clock. */
+
   uint32_t qpi_clock_hz;
+  uint32_t bulk_qpi_clock_hz;
   uint32_t ce_low_limit_cycles;
   uint32_t max_ce_low_cycles;
   uint32_t service_cog;
 };
+
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+struct p2_psram_cache_stats_s
+{
+  uint64_t hits;
+  uint64_t misses;
+  uint64_t fills;
+  uint64_t writes;
+  uint64_t bypasses;
+};
+#endif
 
 /****************************************************************************
  * Public Function Prototypes
@@ -118,10 +132,16 @@ ssize_t p2_psram_transfer(enum p2_psram_operation_e operation,
                           uint32_t external_address, FAR void *hub_buffer,
                           size_t length, uint32_t timeout_ticks);
 
+#ifdef CONFIG_P2_EC32MB_PSRAM_FAULT_INJECT_TIMEOUT
+int p2_psram_arm_timeout_stall(void);
+#endif
+
 #ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
 int p2_psram_unified_transfer(enum p2_psram_operation_e operation,
                               uint32_t external_address,
                               FAR void *hub_buffer, uint32_t length);
+int p2_psram_get_cache_stats(
+  FAR struct p2_psram_cache_stats_s *stats);
 
 #  ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK
 int p2_psram_unified_arm_raw_lock_stall(void);

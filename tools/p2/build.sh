@@ -93,6 +93,8 @@ fi
 if [[ "$cfg" == python ]]; then
   [[ -x "$P2LLVM_ROOT/bin/p2-overlay-link.py" ]] ||
     { echo "ERROR: P2 overlay linker helper is missing" >&2; exit 1; }
+  [[ -x "$ROOT/tools/p2/check-hub-overlay-codegen.py" ]] ||
+    { echo "ERROR: Hub-overlay compiler verifier is missing" >&2; exit 1; }
   [[ -f "$ROOT/tools/p2/p2_python_package.py" ]] ||
     { echo "ERROR: P2 Python packager is missing" >&2; exit 1; }
   "$python" "$ROOT/tools/p2/p2llvm-runtime.py" verify-archive \
@@ -148,8 +150,11 @@ verify_unified_toolchain_lock()
     "$P2LLVM_ROOT/bin/llvm-readobj" \
     "$P2LLVM_ROOT/bin/llvm-size" \
     "$P2LLVM_ROOT/bin/llvm-strip" \
+    "$P2LLVM_ROOT/bin/p2-overlay-link.py" \
+    "$P2LLVM_ROOT/libp2/lib/libcompiler_builtins.a" \
     "$ROOT/tools/p2/patches/p2llvm-preempt-safe-integer.patch" \
-    "$ROOT/tools/p2/patches/p2llvm-unified-memory.patch"
+    "$ROOT/tools/p2/patches/p2llvm-unified-memory.patch" \
+    "$ROOT/tools/p2/patches/p2llvm-python-overlays.patch"
   do
     [[ -f "$file" ]] ||
       { echo "ERROR: unified toolchain input is missing: $file" >&2;
@@ -241,6 +246,11 @@ cd "$ROOT"
       tee "$art/unified-codegen.txt"
     verify_unified_toolchain_lock
   fi
+  if [[ "$cfg" == python ]]; then
+    "$python" ./tools/p2/check-hub-overlay-codegen.py \
+      --toolchain-root "$P2LLVM_ROOT" |
+      tee "$art/hub-overlay-codegen.txt"
+  fi
   "$python" ./tools/p2/build_artifact.py \
     --verify-toolchain-lock "$toolchain_lock" \
     --nuttx-commit "$nuttx_commit" \
@@ -267,6 +277,18 @@ cd "$ROOT"
       exit 1
     fi
     if [[ "$cfg" == python ]]; then
+      # The eight always-resident PyMem/PyObject frontends are funded by the
+      # 2304-byte kernel-heap reduction.  The measured CPython
+      # startup-hot resident cluster is funded from the 8208-byte group-table
+      # BSS allocation reclaimed by staging that init-only table in the
+      # unpublished overlay slot.  The 63232-byte kernel heap also preserves
+      # at least one KiB for the in-Hub user-heap bootstrap metadata; source,
+      # link-time, and runtime audits lock both budgets and real placement.
+      # Python rebalances the existing 2304 console-RX BSS bytes from a
+      # 256/2048 lower/upper split to 1024/1280.  A complete 1012-byte upload
+      # frame then fits in both layers at 2 Mbaud without reducing either
+      # heap or relying on host-side quiet gaps.
+
       for required in \
         CONFIG_FS_TMPFS=y \
         CONFIG_ARCH_HAVE_RNG=y \
@@ -279,12 +301,18 @@ cd "$ROOT"
         CONFIG_FS_HEAP_USER_BUFFER=y \
         'CONFIG_LIBC_TMPDIR="/tmp"' \
         CONFIG_INTERPRETERS_CPYTHON_ROMFS_SECTORSIZE=512 \
+        CONFIG_INTERPRETERS_CPYTHON_P2_DEFAULT_NO_SITE=y \
+        CONFIG_INTERPRETERS_CPYTHON_P2_FIXED_PATH_CONFIG=y \
+        CONFIG_INTERPRETERS_CPYTHON_P2_OVERLAY_TELEMETRY=y \
+        CONFIG_INTERPRETERS_CPYTHON_P2_OVERLAY_TELEMETRY_INTERVAL_MS=60000 \
+		'CONFIG_INTERPRETERS_CPYTHON_PYTHONPATH="/tmp"' \
         CONFIG_STACK_COLORATION=y \
         CONFIG_MM_KERNEL_HEAP=y \
-        CONFIG_MM_KERNEL_HEAPSIZE=65536 \
+        CONFIG_MM_KERNEL_HEAPSIZE=63232 \
         CONFIG_INTERPRETERS_CPYTHON_STACKSIZE=24576 \
-        CONFIG_UART0_BAUD=230400 \
-        CONFIG_UART0_RXBUFSIZE=2048 \
+        CONFIG_P2_UART_RX_RING_SIZE=1024 \
+        CONFIG_UART0_BAUD=2000000 \
+        CONFIG_UART0_RXBUFSIZE=1280 \
         CONFIG_NFILE_DESCRIPTORS_PER_BLOCK=8 \
         CONFIG_TLS_NELEM=16 \
 		CONFIG_TLS_TASK_NELEM=8 \
@@ -294,6 +322,7 @@ cd "$ROOT"
 		'# CONFIG_UTILS_ZIP is not set' \
 		'# CONFIG_UTILS_UNZIP is not set' \
         '# CONFIG_NSH_DISABLE_ECHO is not set' \
+        'CONFIG_NSH_DISABLE_HELP=y' \
         '# CONFIG_NSH_DISABLE_MKDIR is not set' \
         '# CONFIG_NSH_DISABLE_MOUNT is not set'
       do
@@ -411,6 +440,14 @@ if [[ "$cfg" == python ]]; then
     echo "ERROR: P2 CPython unexpectedly exposes task-spawning _thread" >&2
     exit 1
   fi
+  if "$P2LLVM_ROOT/bin/llvm-ar" t "$python_archive" |
+       LC_ALL=C awk '
+         /(^|\/)_threadmodule\.o$/ { found = 1 }
+         END { exit !found }
+       '; then
+    echo "ERROR: P2 CPython unexpectedly archives native _threadmodule.o" >&2
+    exit 1
+  fi
   if LC_ALL=C grep -Fq 'PyInit__interpreters' "$python_config" ||
      "$P2LLVM_ROOT/bin/llvm-nm" --defined-only "$python_archive" |
        LC_ALL=C awk '
@@ -498,6 +535,7 @@ if [[ "$cfg" == python ]]; then
   python_manifest=$python_package_dir/manifest.json
   python_payloads=$python_package_dir/payloads
   python_container=$ROOT/nuttx.p2py
+  python_residency_audit=$art/python-residency-audit.txt
   python_slot_size=$(sed -n \
     's/^CONFIG_P2_HUB_OVERLAY_SLOT_SIZE=//p' "$ROOT/.config")
   python_reserve_size=$(sed -n \
@@ -511,11 +549,16 @@ import sys
 import zipfile
 
 with zipfile.ZipFile(sys.argv[1]) as archive:
-    info = archive.getinfo("encodings/__init__.pyc")
-    if info.compress_type != zipfile.ZIP_DEFLATED:
-        raise SystemExit(
-            "ERROR: P2 stdlib bootstrap member is not DEFLATE-compressed"
-        )
+    for member in ("encodings/__init__.pyc", "_thread.pyc", "_pyio.pyc"):
+        info = archive.getinfo(member)
+        if info.compress_type != zipfile.ZIP_DEFLATED:
+            raise SystemExit(
+                "ERROR: P2 stdlib member {} is not DEFLATE-compressed".format(
+                    member
+                )
+            )
+    if "_thread.py" in archive.namelist():
+        raise SystemExit("ERROR: P2 stdlib must package only compiled _thread.pyc")
     sysconfig_members = [
         member for member in archive.namelist()
         if "_sysconfigdata_" in member and member.endswith(".pyc")
@@ -548,6 +591,11 @@ PY
     --reserve-size "$python_reserve_size" \
     --backing-address 0x10300000
   mv -f "$ROOT/nuttx.resident" "$ROOT/nuttx"
+  if ! "$python" "$ROOT/tools/p2/verify-python-residency.py" \
+       "$ROOT/nuttx.full" 2>&1 | tee "$python_residency_audit"; then
+    echo "ERROR: packaged P2 Python control/telemetry path is not resident" >&2
+    exit 1
+  fi
   "$P2LLVM_ROOT/bin/llvm-nm" --defined-only "$ROOT/nuttx.full" |
     LC_ALL=C awk '
       $NF == "PyInit_zlib" { found = 1 }
@@ -712,6 +760,6 @@ cp nuttx.bin "$art/"
 "$P2LLVM_ROOT/bin/llvm-nm" -n nuttx > "$art/symbols.txt"
 "$P2LLVM_ROOT/bin/llvm-size" nuttx > "$art/size.txt"
 "$P2LLVM_ROOT/bin/llvm-objdump" -dr nuttx > "$art/disassembly.txt"
-./tools/p2/verify-elf.py nuttx | tee "$art/verify-elf.txt"
+"$python" ./tools/p2/verify-elf.py nuttx | tee "$art/verify-elf.txt"
 
 echo "P2 build artifact: $art"

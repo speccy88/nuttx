@@ -1,15 +1,26 @@
-nuttx_commit=39cc55135fd24f02006e56f9fc1f0476edea1888
-nuttx_upstream_base=
-nuttx_apps_commit=62b7e955300b6dafa4f36d391474d3c8925b8106
+nuttx_commit=d4b647adc319be421e7cfc36f7c4870f1e3b5161
+nuttx_upstream_base=6c1d15008decc5c22d2d85295b91744a24b64ac5
+nuttx_apps_commit=b90825f5d3ce09d289ddb387605042945ce7448e
 p2llvm_commit=bdcefcce7860b2232c06f35726fea679a3a7309c
-p2llvm_llvm_project_commit=bdcefcce7860b2232c06f35726fea679a3a7309c
+p2llvm_llvm_project_commit=72a9bb1ef2656d9953d1f41a8196d425ff2ab0b1
+p2llvm_runtime_patch=p2llvm-python-runtime.patch
+p2llvm_compiler_builtins=verified
+p2llvm_preempt_patch=p2llvm-preempt-safe-integer.patch
+p2llvm_unified_patch=p2llvm-unified-memory.patch
+p2llvm_unified_memory=verified
+p2llvm_overlay_patch=p2llvm-python-overlays.patch
+p2llvm_overlay_link_identity=verified
+p2llvm_unified_toolchain_lock=/private/tmp/p2-python-directcalls-toolchain.lock
 loadp2_commit=BLOCKED_not_available
-host_os=Linux 4143cc8ba89e 6.12.47 #1 SMP Mon Oct 27 10:01:15 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
-host_cc=cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
-cmake=cmake version 3.28.3
-ninja=1.11.1
-python=Python 3.14.4
+host_os=Darwin MacBook-Air-de-Frederick.local 25.5.0 Darwin Kernel Version 25.5.0: Mon Apr 27 20:40:51 PDT 2026; root:xnu-12377.121.6~2/RELEASE_ARM64_T8112 arm64
+host_cc=Apple clang version 21.0.0 (clang-2100.1.1.101)
+cmake=cmake version 4.3.4
+ninja=1.13.2
+python=Python 3.13.0
 kconfig_conf=BLOCKED_missing
-clang=BLOCKED_missing
-loadp2=BLOCKED_missing
+clang=clang version 14.0.0 (https://github.com/ne75/llvm-project.git f2705abf47278c4d1f81e22c3d7be1fc55193461)
+llc=LLVM (http://llvm.org/):
+loadp2=Invalid option -h
+BLOCKED_missing
 p2_flags=--target=p2 -fno-jump-tables -ffunction-sections -fdata-sections -fno-common -fno-builtin -nostdlib
+p2_unified_flags=-mllvm -p2-unified-memory

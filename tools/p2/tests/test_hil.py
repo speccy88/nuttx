@@ -221,7 +221,8 @@ def good_psram_response(sequence="A55A0713"):
         "P2PSRAM:GEOMETRY:SIZE=33554432:CHIPS=4:CHIP_SIZE=8388608:"
         "WORD=4:MAX_REQUEST=65536:COG=2",
         "P2PSRAM:PROFILE:MAX_REQUEST=65536:QPI_HZ=5000000:"
-        "TICK_USEC=10000:TIMEOUT_TICKS=500:CANCEL_GRACE_TICKS=100",
+        "BULK_QPI_HZ=90000000:TICK_USEC=10000:TIMEOUT_TICKS=500:"
+        "CANCEL_GRACE_TICKS=100",
         "P2PSRAM:WALKING:PASS:BITS=32",
         "P2PSRAM:ADDRESS:PASS:LINES=23",
         "P2PSRAM:BOUNDARY:PASS:COUNT=5",
@@ -235,10 +236,12 @@ def good_psram_response(sequence="A55A0713"):
         (
             "P2PSRAM:FULL:PASS:BYTES=33554432:FNV1A=634C9DC5",
             "P2PSRAM:THROUGHPUT:WRITE_BPS=900000:READ_BPS=1100000",
-            "P2PSRAM:CONCURRENT:PASS:WORK=32768:ELAPSED_TICKS=4:"
-            "CPU_AVAILABLE_PERMILLE=930:CPU_OCCUPANCY_PERMILLE=70",
+            "P2PSRAM:CONCURRENT:PASS:REQUESTS=64:BYTES=2097152:WORK=32768:"
+            "ELAPSED_CYCLES=72000000:BASELINE_WORK=65536:"
+            "BASELINE_CYCLES=72000000:COUNTER_HZ=180000000:"
+            "CPU_AVAILABLE_PERMILLE=500:CPU_OCCUPANCY_PERMILLE=500",
             "P2PSRAM:TIMEOUT:PASS:RESULT=110:BYTES=32768:"
-            "DEADLINE_TICKS=1:MIN_WIRE_USEC=24576:TICK_USEC=10000",
+            "DEADLINE_TICKS=1:FAULT=COOPERATIVE_STALL:TICK_USEC=10000",
             "P2PSRAM:RECOVERY:PASS",
             "P2PSRAM:CE_TIMING:PASS:MAX_CYCLES=711:LIMIT_CYCLES=1440",
             "P2PSRAM:PASS:SEQUENCE={}".format(sequence),
@@ -1474,6 +1477,162 @@ class HilTests(unittest.TestCase):
         self.assertEqual(config.protocol, "boot")
         self.assertEqual(config.timeout, 1800.0)
 
+    def test_full_unified_boot_implicitly_requires_cache_selftest_marker(self):
+        start = hil.UNIFIED_FULL_BOOT_START_MARKER
+        cache = hil.UNIFIED_CACHE_PASS_MARKER
+        full = "P2XMEM:FULL:PASS:FNV=B51C9DC5"
+        output = GOOD_BOOT_OUTPUT + (
+            "{}\r\n{}\r\n{}\r\n".format(start, cache, full).encode("ascii")
+        )
+        session = FakeSession(self.clock, [output])
+        factory = SessionFactory([session])
+        lock = RecordingLock()
+        argv = self.argv("unified-cache-required") + [
+            "--protocol",
+            "boot",
+            "--timeout",
+            "1800",
+            "--expect",
+            start,
+            "--expect",
+            full,
+        ]
+
+        rc = self.invoke(argv, self.env(), factory, lock)
+
+        self.assertEqual(rc, hil.EXIT_OK)
+        metadata = json.loads(
+            (self.directory / "unified-cache-required" / "metadata.json").read_text()
+        )
+        self.assertEqual(
+            metadata["required_markers"][-3:],
+            ["literal:" + start, "literal:" + cache, "literal:" + full],
+        )
+        markers = json.loads(
+            (
+                self.directory
+                / "unified-cache-required"
+                / "cycle-001"
+                / "markers.json"
+            ).read_text()
+        )
+        self.assertTrue(markers["complete"])
+        self.assertEqual(markers["missing"], [])
+
+    def test_full_unified_cache_marker_is_ordered_and_cannot_be_omitted(self):
+        start = hil.UNIFIED_FULL_BOOT_START_MARKER
+        cache = hil.UNIFIED_CACHE_PASS_MARKER
+        full = "P2XMEM:FULL:PASS:FNV=B51C9DC5"
+        specs = hil.exact_protocol_markers("boot", (start, full))
+        prefix = GOOD_BOOT_OUTPUT.decode("ascii")
+
+        ordered = hil.MarkerParser(
+            specs, hil.BOOT_MARKERS[0].pattern, hil.BOOT_FAILURE_PATTERNS
+        )
+        ordered.feed(prefix + "\r\n".join((start, cache, full)) + "\r\n")
+        self.assertTrue(ordered.complete)
+
+        missing = hil.MarkerParser(
+            specs, hil.BOOT_MARKERS[0].pattern, hil.BOOT_FAILURE_PATTERNS
+        )
+        missing.feed(prefix + "\r\n".join((start, full)) + "\r\n")
+        self.assertFalse(missing.complete)
+        self.assertIn("literal:" + cache, missing.missing)
+
+        out_of_order = hil.MarkerParser(
+            specs, hil.BOOT_MARKERS[0].pattern, hil.BOOT_FAILURE_PATTERNS
+        )
+        out_of_order.feed(
+            prefix + "\r\n".join((start, full, cache)) + "\r\n"
+        )
+        self.assertFalse(out_of_order.complete)
+        self.assertIn("out of order", out_of_order.failure_reason)
+
+        failed = hil.MarkerParser(
+            specs, hil.BOOT_MARKERS[0].pattern, hil.BOOT_FAILURE_PATTERNS
+        )
+        failed.feed(
+            prefix
+            + start
+            + "\r\nP2XMEM:FAIL:STAGE=CACHE:REASON=COHERENCE\r\n"
+        )
+        self.assertFalse(failed.complete)
+        self.assertIn("unified-memory selftest failure", failed.failure_reason)
+
+        fallback = hil.exact_protocol_markers(
+            "boot", (start, "P2XMEM:NODEV:PASS", "P2XMEM:BULK:PASS", full)
+        )
+        fallback_labels = [spec.label for spec in fallback]
+        bulk_index = fallback_labels.index("literal:P2XMEM:BULK:PASS")
+        self.assertEqual(
+            fallback_labels[bulk_index - 1], "literal:" + cache
+        )
+
+    def test_full_unified_historical_expectations_insert_cache_after_scalar(self):
+        start = hil.UNIFIED_FULL_BOOT_START_MARKER
+        cache = hil.UNIFIED_CACHE_PASS_MARKER
+        scalar = hil.UNIFIED_SCALAR_PASS_MARKER
+        bulk = "P2XMEM:BULK:PASS"
+        full = "P2XMEM:FULL:PASS:FNV=B51C9DC5"
+        extras = [start, "P2XMEM:BOUNDARY:PASS"]
+        for direction in ("WRITE", "READ"):
+            for completed in range(
+                4 * 1024 * 1024,
+                32 * 1024 * 1024 + 1,
+                4 * 1024 * 1024,
+            ):
+                extras.append(
+                    "P2XMEM:FULL:PROGRESS:{}={:08X}".format(
+                        direction, completed
+                    )
+                )
+        extras.extend(
+            (
+                "P2XMEM:NODEV:PASS",
+                scalar,
+                bulk,
+                "P2XMEM:GEOMETRY:PASS",
+                "P2XMEM:CONCURRENT:PASS",
+                "P2XMEM:HEAP:PASS",
+                full,
+                "P2XMEM:PASS",
+            )
+        )
+        specs = hil.exact_protocol_markers("boot", tuple(extras))
+        labels = [spec.label for spec in specs]
+        scalar_index = labels.index("literal:" + scalar)
+
+        self.assertEqual(
+            labels[scalar_index : scalar_index + 3],
+            ["literal:" + scalar, "literal:" + cache, "literal:" + bulk],
+        )
+
+        actual = list(extras)
+        actual.insert(actual.index(scalar) + 1, cache)
+        parser = hil.MarkerParser(
+            specs, hil.BOOT_MARKERS[0].pattern, hil.BOOT_FAILURE_PATTERNS
+        )
+        parser.feed(
+            GOOD_BOOT_OUTPUT.decode("ascii")
+            + "\r\n".join(actual)
+            + "\r\n"
+        )
+        self.assertTrue(parser.complete)
+        self.assertTrue(parser.order_valid)
+
+    def test_ordinary_boot_and_unrelated_expect_do_not_require_cache_marker(self):
+        specs = hil.exact_protocol_markers("boot", ("P2CUSTOM:PASS",))
+
+        self.assertEqual(
+            [spec.label for spec in specs],
+            [spec.label for spec in hil.BOOT_MARKERS]
+            + ["literal:P2CUSTOM:PASS"],
+        )
+        self.assertNotIn(
+            "literal:" + hil.UNIFIED_CACHE_PASS_MARKER,
+            [spec.label for spec in specs],
+        )
+
     def test_full_unified_boot_rejects_timeout_above_extended_bound(self):
         argv = self.argv("unified-full-timeout-over") + [
             "--protocol",
@@ -2150,6 +2309,22 @@ class HilTests(unittest.TestCase):
             (self.directory / "boot-failure" / "cycle-001" / "status.json").read_text()
         )
         self.assertIn("P2BOOT:DATA=FAIL", status["reason"])
+
+    def test_fatal_xmem_marker_terminates_hil_without_waiting_for_timeout(self):
+        output = GOOD_BOOT_OUTPUT + b"P2XMEM:FAULT\r\n"
+        session = FakeSession(self.clock, [output])
+        factory = SessionFactory([session])
+        lock = RecordingLock()
+        argv = self.argv("xmem-fault") + ["--protocol", "boot"]
+
+        rc = self.invoke(argv, self.env(), factory, lock)
+
+        self.assertEqual(rc, hil.EXIT_HIL_FAILURE)
+        self.assertLess(self.clock.value, 0.3)
+        status = json.loads(
+            (self.directory / "xmem-fault" / "cycle-001" / "status.json").read_text()
+        )
+        self.assertIn("P2XMEM fatal unified-memory access", status["reason"])
 
     def test_missing_marker_fails_and_records_exact_missing_marker(self):
         output = GOOD_OUTPUT.replace(b"P2HELLO:ECHO=?\r\n", b"")

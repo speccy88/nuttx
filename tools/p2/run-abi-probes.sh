@@ -52,11 +52,25 @@ if [[ "$actual_clang_sha" != "$expected_clang_sha" ]]; then
   exit 2
 fi
 
-expected_llvm_commit=$(sed -n 's/^p2llvm_llvm_project_commit=//p' "$LOCK")
-compiler_version=$($CLANG --version)
-if [[ -z "$expected_llvm_commit" || "$compiler_version" != *"$expected_llvm_commit"* ]]; then
-  echo "BLOCKED: compiler version does not identify the LLVM commit pinned in $LOCK" >&2
-  echo "expected_llvm_commit=$expected_llvm_commit" >&2
+expected_compiler_commit=$(
+  sed -n 's/^p2llvm_compiler_version_commit=//p' "$LOCK"
+)
+if [[ -z "$expected_compiler_commit" ]]; then
+  expected_compiler_commit=$(
+    sed -n 's/^p2llvm_llvm_project_commit=//p' "$LOCK"
+  )
+fi
+
+if [[ ! "$expected_compiler_commit" =~ ^[[:xdigit:]]{40}$ ]]; then
+  echo "BLOCKED: $LOCK lacks one valid compiler-version LLVM revision" >&2
+  echo "expected_compiler_version_commit=$expected_compiler_commit" >&2
+  exit 2
+fi
+
+compiler_version=$("$CLANG" --version)
+if [[ "$compiler_version" != *"$expected_compiler_commit"* ]]; then
+  echo "BLOCKED: compiler version does not identify the revision pinned in $LOCK" >&2
+  echo "expected_compiler_version_commit=$expected_compiler_commit" >&2
   echo "$compiler_version" >&2
   exit 2
 fi

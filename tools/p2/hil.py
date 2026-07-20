@@ -123,6 +123,30 @@ UNIFIED_FULL_BOOT_START_MARKER = "P2XMEM:START:BASE=10000000:SIZE=33554432"
 UNIFIED_FULL_BOOT_PASS_PATTERN = re.compile(
     r"P2XMEM:FULL:PASS:FNV=[0-9A-F]{8}"
 )
+UNIFIED_CACHE_PASS_MARKER = (
+    "P2XMEM:CACHE:PASS:HITS=5:MISSES=2:FILLS=2:WRITES=2:BYPASSES=1"
+)
+UNIFIED_SCALAR_PASS_MARKER = "P2XMEM:SCALAR:PASS"
+UNIFIED_POST_CACHE_MARKERS = (
+    "P2XMEM:BULK:PASS",
+    "P2XMEM:GEOMETRY:PASS",
+    "P2XMEM:CONCURRENT:PASS",
+    "P2XMEM:HEAP:PASS",
+    "P2XMEM:PASS",
+)
+
+
+def is_full_unified_boot(
+    protocol: str, expected_literals: Sequence[str]
+) -> bool:
+    return (
+        protocol == "boot"
+        and UNIFIED_FULL_BOOT_START_MARKER in expected_literals
+        and any(
+            UNIFIED_FULL_BOOT_PASS_PATTERN.fullmatch(marker)
+            for marker in expected_literals
+        )
+    )
 
 OSTEST_PROFILES = {
     "ostest-pi-assert": (True, True),
@@ -225,6 +249,7 @@ PSRAM_REQUIRED_CONFIG = (
     ("CONFIG_USEC_PER_TICK", "10000"),
     ("CONFIG_P2_SMARTPIN", "y"),
     ("CONFIG_P2_EC32MB_PSRAM", "y"),
+    ("CONFIG_P2_EC32MB_PSRAM_FAULT_INJECT_TIMEOUT", "y"),
     ("CONFIG_P2_EC32MB_PSRAM_COG_STACKSIZE", "3072"),
     ("CONFIG_P2_EC32MB_PSRAM_MAX_REQUEST", "65536"),
     ("CONFIG_P2_EC32MB_PSRAM_TIMEOUT_TICKS", "500"),
@@ -470,6 +495,14 @@ NSH_MARKERS = (
 BOOT_FAILURE_PATTERNS = (
     ("P2BOOT:DATA=FAIL", re.compile(r"P2BOOT:DATA=FAIL")),
     ("P2BOOT:BSS=FAIL", re.compile(r"P2BOOT:BSS=FAIL")),
+    (
+        "P2XMEM fatal unified-memory access",
+        re.compile(r"P2XMEM:(?:FAULT|TIMEOUT)"),
+    ),
+    (
+        "P2XMEM unified-memory selftest failure",
+        re.compile(r"P2XMEM:FAIL:STAGE=[A-Z0-9_]+:REASON=[A-Z0-9_]+"),
+    ),
 )
 
 BRINGUP_FAILURE_PATTERNS = BOOT_FAILURE_PATTERNS + tuple(APP_BRINGUP_FAILURE_PATTERNS)
@@ -1871,6 +1904,31 @@ def exact_protocol_markers(
     storage_alternate_count: int = STORAGE_ALTERNATE_TRANSACTIONS,
     psram_sequence: str = "",
 ) -> Tuple[MarkerSpec, ...]:
+    effective_literals = list(extra_literals)
+
+    # START plus a checksum-bearing FULL marker uniquely identifies the
+    # destructive unified-hil contract.  Require the cache-coherence proof
+    # at its source-defined position even when an older invocation did not
+    # spell it out.  Detailed invocations place it immediately after SCALAR;
+    # a minimal START/FULL invocation places it immediately before FULL.
+
+    if (
+        is_full_unified_boot(protocol, effective_literals)
+        and UNIFIED_CACHE_PASS_MARKER not in effective_literals
+    ):
+        if UNIFIED_SCALAR_PASS_MARKER in effective_literals:
+            insert_at = effective_literals.index(UNIFIED_SCALAR_PASS_MARKER) + 1
+        else:
+            post_cache = [
+                index
+                for index, literal in enumerate(effective_literals)
+                if literal in UNIFIED_POST_CACHE_MARKERS
+                or UNIFIED_FULL_BOOT_PASS_PATTERN.fullmatch(literal)
+            ]
+            insert_at = min(post_cache)
+
+        effective_literals.insert(insert_at, UNIFIED_CACHE_PASS_MARKER)
+
     if protocol == "hello":
         markers = list(HELLO_MARKERS)
     elif protocol == "context":
@@ -1929,7 +1987,7 @@ def exact_protocol_markers(
         raise SafetyError("unsupported HIL protocol: {}".format(protocol))
 
     labels = {marker.label for marker in markers}
-    for literal in extra_literals:
+    for literal in effective_literals:
         if not literal:
             raise SafetyError("--expect cannot be empty")
         label = "literal:{}".format(literal)
@@ -2079,6 +2137,7 @@ class HilRunner:
             "console_baud": config.console_baud,
             "reset_flag": config.reset_flag,
             "timeout_seconds_per_cycle": config.timeout,
+            "required_markers": [marker.label for marker in config.expected],
             "preserved_inputs": preserved_inputs,
             "preserved_input_sha256": preserved_input_sha256,
         }
@@ -2801,14 +2860,7 @@ def maximum_protocol_timeout(
     # when the caller requires both its exact 32 MiB start marker and its
     # checksum-bearing completion marker; ordinary boot remains short.
 
-    if (
-        protocol == "boot"
-        and UNIFIED_FULL_BOOT_START_MARKER in expected_literals
-        and any(
-            UNIFIED_FULL_BOOT_PASS_PATTERN.fullmatch(marker)
-            for marker in expected_literals
-        )
-    ):
+    if is_full_unified_boot(protocol, expected_literals):
         return PSRAM_MAX_TIMEOUT
 
     return DEFAULT_MAX_TIMEOUT

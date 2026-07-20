@@ -31,6 +31,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <nuttx/arch.h>
 #include <nuttx/compiler.h>
 #include <nuttx/kmalloc.h>
 
@@ -42,7 +43,9 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define P2_XMEM_BOUNCE_SIZE 64u
+#define P2_XMEM_BOUNCE_SIZE  64u
+#define P2_XMEM_FAULT_MARKER "P2XMEM:FAULT"
+#define P2_XMEM_TIMEOUT_MARKER "P2XMEM:TIMEOUT"
 
 #ifndef CONFIG_P2_EC32MB_PSRAM_UNIFIED
 #  error "The P2 xmem runtime must only be built for unified PSRAM"
@@ -67,6 +70,15 @@ enum p2_xmem_region_e
 };
 
 /****************************************************************************
+ * Public Function Prototypes
+ ****************************************************************************/
+
+#ifdef CONFIG_P2_BOOT_TRACE
+void p2_boot_trace(FAR const char *message)
+  __asm__("__p2_xmem_boot_trace");
+#endif
+
+/****************************************************************************
  * Private Functions
  ****************************************************************************/
 
@@ -77,8 +89,52 @@ enum p2_xmem_region_e
  */
 
 static void __p2_xmem_fault(void) noreturn_function;
+
+/* A unified transfer disables interrupts while it waits for the service
+ * cog.  Report the deadline before recovery tries to stop that cog, because
+ * a broken recovery lock must not turn the original timeout into a silent
+ * board hang.  The __p2_xmem_ name and raw boot-trace symbol keep this path
+ * outside unified-memory lowering.
+ */
+
+void __p2_xmem_timeout_trace(void)
+{
+#ifdef CONFIG_P2_BOOT_TRACE
+  p2_boot_trace(P2_XMEM_TIMEOUT_MARKER);
+#else
+  FAR const char *marker = P2_XMEM_TIMEOUT_MARKER;
+
+  while (*marker != '\0')
+    {
+      up_putc(*marker++);
+    }
+#endif
+}
+
 static void __p2_xmem_fault(void)
 {
+#ifdef CONFIG_P2_BOOT_TRACE
+  /* The raw boot-trace symbol is part of the __p2_xmem_ recursion boundary;
+   * it reads this Hub literal and writes the polled UART without re-entering
+   * the unified-memory helpers.
+   */
+
+  p2_boot_trace(P2_XMEM_FAULT_MARKER);
+#else
+  FAR const char *marker = P2_XMEM_FAULT_MARKER;
+
+  /* This path cannot depend on the normal logging stack: PANIC may recurse
+   * through an already-failing tagged-memory access.  This function's
+   * __p2_xmem_ prefix keeps both the Hub literal load and the up_putc call
+   * outside unified-memory lowering.
+   */
+
+  while (*marker != '\0')
+    {
+      up_putc(*marker++);
+    }
+#endif
+
   PANIC();
 
   for (; ; )

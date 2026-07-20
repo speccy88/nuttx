@@ -73,6 +73,31 @@ class OverlayShadowFastPathTest(unittest.TestCase):
         self.assertIn("the default depth therefore costs 768 bytes", kconfig)
         self.assertIn("the maximum costs\n\t\t12288 bytes", kconfig)
 
+    def test_resident_progress_snapshot_covers_every_dispatch_path(self) -> None:
+        runtime = RUNTIME.read_text(encoding="utf-8")
+        header = (ROOT / "arch/p2/include/overlay.h").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("struct p2_overlay_stats_s", header)
+        self.assertIn("int p2_overlay_get_stats", header)
+        self.assertIn("stats->entry_count = g_p2_overlay_entry_count", runtime)
+        self.assertIn(
+            "stats->load_attempt_count = g_p2_overlay_load_attempt_count",
+            runtime,
+        )
+        self.assertIn("stats->load_bytes = g_p2_overlay_load_bytes", runtime)
+        self.assertIn("stats->loading_group = g_p2_overlay_loading_group", runtime)
+        self.assertIn("stats->current_depth = g_p2_overlay_depth", runtime)
+        self.assertIn("stats->last_error = g_p2_overlay_error", runtime)
+        self.assertIn("g_p2_overlay_last_stub_index = UINT32_MAX", runtime)
+        self.assertIn("g_p2_overlay_direct_count++", runtime)
+        self.assertEqual(runtime.count("g_p2_overlay_load_count++;"), 2)
+        self.assertEqual(
+            runtime.count("g_p2_overlay_load_attempt_count++;"), 2
+        )
+        self.assertIn("g_p2_overlay_exit_count++;", runtime)
+
     @unittest.skipUnless(
         tool("clang") and tool("llvm-objdump"),
         "set P2LLVM_ROOT for P2 veneer checks",

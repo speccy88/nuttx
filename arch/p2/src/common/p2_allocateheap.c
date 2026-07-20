@@ -39,6 +39,14 @@
 extern uint8_t _sheap[];
 extern uint8_t _eheap[];
 
+/* The linker owns this absolute value so its build-time ASSERT and this
+ * release-runtime check cannot drift.  The initial Hub user heap contains
+ * NuttX's allocator control structure before tagged PSRAM can be added as a
+ * second region, so merely leaving a nonempty byte range is insufficient.
+ */
+
+extern uint8_t __p2_initial_user_heap_min_size[];
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -47,6 +55,8 @@ extern uint8_t _eheap[];
 static uintptr_t p2_kernel_heap_end(void)
 {
   uintptr_t start = (uintptr_t)_sheap;
+  uintptr_t heap_end = (uintptr_t)_eheap;
+  uintptr_t user_min = (uintptr_t)__p2_initial_user_heap_min_size;
   uintptr_t end = (start + CONFIG_MM_KERNEL_HEAPSIZE + 15u) &
                   ~(uintptr_t)15;
 
@@ -55,7 +65,7 @@ static uintptr_t p2_kernel_heap_end(void)
    * initialized.
    */
 
-  if (end <= start || end >= (uintptr_t)_eheap)
+  if (end <= start || heap_end <= end || heap_end - end < user_min)
     {
       PANIC();
     }

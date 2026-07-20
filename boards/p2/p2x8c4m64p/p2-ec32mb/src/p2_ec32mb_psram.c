@@ -154,6 +154,9 @@ struct p2_psram_service_s
   int hardware_lock;
   bool registered;
   bool failed;
+#ifdef CONFIG_P2_EC32MB_PSRAM_FAULT_INJECT_TIMEOUT
+  volatile uint32_t inject_timeout_stall;
+#endif
 #ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK
   volatile uint32_t inject_raw_lock_stall;
 #endif
@@ -166,7 +169,20 @@ struct p2_psram_worker_request_s
   uint32_t address;
   FAR uint8_t *buffer;
   uint32_t length;
+#ifdef CONFIG_P2_EC32MB_PSRAM_FAULT_INJECT_TIMEOUT
+  bool inject_timeout_stall;
+#endif
 };
+
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+struct p2_psram_cache_s
+{
+  uint8_t data[P2_PSRAM_CACHE_LINE_COUNT][P2_PSRAM_CACHE_LINE_SIZE];
+  uint32_t tags[P2_PSRAM_CACHE_LINE_COUNT];
+  uint8_t next_way[P2_PSRAM_CACHE_SET_COUNT];
+  struct p2_psram_cache_stats_s stats;
+};
+#endif
 
 /****************************************************************************
  * Private Function Prototypes
@@ -187,7 +203,13 @@ static off_t p2_psram_seek(FAR struct file *filep, off_t offset,
 
 int p2_psram_cog_start(void);
 void p2_psram_timing_leaf(void);
-void p2_psram_service_worker(void);
+void p2_psram_stream_install(void);
+int p2_psram_stream_transfer(uint32_t operation, uint32_t address,
+                             FAR void *hub_buffer, uint32_t length);
+void __p2_xmem_psram_service_worker(void);
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+void __p2_xmem_timeout_trace(void);
+#endif
 
 /****************************************************************************
  * Public Data
@@ -228,6 +250,10 @@ static struct p2_psram_service_s g_p2_psram =
   .hardware_lock = -1,
 };
 
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+static struct p2_psram_cache_s g_p2_psram_cache aligned_data(16);
+#endif
+
 static_assert(sizeof(struct p2_psram_wire_s) == P2_PSRAM_WIRE_SIZE,
               "PSRAM C/PASM wire structure size drifted");
 static_assert(offsetof(struct p2_psram_wire_s, operation) ==
@@ -248,9 +274,48 @@ static_assert(offsetof(struct p2_psram_wire_s, status) ==
 static_assert(offsetof(struct p2_psram_wire_s, ce_cycles) ==
               P2_PSRAM_WIRE_CE_CYCLES_OFFSET,
               "PSRAM wire CE timing offset drifted");
+static_assert(P2_PSRAM_STREAM_READ == P2_PSRAM_OPERATION_READ &&
+              P2_PSRAM_STREAM_WRITE == P2_PSRAM_OPERATION_WRITE,
+              "PSRAM C/PASM stream operations drifted");
+static_assert(P2_PSRAM_STREAM_QPI_CLOCK_HZ * 2 == CONFIG_P2_SYSCLK_HZ,
+              "PSRAM stream clock must remain sysclk/2");
+static_assert(P2_PSRAM_STREAM_MIN_BYTES % sizeof(uint32_t) == 0,
+              "PSRAM stream threshold must remain long-aligned");
+static_assert((P2_PSRAM_STREAM_FRAGMENT_LONGS &
+               (P2_PSRAM_STREAM_FRAGMENT_LONGS - 1)) == 0,
+              "PSRAM stream fragment must be a power of two");
+static_assert(P2_PSRAM_STREAM_FRAGMENT_LONGS ==
+              P2_PSRAM_STREAM_CHIP_WRAP_BYTES,
+              "PSRAM stream fragment must stop at the chip wrap");
+static_assert(P2_PSRAM_STREAM_FRAGMENT_BYTES == 128,
+              "PSRAM stream fragment must remain 128 interleaved bytes");
+static_assert(P2_PSRAM_LOGICAL_PAGE_SIZE %
+              P2_PSRAM_STREAM_FRAGMENT_BYTES == 0,
+              "PSRAM stream fragments must divide a chip page");
+static_assert(P2_PSRAM_STREAM_COG_ENTRY == 0x040,
+              "PSRAM stream engine must start in reserved cog RAM");
+static_assert(P2_PSRAM_STREAM_LUT_TABLE_LONGS == 16,
+              "PSRAM stream nibble table must fill LUT entries 0..15");
+static_assert(P2_PSRAM_STREAM_COG_ENTRY +
+              P2_PSRAM_STREAM_COG_IMAGE_LONGS < 0x1d8,
+              "PSRAM stream engine overlaps p2llvm ABI registers");
+static_assert(P2_PSRAM_STREAM_CE_BOUND_CYCLES <=
+              P2_PSRAM_CE_LOW_LIMIT_CYCLES -
+              P2_PSRAM_STREAM_CE_MARGIN_CYCLES,
+              "PSRAM stream fragment has insufficient tCEM margin");
 static_assert(offsetof(struct p2_psram_service_s, cancel_sequence) %
               sizeof(uint32_t) == 0,
               "PSRAM cancellation word must remain long-aligned");
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+static_assert(P2_PSRAM_CACHE_SET_COUNT == 4 &&
+              P2_PSRAM_CACHE_WAY_COUNT == 2 &&
+              P2_PSRAM_CACHE_LINE_SIZE == 32,
+              "PSRAM unified cache geometry drifted");
+static_assert(P2_PSRAM_LOGICAL_SIZE % P2_PSRAM_CACHE_LINE_SIZE == 0,
+              "PSRAM cache lines must exactly cover external memory");
+static_assert(P2_PSRAM_CACHE_SCALAR_MAX <= P2_PSRAM_CACHE_LINE_SIZE,
+              "PSRAM scalar cache width exceeds a line");
+#endif
 
 /****************************************************************************
  * Private Functions
@@ -268,6 +333,196 @@ static inline uint32_t p2_psram_counter(void)
 
   __asm__ __volatile__("getct %0" : "=r" (value));
   return value;
+}
+
+/* These functions are part of the unified-memory runtime boundary.  Their
+ * pointer arguments have already been checked to reside entirely in Hub RAM
+ * by p2_psram_unified_transfer().  Keeping the __p2_xmem_ prefix prevents the
+ * compiler pass from recursively lowering their ordinary Hub accesses back
+ * into PSRAM transactions.
+ */
+
+static noinline_function void __p2_xmem_psram_cache_reset(void)
+{
+  unsigned int index;
+  unsigned int offset;
+
+  for (index = 0; index < P2_PSRAM_CACHE_LINE_COUNT; index++)
+    {
+      for (offset = 0; offset < P2_PSRAM_CACHE_LINE_SIZE; offset++)
+        {
+          g_p2_psram_cache.data[index][offset] = 0;
+        }
+
+      g_p2_psram_cache.tags[index] = 0;
+    }
+
+  for (index = 0; index < P2_PSRAM_CACHE_SET_COUNT; index++)
+    {
+      g_p2_psram_cache.next_way[index] = 0;
+    }
+
+  g_p2_psram_cache.stats.hits = 0;
+  g_p2_psram_cache.stats.misses = 0;
+  g_p2_psram_cache.stats.fills = 0;
+  g_p2_psram_cache.stats.writes = 0;
+  g_p2_psram_cache.stats.bypasses = 0;
+}
+
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK
+static noinline_function void __p2_xmem_psram_cache_invalidate_all(void)
+{
+  unsigned int index;
+
+  for (index = 0; index < P2_PSRAM_CACHE_LINE_COUNT; index++)
+    {
+      g_p2_psram_cache.tags[index] = 0;
+    }
+}
+#endif
+
+static noinline_function void __p2_xmem_psram_cache_copy_out(
+  unsigned int index, uint32_t address, FAR void *hub_buffer,
+  uint32_t length)
+{
+  FAR uint8_t *destination = hub_buffer;
+  unsigned int offset = p2_psram_cache_line_offset(address);
+  uint32_t cursor;
+
+  for (cursor = 0; cursor < length; cursor++)
+    {
+      destination[cursor] = g_p2_psram_cache.data[index][offset + cursor];
+    }
+}
+
+static noinline_function bool __p2_xmem_psram_cache_try_read(
+  uint32_t address, FAR void *hub_buffer, uint32_t length)
+{
+  int index = __p2_xmem_psram_cache_find(g_p2_psram_cache.tags, address);
+
+  if (index < 0)
+    {
+      return false;
+    }
+
+  g_p2_psram_cache.stats.hits++;
+  __p2_xmem_psram_cache_touch(g_p2_psram_cache.next_way,
+                               (unsigned int)index);
+  __p2_xmem_psram_cache_copy_out((unsigned int)index, address, hub_buffer,
+                                  length);
+  return true;
+}
+
+static noinline_function unsigned int __p2_xmem_psram_cache_prepare_fill(
+  uint32_t address)
+{
+  unsigned int index = __p2_xmem_psram_cache_select(
+    g_p2_psram_cache.tags, g_p2_psram_cache.next_way, address);
+
+  g_p2_psram_cache.stats.misses++;
+  g_p2_psram_cache.tags[index] = 0;
+  return index;
+}
+
+static noinline_function FAR void *__p2_xmem_psram_cache_fill_buffer(
+  unsigned int index)
+{
+  return g_p2_psram_cache.data[index];
+}
+
+static noinline_function void __p2_xmem_psram_cache_publish_fill(
+  unsigned int index, uint32_t address, FAR void *hub_buffer,
+  uint32_t length)
+{
+  p2_psram_compiler_barrier();
+  g_p2_psram_cache.tags[index] = p2_psram_cache_tag(address);
+  __p2_xmem_psram_cache_touch(g_p2_psram_cache.next_way, index);
+  g_p2_psram_cache.stats.fills++;
+  __p2_xmem_psram_cache_copy_out(index, address, hub_buffer, length);
+}
+
+static noinline_function void __p2_xmem_psram_cache_count_bypass(void)
+{
+  g_p2_psram_cache.stats.bypasses++;
+}
+
+static noinline_function void __p2_xmem_psram_cache_update_write(
+  uint32_t address, FAR const void *hub_buffer, uint32_t length)
+{
+  FAR const uint8_t *source = hub_buffer;
+  uint32_t write_end = address + length;
+  unsigned int index;
+
+  for (index = 0; index < P2_PSRAM_CACHE_LINE_COUNT; index++)
+    {
+      uint32_t tag = g_p2_psram_cache.tags[index];
+      uint32_t line_address;
+      uint32_t copy_start;
+      uint32_t copy_end;
+      uint32_t cursor;
+
+      if (tag == 0)
+        {
+          continue;
+        }
+
+      line_address = (tag - 1u) << P2_PSRAM_CACHE_LINE_SHIFT;
+      if (!p2_psram_ranges_overlap(address, length, line_address,
+                                   P2_PSRAM_CACHE_LINE_SIZE))
+        {
+          continue;
+        }
+
+      copy_start = address > line_address ? address : line_address;
+      copy_end = write_end < line_address + P2_PSRAM_CACHE_LINE_SIZE ?
+                 write_end : line_address + P2_PSRAM_CACHE_LINE_SIZE;
+      for (cursor = copy_start; cursor < copy_end; cursor++)
+        {
+          g_p2_psram_cache.data[index][cursor - line_address] =
+            source[cursor - address];
+        }
+    }
+}
+
+static noinline_function void __p2_xmem_psram_cache_record_write(
+  uint32_t address, FAR const void *hub_buffer, uint32_t length)
+{
+  __p2_xmem_psram_cache_update_write(address, hub_buffer, length);
+  g_p2_psram_cache.stats.writes++;
+}
+
+static noinline_function void __p2_xmem_psram_cache_invalidate_write(
+  uint32_t address, uint32_t length)
+{
+  unsigned int index;
+
+  for (index = 0; index < P2_PSRAM_CACHE_LINE_COUNT; index++)
+    {
+      uint32_t tag = g_p2_psram_cache.tags[index];
+      uint32_t line_address;
+
+      if (tag == 0)
+        {
+          continue;
+        }
+
+      line_address = (tag - 1u) << P2_PSRAM_CACHE_LINE_SHIFT;
+      if (p2_psram_ranges_overlap(address, length, line_address,
+                                  P2_PSRAM_CACHE_LINE_SIZE))
+        {
+          g_p2_psram_cache.tags[index] = 0;
+        }
+    }
+}
+
+static noinline_function void __p2_xmem_psram_cache_snapshot(
+  FAR struct p2_psram_cache_stats_s *snapshot)
+{
+  snapshot->hits = g_p2_psram_cache.stats.hits;
+  snapshot->misses = g_p2_psram_cache.stats.misses;
+  snapshot->fills = g_p2_psram_cache.stats.fills;
+  snapshot->writes = g_p2_psram_cache.stats.writes;
+  snapshot->bypasses = g_p2_psram_cache.stats.bypasses;
 }
 #endif
 
@@ -512,27 +767,9 @@ static void p2_psram_release_pins(void)
     }
 }
 
-static int p2_psram_wire_operation(uint32_t operation, uint32_t address,
-                                   uint32_t tx_lanes,
-                                   FAR uint32_t *rx_lanes)
+static noinline_function int __p2_xmem_psram_record_ce_cycles(
+  uint32_t ce_cycles)
 {
-  uint32_t ce_cycles;
-  int ret;
-
-  g_p2_psram_wire.operation = operation;
-  g_p2_psram_wire.address = address;
-  g_p2_psram_wire.tx_lanes = tx_lanes;
-  g_p2_psram_wire.rx_lanes = 0;
-  g_p2_psram_wire.status = -EINPROGRESS;
-  g_p2_psram_wire.ce_cycles = 0;
-  p2_psram_compiler_barrier();
-
-  p2_psram_timing_leaf();
-
-  p2_psram_compiler_barrier();
-  ret = g_p2_psram_wire.status;
-  ce_cycles = g_p2_psram_wire.ce_cycles;
-
   if (ce_cycles > g_p2_psram.max_ce_cycles)
     {
       p2_psram_raw_lock();
@@ -549,12 +786,53 @@ static int p2_psram_wire_operation(uint32_t operation, uint32_t address,
       return -EIO;
     }
 
+  return 0;
+}
+
+static noinline_function int __p2_xmem_psram_wire_execute(
+  uint32_t operation, uint32_t address, uint32_t tx_lanes,
+  FAR uint32_t *rx_lanes)
+{
+  uint32_t ce_cycles;
+  int ret;
+
+  g_p2_psram_wire.operation = operation;
+  g_p2_psram_wire.address = address;
+  g_p2_psram_wire.tx_lanes = tx_lanes;
+  g_p2_psram_wire.rx_lanes = 0;
+  g_p2_psram_wire.status = -EINPROGRESS;
+  g_p2_psram_wire.ce_cycles = 0;
+  p2_psram_compiler_barrier();
+
+  p2_psram_timing_leaf();
+
+  p2_psram_compiler_barrier();
+  if (!p2_psram_stack_valid())
+    {
+      return -EOVERFLOW;
+    }
+
+  ret = g_p2_psram_wire.status;
+  ce_cycles = g_p2_psram_wire.ce_cycles;
+  if (__p2_xmem_psram_record_ce_cycles(ce_cycles) < 0)
+    {
+      return -EIO;
+    }
+
   if (ret >= 0 && rx_lanes != NULL)
     {
       *rx_lanes = g_p2_psram_wire.rx_lanes;
     }
 
   return ret;
+}
+
+static int p2_psram_wire_operation(uint32_t operation, uint32_t address,
+                                   uint32_t tx_lanes,
+                                   FAR uint32_t *rx_lanes)
+{
+  return __p2_xmem_psram_wire_execute(operation, address, tx_lanes,
+                                      rx_lanes);
 }
 
 static int p2_psram_read_word(uint32_t chip_address, uint8_t bytes[4])
@@ -566,7 +844,7 @@ static int p2_psram_read_word(uint32_t chip_address, uint8_t bytes[4])
                                 chip_address, 0, &lanes);
   if (ret >= 0)
     {
-      p2_psram_unpack_lanes(lanes, bytes);
+      p2_psram_unpack_stream_word(lanes, bytes);
     }
 
   return ret;
@@ -577,7 +855,7 @@ static int p2_psram_write_word(uint32_t chip_address,
 {
   return p2_psram_wire_operation(P2_PSRAM_WIRE_WRITE_WORD,
                                  chip_address,
-                                 p2_psram_pack_lanes(bytes), NULL);
+                                 p2_psram_pack_stream_word(bytes), NULL);
 }
 
 static bool p2_psram_cancelled(uint32_t sequence)
@@ -586,14 +864,34 @@ static bool p2_psram_cancelled(uint32_t sequence)
 
   /* cancel_sequence is one aligned volatile Hub long.  P2 Hub longs are
    * coherent between cogs, so the worker can sample cancellation without
-   * contending for the descriptor lock once per four-byte wire word.  The
-   * NuttX cog still publishes and clears the value under that lock.
+   * contending for the descriptor lock between bounded transfers.  The
+   * NuttX cog still publishes and clears the value under that lock.  One
+   * aligned stream request finishes in well under the cancellation grace
+   * period; a wedged streamer is handled by the existing service-cog stop.
    */
 
   p2_psram_compiler_barrier();
   cancelled = g_p2_psram.cancel_sequence == sequence;
   p2_psram_compiler_barrier();
   return cancelled;
+}
+
+static noinline_function void __p2_xmem_psram_hub_copy(
+  FAR uint8_t *destination, FAR const uint8_t *source,
+  unsigned int count)
+{
+  unsigned int index;
+
+  /* Both buffers are service-cog Hub objects: one is its guarded stack and
+   * the other was bounded against BOARD_P2_HUB_USABLE_END before submission.
+   * Do not call libc memcpy here; its generic pointer body is unified-lowered
+   * and would re-enter the xmem ABI once per byte from the service cog.
+   */
+
+  for (index = 0; index < count; index++)
+    {
+      destination[index] = source[index];
+    }
 }
 
 static int p2_psram_execute(FAR const struct p2_psram_worker_request_s *req)
@@ -603,6 +901,12 @@ static int p2_psram_execute(FAR const struct p2_psram_worker_request_s *req)
   uint32_t address = req->address;
   uint32_t remaining = req->length;
   int ret;
+
+  if (req->operation != P2_PSRAM_OPERATION_READ &&
+      req->operation != P2_PSRAM_OPERATION_WRITE)
+    {
+      return -EINVAL;
+    }
 
   while (remaining > 0)
     {
@@ -625,6 +929,46 @@ static int p2_psram_execute(FAR const struct p2_psram_worker_request_s *req)
           return -ECANCELED;
         }
 
+      /* Aligned bulk traffic runs from LUT through the P2 streamer and Hub
+       * FIFO.  The LUT engine splits this request at every 32-byte per-chip
+       * wrap boundary, keeping every 90-MHz command within both the selected
+       * APS6404L wrapped mode and tCEM.  Retain the 5-MHz scalar timing leaf
+       * for unaligned and short edges.
+       */
+
+      if (((address | (uintptr_t)buffer) & UINT32_C(3)) == 0 &&
+          remaining >= P2_PSRAM_STREAM_MIN_BYTES)
+        {
+          uint32_t stream_bytes = remaining & ~UINT32_C(3);
+
+          g_p2_psram_wire.ce_cycles = 0;
+          p2_psram_compiler_barrier();
+          ret = p2_psram_stream_transfer(req->operation, address, buffer,
+                                         stream_bytes);
+          p2_psram_compiler_barrier();
+
+          if (!p2_psram_stack_valid())
+            {
+              return -EOVERFLOW;
+            }
+
+          if (ret < 0)
+            {
+              return ret;
+            }
+
+          if (__p2_xmem_psram_record_ce_cycles(
+                g_p2_psram_wire.ce_cycles) < 0)
+            {
+              return -EIO;
+            }
+
+          address += stream_bytes;
+          buffer += stream_bytes;
+          remaining -= stream_bytes;
+          continue;
+        }
+
       if (req->operation == P2_PSRAM_OPERATION_READ ||
           first != 0 || count != sizeof(word))
         {
@@ -637,22 +981,17 @@ static int p2_psram_execute(FAR const struct p2_psram_worker_request_s *req)
 
       if (req->operation == P2_PSRAM_OPERATION_READ)
         {
-          memcpy(buffer, &word[first], count);
+          __p2_xmem_psram_hub_copy(buffer, &word[first], count);
         }
       else if (req->operation == P2_PSRAM_OPERATION_WRITE)
         {
-          memcpy(&word[first], buffer, count);
+          __p2_xmem_psram_hub_copy(&word[first], buffer, count);
           ret = p2_psram_write_word(p2_psram_chip_address(aligned), word);
           if (ret < 0)
             {
               return ret;
             }
         }
-      else
-        {
-          return -EINVAL;
-        }
-
       address += count;
       buffer += count;
       remaining -= count;
@@ -675,6 +1014,11 @@ static bool p2_psram_take_request(
       worker->address = request->external_address;
       worker->buffer = (FAR uint8_t *)request->hub_buffer;
       worker->length = request->length;
+#ifdef CONFIG_P2_EC32MB_PSRAM_FAULT_INJECT_TIMEOUT
+      worker->inject_timeout_stall =
+        g_p2_psram.inject_timeout_stall != 0;
+      g_p2_psram.inject_timeout_stall = 0;
+#endif
       request->completion = P2_PSRAM_COMPLETION_ACTIVE;
       available = true;
 #ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK
@@ -914,11 +1258,17 @@ static off_t p2_psram_seek(FAR struct file *filep, off_t offset, int whence)
  * Public Functions
  ****************************************************************************/
 
-void p2_psram_service_worker(void)
+void __p2_xmem_psram_service_worker(void)
 {
   struct p2_psram_worker_request_s request;
   bool start_allowed;
   int ret;
+
+  /* This touches only this cog's LUT and its guarded Hub stack, so it can be
+   * installed while the parent cog is still transferring pin ownership.
+   */
+
+  p2_psram_stream_install();
 
   /* The NuttX cog owns and configures the pin claims before COGINIT, then
    * transfers them to this exact cog ID.  Do not touch either the pins or
@@ -975,7 +1325,29 @@ void p2_psram_service_worker(void)
           break;
         }
 
-      ret = p2_psram_execute(&request);
+#ifdef CONFIG_P2_EC32MB_PSRAM_FAULT_INJECT_TIMEOUT
+      if (request.inject_timeout_stall)
+        {
+          /* This dedicated HIL fault leaves hardware_lock and the PSRAM bus
+           * available.  Stall exactly this accepted request until the
+           * ordinary p2_psram_wait() deadline publishes cancellation, then
+           * complete cooperatively.  Normal requests and all normal timeout
+           * and grace-period decisions remain on their production paths.
+           */
+
+          while (!p2_psram_cancelled(request.sequence))
+            {
+              __asm__ __volatile__("waitx #200");
+            }
+
+          ret = -ECANCELED;
+        }
+      else
+#endif
+        {
+          ret = p2_psram_execute(&request);
+        }
+
       if (ret == -EIO)
         {
           int recover = p2_psram_wire_operation(P2_PSRAM_WIRE_RECOVER,
@@ -1044,6 +1416,12 @@ int p2_psram_initialize(void)
   g_p2_psram.max_ce_cycles = 0;
   g_p2_psram.start_allowed = 0;
   g_p2_psram.next_sequence = 0;
+#ifdef CONFIG_P2_EC32MB_PSRAM_FAULT_INJECT_TIMEOUT
+  g_p2_psram.inject_timeout_stall = 0;
+#endif
+#ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
+  __p2_xmem_psram_cache_reset();
+#endif
 #ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK
   g_p2_psram.inject_raw_lock_stall = 0;
 #endif
@@ -1169,6 +1547,52 @@ out_unlock:
   return ret;
 }
 
+#ifdef CONFIG_P2_EC32MB_PSRAM_FAULT_INJECT_TIMEOUT
+int p2_psram_arm_timeout_stall(void)
+{
+  irqstate_t flags;
+  int ret;
+
+  ret = nxmutex_lock(&g_p2_psram.mutex);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (!g_p2_psram.registered || g_p2_psram.failed)
+    {
+      ret = -ENODEV;
+    }
+  else
+    {
+      flags = p2_psram_task_lock();
+      if (g_p2_psram.ready != 1)
+        {
+          ret = -ENODEV;
+        }
+      else if (g_p2_psram.inject_timeout_stall != 0)
+        {
+          ret = -EBUSY;
+        }
+      else
+        {
+          /* p2_psram_take_request() consumes this flag only while accepting
+           * a valid submitted descriptor, so validation failures cannot
+           * accidentally qualify the timeout path.
+           */
+
+          g_p2_psram.inject_timeout_stall = 1;
+          ret = 0;
+        }
+
+      p2_psram_task_unlock(flags);
+    }
+
+  nxmutex_unlock(&g_p2_psram.mutex);
+  return ret;
+}
+#endif
+
 #ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED
 #  ifdef CONFIG_P2_EC32MB_PSRAM_UNIFIED_FAULT_INJECT_RAW_LOCK
 int p2_psram_unified_arm_raw_lock_stall(void)
@@ -1184,6 +1608,11 @@ int p2_psram_unified_arm_raw_lock_stall(void)
     }
   else
     {
+      /* The injected request must reach the service lock instead of being
+       * satisfied by an existing clean scalar-cache line.
+       */
+
+      __p2_xmem_psram_cache_invalidate_all();
       g_p2_psram.inject_raw_lock_stall = 1;
     }
 
@@ -1197,10 +1626,15 @@ int p2_psram_unified_transfer(enum p2_psram_operation_e operation,
                               FAR void *hub_buffer, uint32_t length)
 {
   FAR struct p2_psram_request_s *request = &g_p2_psram.request;
+  FAR void *caller_buffer = hub_buffer;
+  uint32_t caller_address = external_address;
+  uint32_t caller_length = length;
   uint32_t grace_deadline = 0;
   uint32_t sequence;
   uint32_t deadline;
   irqstate_t flags;
+  int cache_index = -1;
+  bool cache_fill = false;
   bool timed_out = false;
   int status;
 
@@ -1238,21 +1672,66 @@ int p2_psram_unified_transfer(enum p2_psram_operation_e operation,
       return -ENODEV;
     }
 
+  /* Cache only the scalar shapes generated by the unified-memory ABI.  A
+   * miss invalidates its victim before the service cog writes the line and
+   * publishes the nonzero tag only after a confirmed, non-timeout read.
+   * Cross-line and bulk reads retain the original direct-transfer behavior.
+   */
+
+  if (operation == P2_PSRAM_OPERATION_READ)
+    {
+      if (p2_psram_cacheable_read(external_address, length))
+        {
+          if (__p2_xmem_psram_cache_try_read(external_address, hub_buffer,
+                                             length))
+            {
+              up_irq_restore(flags);
+              return 0;
+            }
+
+          cache_index = (int)__p2_xmem_psram_cache_prepare_fill(
+            external_address);
+          external_address = p2_psram_cache_line_address(external_address);
+          hub_buffer = __p2_xmem_psram_cache_fill_buffer(
+            (unsigned int)cache_index);
+          length = P2_PSRAM_CACHE_LINE_SIZE;
+          cache_fill = true;
+        }
+      else
+        {
+          __p2_xmem_psram_cache_count_bypass();
+        }
+    }
+
   sequence = p2_psram_next_sequence();
   deadline = p2_psram_counter() + P2_PSRAM_UNIFIED_TIMEOUT_CYCLES;
   while (!p2_psram_raw_trylock())
     {
       if ((int32_t)(p2_psram_counter() - deadline) >= 0)
         {
+          __p2_xmem_timeout_trace();
           p2_psram_stop_failed_cog();
           up_irq_restore(flags);
           return -ETIMEDOUT;
         }
+
     }
 
   if (request->completion == P2_PSRAM_COMPLETION_SUBMITTED ||
       request->completion == P2_PSRAM_COMPLETION_ACTIVE)
     {
+      if (request->operation == P2_PSRAM_OPERATION_WRITE &&
+          p2_psram_range_valid(request->external_address, request->length))
+        {
+          /* A pre-existing write may already have changed PSRAM.  Its final
+           * status is unknown here, so retaining overlapping clean lines
+           * would be unsafe.
+           */
+
+          __p2_xmem_psram_cache_invalidate_write(
+            request->external_address, request->length);
+        }
+
       p2_psram_raw_unlock();
       up_irq_restore(flags);
       return -EBUSY;
@@ -1299,6 +1778,37 @@ int p2_psram_unified_transfer(enum p2_psram_operation_e operation,
 
       if (complete)
         {
+          if (operation == P2_PSRAM_OPERATION_WRITE)
+            {
+              if (status >= 0)
+                {
+                  /* A late completion still changed physical memory even
+                   * though this caller reports ETIMEDOUT.  Update every
+                   * overlapping clean line before exposing that result.
+                   */
+
+                  __p2_xmem_psram_cache_record_write(caller_address,
+                                                      caller_buffer,
+                                                      caller_length);
+                }
+              else
+                {
+                  /* Wire failures and cancellation can occur after a
+                   * partial write.  Invalidation is the only coherent
+                   * outcome when success was not confirmed.
+                   */
+
+                  __p2_xmem_psram_cache_invalidate_write(caller_address,
+                                                          caller_length);
+                }
+            }
+          else if (cache_fill && status >= 0 && !timed_out)
+            {
+              __p2_xmem_psram_cache_publish_fill(
+                (unsigned int)cache_index, caller_address, caller_buffer,
+                caller_length);
+            }
+
           up_irq_restore(flags);
           return timed_out ? -ETIMEDOUT : status;
         }
@@ -1320,11 +1830,71 @@ int p2_psram_unified_transfer(enum p2_psram_operation_e operation,
            * before returning so it cannot complete into a dead stack frame.
            */
 
+          if (operation == P2_PSRAM_OPERATION_WRITE)
+            {
+              __p2_xmem_psram_cache_invalidate_write(caller_address,
+                                                      caller_length);
+            }
+
+          __p2_xmem_timeout_trace();
           p2_psram_stop_failed_cog();
           up_irq_restore(flags);
           return -ETIMEDOUT;
         }
+
     }
+}
+
+int p2_psram_get_cache_stats(FAR struct p2_psram_cache_stats_s *stats)
+{
+  struct p2_psram_cache_stats_s snapshot;
+  uint32_t external_address;
+  irqstate_t flags;
+  bool tagged;
+  int ret = 0;
+
+  if (stats == NULL)
+    {
+      return -EINVAL;
+    }
+
+  external_address = (uint32_t)(uintptr_t)stats - P2_PSRAM_UNIFIED_BASE;
+  tagged = external_address < P2_PSRAM_UNIFIED_SIZE;
+
+  /* Snapshot while the NuttX cog cannot modify the counters.  A Hub
+   * destination can be populated directly by the native runtime boundary.
+   * For a tagged destination, stage in this Hub stack object and perform one
+   * explicit write only after IRQ exclusion is released.  Do not use an
+   * aggregate C assignment here: p2llvm lowers it to the canonical bulk-copy
+   * entry, which makes this service-introspection path recursively enter the
+   * unified-memory ABI.
+   */
+
+  flags = up_irq_save();
+  if (!g_p2_psram.registered || g_p2_psram.failed ||
+      g_p2_psram.ready != 1)
+    {
+      ret = -ENODEV;
+    }
+  else
+    {
+      __p2_xmem_psram_cache_snapshot(tagged ? &snapshot : stats);
+    }
+
+  up_irq_restore(flags);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (tagged)
+    {
+      return p2_psram_unified_transfer(
+        P2_PSRAM_OPERATION_WRITE, external_address, &snapshot,
+        sizeof(snapshot));
+    }
+
+  return 0;
 }
 #endif
 
@@ -1358,6 +1928,7 @@ int p2_psram_get_geometry(FAR struct p2_psram_geometry_s *geometry)
   snapshot.natural_word_bytes = P2_PSRAM_NATURAL_WORD_BYTES;
   snapshot.max_request_bytes = CONFIG_P2_EC32MB_PSRAM_MAX_REQUEST;
   snapshot.qpi_clock_hz = P2_PSRAM_QPI_CLOCK_HZ;
+  snapshot.bulk_qpi_clock_hz = P2_PSRAM_STREAM_QPI_CLOCK_HZ;
   snapshot.ce_low_limit_cycles = P2_PSRAM_CE_LOW_LIMIT_CYCLES;
   snapshot.max_ce_low_cycles = g_p2_psram.max_ce_cycles;
   snapshot.service_cog = g_p2_psram.service_cog;

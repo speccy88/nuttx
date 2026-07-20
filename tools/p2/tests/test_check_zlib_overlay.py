@@ -77,7 +77,13 @@ class CheckZlibOverlayTests(unittest.TestCase):
                 "-mllvm",
                 "-p2-hub-overlays-all",
                 "-mllvm",
-                "-p2-hub-overlay-auto-groups=4",
+                "-p2-hub-overlay-link-assigned",
+                "-mllvm",
+                f"-p2-hub-overlay-source-root={self.work}",
+                "-mllvm",
+                "-p2-hub-overlay-source-namespace=zlib-test",
+                "-mllvm",
+                "-p2-hub-overlay-source-variant=v1",
                 "-mllvm",
                 "-p2-hub-overlay-slot-address=0x66000",
                 "-mllvm",
@@ -110,8 +116,14 @@ class CheckZlibOverlayTests(unittest.TestCase):
             name
             for name in sizes
             if name.startswith(".p2.overlay.body.")
+            or name.startswith(".p2.overlay.auto.")
         ]
         self.assertEqual(len(bodies), 1, sizes)
+        self.assertRegex(
+            bodies[0],
+            r"^\.p2\.overlay\.auto\."
+            r"[0-9a-f]{64}\.[0-9a-f]{8}\.[0-9a-f]{64}$",
+        )
         self.assertIn(".p2.overlay.stubs", sizes)
         self.assertIn(".p2.xdata.ro.overlay.entries", sizes)
         return object_path, bodies[0], sizes
@@ -302,6 +314,25 @@ class CheckZlibOverlayTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not an exact overlay body or stub section", result.stderr)
         self.assertIn(malformed, result.stderr)
+
+    def test_rejects_missing_entry_despite_valid_auto_body(self) -> None:
+        object_path, body, sizes = self._good_object()
+        entry_section = ".p2.xdata.ro.overlay.entries"
+        renamed_entry = ".p2.xdata.ro.overlay.entryzz"
+        data = object_path.read_bytes()
+        self.assertEqual(len(entry_section), len(renamed_entry))
+        self.assertIn(entry_section.encode(), data)
+        object_path.write_bytes(
+            data.replace(entry_section.encode(), renamed_entry.encode(), 1)
+        )
+        archive = self._archive(object_path)
+        result = self._run(archive, self._map_text(archive, body, sizes))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("overlay entry bytes 0 do not match", result.stderr)
+        self.assertIn(
+            "overlay symbol cardinality differs: bodies=1, stubs=1, entries=0",
+            result.stderr,
+        )
 
     def test_rejects_body_outside_passed_slot(self) -> None:
         archive, body, sizes = self._fixture()

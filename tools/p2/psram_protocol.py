@@ -15,13 +15,19 @@ PSRAM_PROGRESS_STEP = 4 * 1024 * 1024
 PSRAM_CE_LIMIT_CYCLES = 1440
 PSRAM_MAX_REQUEST = 64 * 1024
 PSRAM_QPI_CLOCK_HZ = 5_000_000
+PSRAM_BULK_QPI_CLOCK_HZ = 90_000_000
 PSRAM_TICK_USEC = 10_000
 PSRAM_DEFAULT_TIMEOUT_TICKS = 500
 PSRAM_CANCEL_GRACE_TICKS = 100
 PSRAM_RANDOM_COUNT = 1024
+PSRAM_CONCURRENT_REQUESTS = 64
+PSRAM_CONCURRENT_BYTES = PSRAM_CONCURRENT_REQUESTS * (32 * 1024)
+PSRAM_COUNTER_HZ = 180_000_000
+PSRAM_CONCURRENT_MAX_CYCLES = 5 * PSRAM_COUNTER_HZ
+PSRAM_WORK_RATE_SHIFT = 20
 PSRAM_TIMEOUT_BYTES = 32 * 1024
 PSRAM_TIMEOUT_DEADLINE_TICKS = 1
-PSRAM_TIMEOUT_MIN_WIRE_USEC = 24_576
+PSRAM_TIMEOUT_FAULT = "COOPERATIVE_STALL"
 PSRAM_FNV_OFFSET = 2166136261
 PSRAM_FNV_PRIME = 16777619
 
@@ -128,7 +134,7 @@ def marker_patterns(sequence: str) -> Tuple[Tuple[str, re.Pattern], ...]:
             "P2PSRAM exact profile",
             _line(
                 r"P2PSRAM:PROFILE:MAX_REQUEST=65536:QPI_HZ=5000000:"
-                r"TICK_USEC=10000:TIMEOUT_TICKS=500:"
+                r"BULK_QPI_HZ=90000000:TICK_USEC=10000:TIMEOUT_TICKS=500:"
                 r"CANCEL_GRACE_TICKS=100"
             ),
         ),
@@ -152,7 +158,9 @@ def marker_patterns(sequence: str) -> Tuple[Tuple[str, re.Pattern], ...]:
         (
             "P2PSRAM concurrent workload",
             _line(
-                r"P2PSRAM:CONCURRENT:PASS:WORK=[0-9]+:ELAPSED_TICKS=[0-9]+:"
+                r"P2PSRAM:CONCURRENT:PASS:REQUESTS=64:BYTES=2097152:"
+                r"WORK=[0-9]+:ELAPSED_CYCLES=[0-9]+:BASELINE_WORK=[0-9]+:"
+                r"BASELINE_CYCLES=[0-9]+:COUNTER_HZ=180000000:"
                 r"CPU_AVAILABLE_PERMILLE=[0-9]+:CPU_OCCUPANCY_PERMILLE=[0-9]+"
             ),
         ),
@@ -160,7 +168,7 @@ def marker_patterns(sequence: str) -> Tuple[Tuple[str, re.Pattern], ...]:
             "P2PSRAM timeout",
             _line(
                 r"P2PSRAM:TIMEOUT:PASS:RESULT=110:BYTES=32768:"
-                r"DEADLINE_TICKS=1:MIN_WIRE_USEC=24576:TICK_USEC=10000"
+                r"DEADLINE_TICKS=1:FAULT=COOPERATIVE_STALL:TICK_USEC=10000"
             ),
         ),
         ("P2PSRAM recovery", _line(r"P2PSRAM:RECOVERY:PASS")),
@@ -196,7 +204,7 @@ def parse_psram(text: str, sequence: str) -> Dict[str, object]:
     sequence = normalize_sequence(sequence)
     errors: List[str] = []
     positions: List[int] = []
-    values: Dict[str, int] = {}
+    values: Dict[str, object] = {}
     matches = {}
 
     for label, pattern in marker_patterns(sequence):
@@ -244,7 +252,8 @@ def parse_psram(text: str, sequence: str) -> Dict[str, object]:
             errors.append("PSRAM maximum request does not match the locked profile")
 
     profile = re.search(
-        r"P2PSRAM:PROFILE:MAX_REQUEST=(\d+):QPI_HZ=(\d+):TICK_USEC=(\d+):"
+        r"P2PSRAM:PROFILE:MAX_REQUEST=(\d+):QPI_HZ=(\d+):"
+        r"BULK_QPI_HZ=(\d+):TICK_USEC=(\d+):"
         r"TIMEOUT_TICKS=(\d+):CANCEL_GRACE_TICKS=(\d+)",
         run_text,
     )
@@ -252,6 +261,7 @@ def parse_psram(text: str, sequence: str) -> Dict[str, object]:
         profile_keys = (
             "profile_max_request",
             "qpi_hz",
+            "bulk_qpi_hz",
             "tick_usec",
             "timeout_ticks",
             "cancel_grace_ticks",
@@ -262,6 +272,7 @@ def parse_psram(text: str, sequence: str) -> Dict[str, object]:
         profile_expected = (
             PSRAM_MAX_REQUEST,
             PSRAM_QPI_CLOCK_HZ,
+            PSRAM_BULK_QPI_CLOCK_HZ,
             PSRAM_TICK_USEC,
             PSRAM_DEFAULT_TIMEOUT_TICKS,
             PSRAM_CANCEL_GRACE_TICKS,
@@ -286,19 +297,50 @@ def parse_psram(text: str, sequence: str) -> Dict[str, object]:
             errors.append("throughput must be measured and nonzero")
 
     concurrent = re.search(
-        r"P2PSRAM:CONCURRENT:PASS:WORK=(\d+):ELAPSED_TICKS=(\d+):"
+        r"P2PSRAM:CONCURRENT:PASS:REQUESTS=(\d+):BYTES=(\d+):WORK=(\d+):"
+        r"ELAPSED_CYCLES=(\d+):BASELINE_WORK=(\d+):"
+        r"BASELINE_CYCLES=(\d+):COUNTER_HZ=(\d+):"
         r"CPU_AVAILABLE_PERMILLE=(\d+):CPU_OCCUPANCY_PERMILLE=(\d+)",
         run_text,
     )
     if concurrent is not None:
         (
+            values["concurrent_requests"],
+            values["concurrent_bytes"],
             values["concurrent_work"],
-            values["concurrent_ticks"],
+            values["concurrent_cycles"],
+            values["baseline_work"],
+            values["baseline_cycles"],
+            values["counter_hz"],
             values["cpu_available_permille"],
             values["cpu_occupancy_permille"],
         ) = (int(value) for value in concurrent.groups())
-        if values["concurrent_work"] == 0 or values["concurrent_ticks"] == 0:
-            errors.append("concurrent kernel workload made no progress")
+        if (
+            values["concurrent_requests"] != PSRAM_CONCURRENT_REQUESTS
+            or values["concurrent_bytes"] != PSRAM_CONCURRENT_BYTES
+            or values["counter_hz"] != PSRAM_COUNTER_HZ
+        ):
+            errors.append("concurrent workload does not match the locked batch")
+        if (
+            values["concurrent_work"] == 0
+            or values["baseline_work"] == 0
+            or not 0 < values["concurrent_cycles"] <= PSRAM_CONCURRENT_MAX_CYCLES
+            or not 0 < values["baseline_cycles"] <= PSRAM_CONCURRENT_MAX_CYCLES
+        ):
+            errors.append("concurrent high-resolution workload evidence is invalid")
+        service_rate = (
+            values["concurrent_work"] << PSRAM_WORK_RATE_SHIFT
+        ) // max(values["concurrent_cycles"], 1)
+        baseline_rate = (
+            values["baseline_work"] << PSRAM_WORK_RATE_SHIFT
+        ) // max(values["baseline_cycles"], 1)
+        expected_available = (
+            min(1000, service_rate * 1000 // baseline_rate)
+            if service_rate > 0 and baseline_rate > 0
+            else 0
+        )
+        if values["cpu_available_permille"] != expected_available:
+            errors.append("CPU availability does not match the measured work rates")
         if (
             not 0 < values["cpu_available_permille"] <= 1000
             or values["cpu_available_permille"]
@@ -381,7 +423,7 @@ def parse_psram(text: str, sequence: str) -> Dict[str, object]:
 
     timeout = re.search(
         r"P2PSRAM:TIMEOUT:PASS:RESULT=(\d+):BYTES=(\d+):"
-        r"DEADLINE_TICKS=(\d+):MIN_WIRE_USEC=(\d+):TICK_USEC=(\d+)",
+        r"DEADLINE_TICKS=(\d+):FAULT=([A-Z_]+):TICK_USEC=(\d+)",
         run_text,
     )
     if timeout is not None:
@@ -389,21 +431,33 @@ def parse_psram(text: str, sequence: str) -> Dict[str, object]:
             "timeout_errno",
             "timeout_bytes",
             "timeout_deadline_ticks",
-            "timeout_min_wire_usec",
+            "timeout_fault",
             "timeout_tick_usec",
         )
+        groups = timeout.groups()
         values.update(
-            zip(timeout_keys, (int(value) for value in timeout.groups()))
+            zip(
+                timeout_keys,
+                (
+                    int(groups[0]),
+                    int(groups[1]),
+                    int(groups[2]),
+                    groups[3],
+                    int(groups[4]),
+                ),
+            )
         )
         timeout_expected = (
             PSRAM_TIMEOUT_ERRNO,
             PSRAM_TIMEOUT_BYTES,
             PSRAM_TIMEOUT_DEADLINE_TICKS,
-            PSRAM_TIMEOUT_MIN_WIRE_USEC,
+            PSRAM_TIMEOUT_FAULT,
             PSRAM_TICK_USEC,
         )
         if tuple(values[key] for key in timeout_keys) != timeout_expected:
-            errors.append("PSRAM timeout evidence does not prove the physical bound")
+            errors.append(
+                "PSRAM timeout evidence does not prove the forced worker stall"
+            )
 
     return {
         "complete": not errors,

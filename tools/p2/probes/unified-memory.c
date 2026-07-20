@@ -135,3 +135,17 @@ p2_probe_hub_stack_roundtrip(p2_probe_u32_t value)
   volatile p2_probe_u32_t slot = value;
   return slot;
 }
+
+/* Runtime functions carrying the __p2_xmem_ prefix are trusted recursion
+ * boundaries.  Their pointer contracts are checked by the runtime itself,
+ * so the compiler must leave these accesses native at every optimization
+ * level even though this probe's pointer has unknown provenance.
+ */
+
+P2_PROBE_NOINLINE p2_probe_u32_t
+__p2_xmem_probe_hub_roundtrip(volatile p2_probe_u32_t *pointer,
+                              p2_probe_u32_t value)
+{
+  *pointer = value;
+  return *pointer;
+}

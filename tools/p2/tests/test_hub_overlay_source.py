@@ -96,15 +96,17 @@ class HubOverlaySourceTest(unittest.TestCase):
         self.assertIn("struct p2_overlay_entry_s", header)
         self.assertIn("struct p2_overlay_group_s", header)
         self.assertIn("p2_overlay_install_groups", header)
+        self.assertIn("p2_overlay_get_group", header)
         self.assertIn("p2_overlay_relocate_groups", header)
         self.assertIn("p2_overlay_register_loader", header)
         self.assertIn("descriptor->source += tagged_base", runtime)
         self.assertIn("g_p2_overlay_relocated = true", runtime)
         self.assertIn("p2_overlay_validate_tables()", runtime)
         self.assertIn("descriptor->image_crc32", runtime)
-        self.assertIn("P2_OVERLAY_CRC_POLYNOMIAL", runtime)
+        self.assertIn("p2_hub_crc32_update", runtime)
         self.assertIn("resident[index] = groups[index]", runtime)
         self.assertIn("resident[index].source += tagged_base", runtime)
+        self.assertIn("*descriptor = __p2_overlay_groups_start[group]", runtime)
         self.assertIn("P2_OVERLAY_ENTRY_CACHE_LINES  16u", runtime)
         self.assertIn("__p2_xmem_load64", runtime)
         self.assertIn("g_p2_overlay_entries_valid = true", runtime)
@@ -157,6 +159,14 @@ class HubOverlaySourceTest(unittest.TestCase):
         self.assertLess(load_call, fatal)
         self.assertLess(fatal, publish)
 
+    def test_group_crc_uses_resident_hub_acceleration(self) -> None:
+        runtime = RUNTIME.read_text()
+        self.assertIn("#include <arch/hub_crc32.h>", runtime)
+        self.assertIn(
+            "p2_hub_crc32_update(UINT32_C(0xffffffff), data, size)", runtime
+        )
+        self.assertNotIn("P2_OVERLAY_CRC_POLYNOMIAL", runtime)
+
     def test_veneer_preserves_return_pair_and_uses_shadow_resume(self) -> None:
         veneer = VENEER.read_text()
 
@@ -177,6 +187,10 @@ class HubOverlaySourceTest(unittest.TestCase):
         arch_make = ARCH_MAKE.read_text()
 
         self.assertIn("__p2_overlay_config_slot_size", board_defs)
+        self.assertIn(
+            "__p2_overlay_group_workspace_count=$(CONFIG_P2_HUB_OVERLAY_GROUP_COUNT)",
+            board_defs,
+        )
         self.assertIn("__p2_kernel_heap_configured=1", board_defs)
         self.assertIn("__p2_kernel_heap_config_size=$(CONFIG_MM_KERNEL_HEAPSIZE)", board_defs)
         self.assertIn(".p2.overlay.stubs", linker)
@@ -198,9 +212,19 @@ class HubOverlaySourceTest(unittest.TestCase):
         self.assertIn("__p2_overlay_entries_end", xdata)
         self.assertIn("_eheap == __p2_overlay_slot_start", linker)
         self.assertIn(
-            "__p2_kernel_heap_config_size + 15 < (_eheap - _sheap)",
+            "(__p2_overlay_group_workspace_count + 1) * 16",
             linker,
         )
+        self.assertIn(
+            "P2 overlay slot cannot stage configured Python group workspace",
+            linker,
+        )
+        self.assertIn(
+            "__p2_kernel_heap_config_size + 15 +",
+            linker,
+        )
+        self.assertIn("__p2_initial_user_heap_min_size", linker)
+        self.assertIn("less than 1024 bytes for the initial Hub user heap", linker)
         self.assertRegex(
             linker,
             re.escape("__p2_overlay_entries_end - __p2_overlay_entries_start")
@@ -569,6 +593,7 @@ class HubOverlaySourceTest(unittest.TestCase):
         self.assertEqual(undefined.count("__p2_xmem_load64"), 1)
         self.assertNotIn("__p2_xmem_memcpy", undefined)
         self.assertRegex(symbols, r"\b000000c0\s+[bB]\s+g_p2_overlay_entry_cache\b")
+        self.assertRegex(symbols, r"\b00000100\s+[bB]\s+g_p2_overlay_hot\b")
 
 
 if __name__ == "__main__":

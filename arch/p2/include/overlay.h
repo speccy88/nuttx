@@ -29,6 +29,7 @@
 
 #include <nuttx/config.h>
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -57,6 +58,7 @@
 #define P2_OVERLAY_STUB_BYTES                  UINT32_C(4)
 #define P2_OVERLAY_ENTRY_BYTES                 UINT32_C(8)
 #define P2_OVERLAY_GROUP_BYTES                 UINT32_C(16)
+#define P2_OVERLAY_HOT_CAPACITY                8u
 
 /* Metadata emitted by the packer must use these exact input sections.  Stub
  * bodies are emitted in assembly because every public function stub must be
@@ -109,6 +111,64 @@ struct p2_overlay_group_s
   uint32_t flags;
 };
 
+/* Resident progress counters for a single-slot overlay domain.  The runtime
+ * snapshots these fields under its dispatcher critical section, so a
+ * resident observer may report progress while the owning task is executing
+ * overlay code.  Counters are diagnostic only and never affect dispatch.
+ */
+
+struct p2_overlay_stats_s
+{
+  uint64_t entry_count;
+  uint64_t exit_count;
+  uint64_t direct_count;
+  uint64_t load_attempt_count;
+  uint64_t load_count;
+  uint64_t load_bytes;
+  uint32_t current_depth;
+  uint32_t maximum_depth;
+  uint32_t loaded_group;
+  uint32_t loading_group;
+  uint32_t loading_bytes;
+  uint32_t last_requested_group;
+  uint32_t last_stub_index;
+  int32_t last_error;
+  bool transition;
+  bool ready;
+};
+
+/* One resident Space-Saving record identifies a non-direct overlay entry.
+ * caller_offset is the CALLA instruction offset relative to caller_group;
+ * group zero uses its absolute Hub address because the Hub origin is zero.
+ * target_stub is the zero-based resident veneer index.  count is the
+ * Space-Saving estimate and error is its maximum overcount, so the observed
+ * frequency is in the inclusive range [count - error, count].
+ */
+
+struct p2_overlay_hot_entry_s
+{
+  uint32_t caller_group;
+  uint32_t caller_offset;
+  uint32_t target_group;
+  uint32_t target_stub;
+  uint64_t count;
+  uint64_t error;
+};
+
+/* Fixed-size coherent copy of the resident top-K table.  Only entries below
+ * used are populated.  total_count counts all valid non-direct cross-group
+ * entries represented by the Space-Saving stream.  The table itself is
+ * exactly 256 bytes and never resides in PSRAM.
+ */
+
+struct p2_overlay_hot_snapshot_s
+{
+  uint64_t total_count;
+  uint32_t used;
+  uint32_t capacity;
+  struct p2_overlay_hot_entry_s entries[P2_OVERLAY_HOT_CAPACITY];
+};
+
 /* The callback must copy exactly image_size bytes from the already-validated
  * tagged source into destination and return zero only after the copy has
  * completed.  The resident runtime independently verifies image_crc32 before
@@ -138,6 +198,25 @@ int p2_overlay_install_groups(
   FAR const struct p2_overlay_group_s *groups, size_t count,
   uintptr_t tagged_base, size_t backing_size);
 
+/* Copy one installed, relocated group descriptor into native Hub memory.
+ * The snapshot remains available while an overlay load transition is active,
+ * allowing a registered loader to validate its callback arguments without
+ * rereading mutable backing-image metadata.  Group zero, an uninstalled
+ * table, and malformed resident metadata are rejected.
+ */
+
+int p2_overlay_get_group(uint32_t group,
+                         FAR struct p2_overlay_group_s *descriptor);
+
+/* Roll back an installed group table before loader publication.  This is the
+ * failure half of the container install transaction: it is accepted only
+ * while no loader, entry table, owner, transition, or executable overlay has
+ * been published.  A successful rollback restores the exact pristine state
+ * required for a later upload attempt.
+ */
+
+int p2_overlay_uninstall_groups(void);
+
 /* Relocate the complete writable group table from packed-image offsets to a
  * tagged PSRAM range.  This is a two-pass operation: no record is changed if
  * any source range or metadata flag is invalid.
@@ -157,6 +236,15 @@ int p2_overlay_register_loader(p2_overlay_loader_t loader, FAR void *arg);
  */
 
 int p2_overlay_last_error(void);
+
+/* Copy one coherent progress snapshot into native Hub memory. */
+
+int p2_overlay_get_stats(FAR struct p2_overlay_stats_s *stats);
+
+/* Copy one coherent top-K transition snapshot into native Hub memory. */
+
+int p2_overlay_get_hot_snapshot(
+  FAR struct p2_overlay_hot_snapshot_s *snapshot);
 
 #endif /* CONFIG_P2_HUB_OVERLAYS */
 #endif /* __ARCH_P2_INCLUDE_OVERLAY_H */

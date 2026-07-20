@@ -29,9 +29,10 @@ LLVM_PROJECT_REF=72a9bb1ef2656d9953d1f41a8196d425ff2ab0b1
 P2LLVM_LOADP2_REF=21e074cc7ee6fbd4fb12ef5352544b3457a6729c
 P2LLVM_PREEMPT_PATCH=$ROOT/tools/p2/patches/p2llvm-preempt-safe-integer.patch
 P2LLVM_UNIFIED_PATCH=$ROOT/tools/p2/patches/p2llvm-unified-memory.patch
+P2LLVM_OVERLAY_PATCH=$ROOT/tools/p2/patches/p2llvm-python-overlays.patch
 P2LLVM_RUNTIME_PATCH=$ROOT/tools/p2/patches/p2llvm-python-runtime.patch
 P2LLVM_RUNTIME_TOOL=$ROOT/tools/p2/p2llvm-runtime.py
-P2LLVM_PATCHES=("$P2LLVM_PREEMPT_PATCH" "$P2LLVM_UNIFIED_PATCH")
+P2LLVM_PATCHES=("$P2LLVM_PREEMPT_PATCH" "$P2LLVM_UNIFIED_PATCH" "$P2LLVM_OVERLAY_PATCH")
 FLEXPROP_REF=858f51c4a24e7ae0f6cbc78f625c731083ad304f
 SPIN2CPP_REF=28f1b80fc3a36422fb0a1f7c54465d808634abc8
 LOADP2_REF=c20afedd4253d09da449fa740f8d4304481fc560
@@ -41,6 +42,19 @@ die()
 {
   echo "ERROR: $*" >&2
   exit 1
+}
+
+parse_p2llvm_compiler_version_commit()
+{
+  local version=$1
+  local revision_re='(^|[^[:xdigit:]])([[:xdigit:]]{40})([^[:xdigit:]]|$)'
+
+  if [[ "$version" =~ $revision_re ]]; then
+    printf '%s\n' "${BASH_REMATCH[2]}"
+    return 0
+  fi
+
+  return 1
 }
 
 need_command()
@@ -243,7 +257,7 @@ p2llvm_tools_valid()
   local tool
 
   for tool in clang clang++ ld.lld llc llvm-ar llvm-nm llvm-objcopy llvm-objdump \
-              llvm-readelf llvm-readobj llvm-size llvm-strip
+              llvm-readelf llvm-readobj llvm-size llvm-strip p2-overlay-link.py
   do
     [[ -x "$P2LLVM_ROOT/bin/$tool" ]] || return 1
   done
@@ -568,6 +582,14 @@ p2llvm_unified_memory_valid()
     --llc "$P2LLVM_ROOT/bin/llc" >/dev/null 2>&1
 }
 
+p2llvm_overlay_codegen_valid()
+{
+  p2llvm_tools_valid || return 1
+  [[ -x "$ROOT/tools/p2/check-hub-overlay-codegen.py" ]] || return 1
+  "$PYTHON" "$ROOT/tools/p2/check-hub-overlay-codegen.py" \
+    --toolchain-root "$P2LLVM_ROOT" >/dev/null 2>&1
+}
+
 p2llvm_valid()
 {
   p2llvm_tools_valid || return 1
@@ -578,6 +600,7 @@ p2llvm_valid()
   p2llvm_conditional_branch_valid || return 1
   p2llvm_compare64_valid || return 1
   p2llvm_unified_memory_valid || return 1
+  p2llvm_overlay_codegen_valid || return 1
   [[ -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]] || return 1
   [[ -f "$P2LLVM_ROOT/libp2/include/propeller2.h" ]] || return 1
 }
@@ -866,19 +889,19 @@ selftest_p2llvm_patch_state()
   else
     apply_p2llvm_patches
     p2llvm_patch_state_valid ||
-      failure="the exact two-patch state was rejected"
+      failure="the exact three-patch state was rejected"
   fi
 
   if [[ -z "$failure" ]]; then
     git -C "$P2LLVM_SRC/llvm-project" apply --unidiff-zero --reverse \
-      "$P2LLVM_UNIFIED_PATCH" || failure="could not create a partial state"
+      "$P2LLVM_OVERLAY_PATCH" || failure="could not create a partial state"
     if [[ -z "$failure" ]] && p2llvm_patch_state_valid; then
-      failure="a source state missing the unified patch was accepted"
+      failure="a source state missing the overlay patch was accepted"
     fi
     if [[ -z "$failure" ]]; then
       apply_p2llvm_patches
       p2llvm_patch_state_valid ||
-        failure="the exact first-patch state did not upgrade safely"
+        failure="the exact two-patch prefix did not upgrade safely"
     fi
   fi
 
@@ -965,7 +988,8 @@ build_p2llvm()
 
   if ! p2llvm_preemption_valid || ! p2llvm_linker_aug20_valid ||
      ! p2llvm_bool_memory_valid || ! p2llvm_conditional_branch_valid ||
-     ! p2llvm_compare64_valid || ! p2llvm_unified_memory_valid;
+     ! p2llvm_compare64_valid || ! p2llvm_unified_memory_valid ||
+     ! p2llvm_overlay_codegen_valid;
   then
     (
       cd "$P2LLVM_SRC"
@@ -990,6 +1014,9 @@ build_p2llvm()
     --clang "$P2LLVM_ROOT/bin/clang" \
     --llc "$P2LLVM_ROOT/bin/llc" ||
     die "p2llvm does not provide the required unified-memory lowering"
+  "$PYTHON" "$ROOT/tools/p2/check-hub-overlay-codegen.py" \
+    --toolchain-root "$P2LLVM_ROOT" ||
+    die "p2llvm does not provide the required Hub-overlay link identity"
 
   if [[ ! -f "$P2LLVM_ROOT/libp2/lib/libp2.a" ]] ||
      ! verify_p2llvm_runtime_archive >/dev/null 2>&1;
@@ -1039,6 +1066,8 @@ write_lock()
   local tmp=$lock.tmp
   local kconfig_pc
   local kconfig_version=unknown
+  local compiler_version
+  local compiler_version_commit
 
   kconfig_pc=$(find "$(dirname "$(dirname "$KCONFIG_CONF")")" \
     -name kconfig-parser.pc -type f -print -quit 2>/dev/null || true)
@@ -1055,17 +1084,24 @@ write_lock()
   verify_p2llvm_runtime_archive ||
     die "refusing to lock an invalid standalone compiler builtins archive"
 
+  compiler_version=$("$P2LLVM_ROOT/bin/clang" --version | head -1) ||
+    die "cannot read the installed clang version for the toolchain lock"
+  compiler_version_commit=$(
+    parse_p2llvm_compiler_version_commit "$compiler_version"
+  ) || die "installed clang version lacks a 40-hex LLVM revision"
+
   mkdir -p "$(dirname "$lock")"
   {
     echo "nuttx_commit=$(git_head "$ROOT")"
     echo "nuttx_apps_commit=$(git_head "$APPS_DIR")"
     echo "p2llvm_commit=$(git_head "$P2LLVM_SRC")"
     echo "p2llvm_llvm_project_commit=$(git_head "$P2LLVM_SRC/llvm-project")"
+    echo "p2llvm_compiler_version_commit=$compiler_version_commit"
     echo "p2llvm_loadp2_commit=$(git_head "$P2LLVM_SRC/loadp2")"
     echo "flexprop_commit=$(git_head "$FLEXPROP_ROOT")"
     echo "spin2cpp_commit=$(git_head "$FLEXPROP_ROOT/spin2cpp")"
     echo "loadp2_commit=$(git_head "$FLEXPROP_ROOT/loadp2")"
-    echo "compiler=$("$P2LLVM_ROOT/bin/clang" --version | head -1)"
+    echo "compiler=$compiler_version"
     echo "linker=$("$P2LLVM_ROOT/bin/ld.lld" --version | head -1)"
     echo "llc=$("$P2LLVM_ROOT/bin/llc" --version | head -1)"
     echo "kconfig_conf=$KCONFIG_CONF"
@@ -1086,11 +1122,14 @@ write_lock()
     echo "p2llvm_preempt_patch=$(basename "$P2LLVM_PREEMPT_PATCH")"
     echo "p2llvm_unified_memory=verified opt-in scalar/bulk lowering and explicit unsupported-operation rejection"
     echo "p2llvm_unified_patch=$(basename "$P2LLVM_UNIFIED_PATCH")"
+    echo "p2llvm_overlay_patch=$(basename "$P2LLVM_OVERLAY_PATCH")"
+    echo "p2llvm_overlay_link_identity=verified stable source identity, duplicate rejection, and end-to-end link contract"
     echo "p2llvm_darwin_cmake=-DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_LIBXML2=OFF -DCMAKE_DISABLE_FIND_PACKAGE_Backtrace:BOOL=TRUE"
     echo "p2_flags=--target=p2 -fno-jump-tables -ffunction-sections -fdata-sections -fno-common -fno-builtin -Os"
     echo "p2_unified_flags=-mllvm -p2-unified-memory"
     shasum -a 256 "$P2LLVM_RUNTIME_PATCH" \
       "$P2LLVM_PREEMPT_PATCH" "$P2LLVM_UNIFIED_PATCH" \
+      "$P2LLVM_OVERLAY_PATCH" \
       "$KCONFIG_CONF" \
       "$P2LLVM_ROOT/bin/clang" \
       "$P2LLVM_ROOT/bin/clang++" \
@@ -1101,6 +1140,7 @@ write_lock()
       "$P2LLVM_ROOT/bin/llvm-readelf" \
       "$P2LLVM_ROOT/bin/llvm-readobj" \
       "$P2LLVM_ROOT/bin/llvm-size" "$P2LLVM_ROOT/bin/llvm-strip" \
+      "$P2LLVM_ROOT/bin/p2-overlay-link.py" \
       "$P2LLVM_ROOT/libp2/lib/libp2.a" \
       "$P2LLVM_ROOT/libp2/lib/libcompiler_builtins.a" \
       "$FLEXPROP_ROOT/bin/flexspin" "$FLEXPROP_ROOT/bin/loadp2" |

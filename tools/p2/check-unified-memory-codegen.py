@@ -63,6 +63,7 @@ HUB_FUNCTIONS = (
     "p2_probe_hub_global_load",
     "p2_probe_hub_global_store",
     "p2_probe_hub_stack_roundtrip",
+    "__p2_xmem_probe_hub_roundtrip",
 )
 PROVENANCE_FUNCTIONS = {
     "p2_probe_integer_derived_tag": "__p2_xmem_load8",
@@ -167,7 +168,11 @@ def verify_enabled_assembly(assembly: str, optimization: str) -> int:
 def verify_disabled_assembly(assembly: str, optimization: str) -> None:
     """Verify that the compiler does not enable the ABI without the flag."""
 
-    helpers = helper_references(assembly)
+    source_runtime_boundaries = {
+        function for function in HUB_FUNCTIONS
+        if function.startswith("__p2_xmem_")
+    }
+    helpers = helper_references(assembly) - source_runtime_boundaries
     if helpers:
         raise CodegenError(
             f"{optimization} default-disabled compile references helpers: "

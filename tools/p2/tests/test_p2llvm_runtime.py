@@ -147,36 +147,85 @@ class P2LLVMRuntimeTests(unittest.TestCase):
             tools.mkdir()
             llvm_ar = tools / "llvm-ar"
             llvm_nm = tools / "llvm-nm"
-            llvm_ar.write_text(
-                "#!/bin/sh\n"
-                "printf '%s\\n' truncdfsf2.c.obj fixdfdi.c.obj floatdidf.c.obj\n",
-                encoding="utf-8",
-            )
-            llvm_nm.write_text(
-                "#!/bin/sh\n"
-                "printf '%s\\n' '00000000 T __truncdfsf2' "
-                "'00000000 T __fixdfdi' '00000000 T __floatdidf'\n",
-                encoding="utf-8",
-            )
-            llvm_ar.chmod(0o755)
-            llvm_nm.chmod(0o755)
+            llvm_readelf = tools / "llvm-readelf"
+
+            def configure_tools(
+                members=RUNTIME.RUNTIME_MEMBERS,
+                symbols=RUNTIME.RUNTIME_SYMBOLS,
+            ):
+                llvm_ar.write_text(
+                    "#!/bin/sh\nprintf '%s\\n' " + " ".join(members) + "\n",
+                    encoding="utf-8",
+                )
+                llvm_nm.write_text(
+                    "#!/bin/sh\nprintf '%s\\n' "
+                    + " ".join(f"'00000000 T {symbol}'" for symbol in symbols)
+                    + "\n",
+                    encoding="utf-8",
+                )
+                llvm_readelf.write_text(
+                    "#!/bin/sh\n"
+                    "printf '%s\\n' "
+                    "'  [ 3] .text.__floatdidf PROGBITS 00000000 000034'\n",
+                    encoding="utf-8",
+                )
+                llvm_ar.chmod(0o755)
+                llvm_nm.chmod(0o755)
+                llvm_readelf.chmod(0o755)
+
+            configure_tools()
 
             verified, size, digest = RUNTIME.verify_archive(root)
             self.assertEqual(verified, archive.resolve())
             self.assertEqual(size, archive.stat().st_size)
             self.assertEqual(digest, hashlib.sha256(archive.read_bytes()).hexdigest())
 
-            llvm_nm.write_text(
-                "#!/bin/sh\n"
-                "printf '%s\\n' '00000000 T __truncdfsf2' "
-                "'00000000 T __fixdfdi'\n",
-                encoding="utf-8",
+            for section in sorted(RUNTIME.FORBIDDEN_RUNTIME_SECTIONS):
+                llvm_readelf.write_text(
+                    "#!/bin/sh\n"
+                    "printf '%s\\n' "
+                    f"'  [ 3] {section} PROGBITS 00000000 000034'\n",
+                    encoding="utf-8",
+                )
+                llvm_readelf.chmod(0o755)
+                with self.assertRaisesRegex(
+                    RUNTIME.ValidationError,
+                    "contains callable LUT sections: "
+                    + section.replace(".", r"\."),
+                ):
+                    RUNTIME.verify_archive(root)
+
+            startup_helpers = (
+                ("__floatdidf", "floatdidf.c.obj"),
+                ("__floatunsidf", "floatunsidf.c.obj"),
+                ("__adddf3", "adddf3.c.obj"),
+                ("__muldf3", "muldf3.c.obj"),
             )
-            llvm_nm.chmod(0o755)
-            with self.assertRaisesRegex(
-                RUNTIME.ValidationError, "does not export __floatdidf"
-            ):
-                RUNTIME.verify_archive(root)
+            for symbol, _ in startup_helpers:
+                configure_tools(
+                    symbols=tuple(
+                        candidate
+                        for candidate in RUNTIME.RUNTIME_SYMBOLS
+                        if candidate != symbol
+                    )
+                )
+                with self.assertRaisesRegex(
+                    RUNTIME.ValidationError, f"does not export {symbol}"
+                ):
+                    RUNTIME.verify_archive(root)
+
+            for _, member in startup_helpers:
+                configure_tools(
+                    members=tuple(
+                        candidate
+                        for candidate in RUNTIME.RUNTIME_MEMBERS
+                        if candidate != member
+                    )
+                )
+                with self.assertRaisesRegex(
+                    RUNTIME.ValidationError, f"lacks members: {member}"
+                ):
+                    RUNTIME.verify_archive(root)
 
     def test_bootstraps_apply_outer_before_nested_and_pin_archive(self):
         for bootstrap in (LOCAL_BOOTSTRAP, CLOUD_BOOTSTRAP):

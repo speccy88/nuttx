@@ -24,12 +24,15 @@ from __future__ import annotations
 import argparse
 import pathlib
 import sys
+from collections.abc import Callable
 
 from elftools.elf.constants import SH_FLAGS
 from elftools.elf.elffile import ELFFile
 
 HUB_LIMIT = 0x7C000
 HUBEXEC_MIN = 0x400
+AMBIGUOUS_LUT_VMA_START = 0x200
+AMBIGUOUS_LUT_VMA_END = HUBEXEC_MIN
 TEXT_START = 0xA00
 P2_ELF_MACHINE = 300
 P2_ENTRY_JMP_COG_0X10 = 0xFD800010
@@ -308,6 +311,251 @@ def direct_calla_targets(code: bytes) -> list[int]:
     return targets
 
 
+def verify_uart_rx_cog_machine_code(
+    worker_address: int, launcher: bytes, worker: bytes
+) -> None:
+    """Verify the fixed ABI guard and cog-addressed UART receive loop."""
+
+    if len(launcher) != 40:
+        fail(
+            "p2_uart_rx_cog_start is not exactly 10 instructions: "
+            f"{len(launcher)} bytes"
+        )
+    if len(worker) not in (152, 160):
+        fail(
+            "p2_uart_rx_cog is neither the fixed 38-long 256-byte-ring "
+            "worker nor the fixed 40-long 1024-byte-ring worker: "
+            f"{len(worker)} bytes"
+        )
+
+    launcher_words = [
+        int.from_bytes(launcher[offset : offset + 4], "little")
+        for offset in range(0, len(launcher), 4)
+    ]
+    fixed_launcher = {
+        0: 0xFD640228,  # SETQ #1
+        1: 0xFC67A161,  # WRLONG r0, PTRA++ (save ABI r0/r1 pair)
+        2: 0xF607A010,  # MOV r0, #COGEXEC_NEW
+        5: 0xFCF3A1D1,  # COGINIT r0, r1 WC
+        6: 0xFD63DE6C,  # WRC r31 (return the launch failure flag)
+        7: 0xFD640228,  # SETQ #1
+        8: 0xFB07A15F,  # RDLONG r0, --PTRA (restore r0/r1)
+        9: 0xFD64002E,  # RETA
+    }
+    for index, expected in fixed_launcher.items():
+        if launcher_words[index] != expected:
+            fail(
+                "p2_uart_rx_cog_start word {} is 0x{:08x}; expected "
+                "0x{:08x}".format(index, launcher_words[index], expected)
+            )
+
+    if launcher_words[4] & ~0x1FF != 0xF607A200:
+        fail("p2_uart_rx_cog_start does not load its worker into r1")
+    if (
+        decode_augmented_source(launcher_words[3], launcher_words[4])
+        != worker_address
+    ):
+        fail("p2_uart_rx_cog_start AUGS/MOV target misses its worker")
+
+    worker_words = [
+        int.from_bytes(worker[offset : offset + 4], "little")
+        for offset in range(0, len(worker), 4)
+    ]
+
+    # A 256-byte ring fits both the size and mask in a single nine-bit source
+    # field.  The Python profile's 1024-byte ring necessarily adds one exact
+    # AUGS before each operation.  Lock both instruction pairs so accepting
+    # the longer worker cannot hide a different ring geometry or a stray
+    # instruction that merely happens to leave the branches at valid targets.
+
+    profiles = {
+        38: (
+            "256-byte ring",
+            {
+                22: 0xF20FA500,  # CMP r2, #256 WZ
+                25: 0xF507A4FF,  # AND r2, #255
+            },
+            {
+                15: 0x3D80000E,  # IF_NC JMP #14 (.Lrx_wait)
+                23: 0xAD800020,  # IF_Z  JMP #32 (.Lrx_drop)
+                31: 0xFD80000E,  # JMP #14 (.Lrx_wait)
+                37: 0xFD80000E,  # JMP #14 (.Lrx_wait)
+            },
+        ),
+        40: (
+            "1024-byte ring",
+            {
+                22: 0xFF000002,  # AUGS #2
+                23: 0xF20FA400,  # CMP r2, #0 WZ -> augmented #1024
+                26: 0xFF000001,  # AUGS #1
+                27: 0xF507A5FF,  # AND r2, #511 -> augmented #1023
+            },
+            {
+                15: 0x3D80000E,  # IF_NC JMP #14 (.Lrx_wait)
+                24: 0xAD800022,  # IF_Z  JMP #34 (.Lrx_drop)
+                33: 0xFD80000E,  # JMP #14 (.Lrx_wait)
+                39: 0xFD80000E,  # JMP #14 (.Lrx_wait)
+            },
+        ),
+    }
+    profile, fixed_ring_words, fixed_branches = profiles[len(worker_words)]
+    for index, expected in fixed_ring_words.items():
+        if worker_words[index] != expected:
+            fail(
+                "p2_uart_rx_cog {} word {} is 0x{:08x}; expected "
+                "0x{:08x}".format(
+                    profile, index, worker_words[index], expected
+                )
+            )
+
+    # The worker is linked in byte-addressed Hub .text but copied to cog RAM
+    # at cog address zero.  These JMP immediates must consequently be absolute
+    # cog-long indices, not Hub addresses or byte-relative displacements.
+
+    for index, expected in fixed_branches.items():
+        if worker_words[index] != expected:
+            fail(
+                "p2_uart_rx_cog branch word {} is 0x{:08x}; expected "
+                "absolute cog-long target 0x{:08x}".format(
+                    index, worker_words[index], expected
+                )
+            )
+
+
+def verify_uart_rx_cog(
+    elf: ELFFile, sections: dict[str, object], symbols: dict[str, int]
+) -> None:
+    """Verify the optional dedicated-cog UART receive implementation."""
+
+    required = ("p2_uart_rx_cog_start", "p2_uart_rx_cog")
+    present = [name for name in required if name in symbols]
+    if not present:
+        return
+    missing = [name for name in required if name not in symbols]
+    if missing:
+        fail(f"incomplete UART RX cog symbols: {', '.join(missing)}")
+
+    launcher = function_code(
+        elf, sections, symbols, "p2_uart_rx_cog_start"
+    )
+    worker = function_code(elf, sections, symbols, "p2_uart_rx_cog")
+    verify_uart_rx_cog_machine_code(
+        symbols["p2_uart_rx_cog"], launcher, worker
+    )
+
+
+def verify_xmem_fault_call_graph(
+    symbols: dict[str, int],
+    fault_targets: list[int],
+    trace_targets: list[int],
+) -> None:
+    """Require the tagged-memory fault marker to stay on the raw UART path."""
+
+    trace = symbols["__p2_xmem_boot_trace"]
+    lowputc = symbols["p2_lowputc"]
+    if trace not in fault_targets:
+        fail("__p2_xmem_fault does not call __p2_xmem_boot_trace")
+
+    forbidden = {
+        symbols[name]: name
+        for name in (
+            "__p2_xmem_load8",
+            "__p2_xmem_load16",
+            "__p2_xmem_load32",
+            "__p2_xmem_load64",
+            "__p2_xmem_store8",
+            "__p2_xmem_store16",
+            "__p2_xmem_store32",
+            "__p2_xmem_store64",
+            "__p2_xmem_memcpy",
+            "__p2_xmem_memmove",
+            "__p2_xmem_memset",
+        )
+        if name in symbols
+    }
+    recursive = [forbidden[target] for target in trace_targets if target in forbidden]
+    if recursive:
+        fail(
+            "__p2_xmem_boot_trace recursively calls unified-memory helpers: "
+            + ", ".join(sorted(set(recursive)))
+        )
+    if not trace_targets or set(trace_targets) != {lowputc}:
+        fail(
+            "__p2_xmem_boot_trace calls outside the raw p2_lowputc path"
+        )
+
+
+def verify_xmem_fault_literal(rodata: object, literal: int) -> None:
+    """Require the exact fatal marker, including its terminator, in Hub."""
+
+    marker = b"P2XMEM:FAULT\x00"
+    start = int(rodata["sh_addr"])
+    end = start + int(rodata["sh_size"])
+    if not (start <= literal and literal + len(marker) <= end <= HUB_LIMIT):
+        fail(
+            "xmem fault trace literal is outside Hub .rodata: "
+            f"0x{literal:x} not in 0x{start:x}-0x{end:x}"
+        )
+
+    offset = literal - start
+    observed = rodata.data()[offset : offset + len(marker)]
+    if observed != marker:
+        fail(
+            "xmem fault trace literal bytes mismatch: "
+            f"expected {marker.hex()}, found {observed.hex()}"
+        )
+
+
+def verify_xmem_fault_console(
+    elf: ELFFile, sections: dict[str, object], symbols: dict[str, int]
+) -> None:
+    """Verify the linked fatal marker and its Hub-resident literal."""
+
+    if "__p2_xmem_fault" not in symbols:
+        return
+    if "p2_boot_trace" in symbols:
+        fail("legacy p2_boot_trace symbol can be unified-memory lowered")
+    if "__p2_xmem_boot_trace" not in symbols:
+        # A custom configuration may omit CONFIG_P2_BOOT_TRACE and use the
+        # inline up_putc fallback instead.  Python and unified HIL enable the
+        # trace; there is no renamed trace implementation to audit here.
+
+        return
+    if "p2_lowputc" not in symbols:
+        fail("incomplete raw xmem fault console: p2_lowputc")
+
+    fault = function_code(elf, sections, symbols, "__p2_xmem_fault")
+    trace = function_code(elf, sections, symbols, "__p2_xmem_boot_trace")
+    fault_targets = direct_calla_targets(fault)
+    trace_targets = direct_calla_targets(trace)
+    verify_xmem_fault_call_graph(symbols, fault_targets, trace_targets)
+
+    words = [
+        int.from_bytes(fault[offset : offset + 4], "little")
+        for offset in range(0, len(fault) - 3, 4)
+    ]
+    call_index = next(
+        (
+            index
+            for index, word in enumerate(words)
+            if word & 0xFFF00000 == 0xFDC00000
+            and word & 0xFFFFF == symbols["__p2_xmem_boot_trace"]
+        ),
+        None,
+    )
+    if call_index is None or call_index < 2:
+        fail("__p2_xmem_fault has no literal argument for its raw trace")
+    aug = words[call_index - 2]
+    mov = words[call_index - 1]
+    if mov & ~0x1FF != 0xF607A000:
+        fail("__p2_xmem_fault does not load its trace literal into r0")
+    literal = decode_augmented_source(aug, mov)
+    rodata = sections.get(".rodata")
+    if rodata is None:
+        fail("xmem fault trace literal has no Hub .rodata section")
+    verify_xmem_fault_literal(rodata, literal)
+
+
 def verify_psram_test_hotpath(
     elf: ELFFile, sections: dict[str, object], symbols: dict[str, int]
 ) -> None:
@@ -340,14 +588,93 @@ def verify_psram_test_hotpath(
             fail(f"{entry} does not call the locked {name} helper")
 
 
-def verify_psram_service(sections: dict[str, object], symbols: dict[str, int]) -> None:
-    """Verify optional PSRAM service-cog AUGS relocation pairs."""
+def psram_runtime_audit_roots(
+    symbols: dict[str, int], cache_runtime: tuple[str, ...]
+) -> list[str]:
+    """Return every native PSRAM entry whose callees must remain native."""
+
+    roots = [
+        "__p2_xmem_psram_service_worker",
+        "__p2_xmem_psram_record_ce_cycles",
+        "__p2_xmem_psram_wire_execute",
+        "__p2_xmem_psram_hub_copy",
+        "p2_psram_stream_install",
+        "p2_psram_stream_transfer",
+    ]
+    if "p2_psram_unified_transfer" in symbols:
+        roots.append("p2_psram_unified_transfer")
+        roots.extend(cache_runtime)
+        if "__p2_xmem_psram_cache_invalidate_all" in symbols:
+            roots.append("__p2_xmem_psram_cache_invalidate_all")
+
+    # Audit the public API itself, not just the native snapshot helper it is
+    # expected to call.  Otherwise a compiler-generated aggregate copy in the
+    # wrapper can recursively call the canonical unified-memory ABI without
+    # being seen by the transitive walk.
+
+    if "p2_psram_get_cache_stats" in symbols:
+        if "__p2_xmem_psram_cache_snapshot" not in symbols:
+            fail("incomplete PSRAM cache stats snapshot runtime")
+        roots.append("p2_psram_get_cache_stats")
+
+    return roots
+
+
+def verify_psram_native_call_graph(
+    audit_roots: list[str],
+    call_targets: Callable[[str], list[int]],
+    functions_by_address: dict[int, list[str]],
+    forbidden_targets: dict[int, str],
+) -> None:
+    """Reject forbidden calls reachable from native PSRAM entry points."""
+
+    pending = list(audit_roots)
+    audited: set[str] = set()
+    while pending:
+        runtime = pending.pop()
+        if runtime in audited:
+            continue
+        audited.add(runtime)
+        calls = call_targets(runtime)
+        forbidden = [
+            forbidden_targets[target]
+            for target in calls
+            if target in forbidden_targets
+        ]
+        if forbidden:
+            fail(
+                f"{runtime} recursively calls unified-memory helpers or "
+                f"generic memory routines: "
+                f"{', '.join(sorted(set(forbidden)))}"
+            )
+
+        for target in calls:
+            for called in functions_by_address.get(target, []):
+                if (
+                    called.startswith("p2_psram_")
+                    or called.startswith("__p2_xmem_psram_")
+                ) and called not in audited:
+                    pending.append(called)
+
+
+def verify_psram_service(
+    elf: ELFFile, sections: dict[str, object], symbols: dict[str, int]
+) -> None:
+    """Verify optional PSRAM service-cog linkage and native runtime bodies."""
 
     required = (
         "p2_psram_cog_start",
         "p2_psram_cog_entry",
+        "p2_psram_stream_install",
+        "p2_psram_stream_transfer",
+        "p2_psram_stream_lut_table",
+        "p2_psram_stream_cog_image",
+        "p2_psram_stream_cog_image_end",
         "p2_psram_timing_leaf",
-        "p2_psram_service_worker",
+        "__p2_xmem_psram_service_worker",
+        "__p2_xmem_psram_record_ce_cycles",
+        "__p2_xmem_psram_wire_execute",
+        "__p2_xmem_psram_hub_copy",
         "g_p2_psram_service_stack",
         "g_p2_psram_wire",
     )
@@ -358,6 +685,23 @@ def verify_psram_service(sections: dict[str, object], symbols: dict[str, int]) -
     missing = [name for name in required if name not in symbols]
     if missing:
         fail(f"incomplete PSRAM service symbols: {', '.join(missing)}")
+
+    cache_runtime = (
+        "__p2_xmem_psram_cache_reset",
+        "__p2_xmem_psram_cache_try_read",
+        "__p2_xmem_psram_cache_prepare_fill",
+        "__p2_xmem_psram_cache_fill_buffer",
+        "__p2_xmem_psram_cache_count_bypass",
+        "__p2_xmem_psram_cache_invalidate_write",
+        "__p2_xmem_psram_cache_record_write",
+        "__p2_xmem_psram_cache_publish_fill",
+        "__p2_xmem_psram_cache_copy_out",
+        "__p2_xmem_psram_cache_update_write",
+    )
+    if "p2_psram_unified_transfer" in symbols:
+        missing = [name for name in cache_runtime if name not in symbols]
+        if missing:
+            fail(f"incomplete PSRAM cache runtime: {', '.join(missing)}")
 
     start = executable_code(
         sections, symbols["p2_psram_cog_start"], 40, "p2_psram_cog_start"
@@ -409,11 +753,217 @@ def verify_psram_service(sections: dict[str, object], symbols: dict[str, int]) -
         fail("p2_psram_cog_entry does not advance its guarded PTRA")
     if (
         entry_words[3] & 0xFFF00000 != 0xFDC00000
-        or entry_words[3] & 0xFFFFF != symbols["p2_psram_service_worker"]
+        or entry_words[3] & 0xFFFFF
+        != symbols["__p2_xmem_psram_service_worker"]
     ):
         fail("p2_psram_cog_entry CALLA target does not match its worker")
     if entry_words[4:] != [0xFD63A001, 0xFD63A003]:
         fail("p2_psram_cog_entry does not terminate with COGID/COGSTOP")
+
+    install = function_code(
+        elf, sections, symbols, "p2_psram_stream_install"
+    )
+    if len(install) != 52:
+        fail(
+            "p2_psram_stream_install is not exactly 13 instructions: "
+            f"{len(install)} bytes"
+        )
+    install_words = [
+        int.from_bytes(install[offset : offset + 4], "little")
+        for offset in range(0, len(install), 4)
+    ]
+    fixed_install = {
+        0: 0xFD640228,  # SETQ #1
+        1: 0xFC67A161,  # WRLONG r0, PTRA++
+        4: 0xFD641E29,  # SETQ2 #15: exactly 16 LUT longs
+        5: 0xFB0001D1,  # RDLONG $000, r1 into LUT RAM
+        8: 0xFD64FE28,  # SETQ #127: exactly 128 cog longs
+        9: 0xFB0081D1,  # RDLONG $040, r1 into cog RAM
+        10: 0xFD640228,  # SETQ #1
+        11: 0xFB07A15F,  # RDLONG r0, --PTRA
+        12: 0xFD64002E,  # RETA
+    }
+    for index, expected in fixed_install.items():
+        if install_words[index] != expected:
+            fail(
+                "p2_psram_stream_install word {} is 0x{:08x}; expected "
+                "0x{:08x}".format(index, install_words[index], expected)
+            )
+    if install_words[3] & ~0x1FF != 0xF607A200:
+        fail("p2_psram_stream_install does not load its LUT table into r1")
+    if (
+        decode_augmented_source(install_words[2], install_words[3])
+        != symbols["p2_psram_stream_lut_table"]
+    ):
+        fail("p2_psram_stream_install AUGS/MOV target misses its LUT table")
+    if install_words[7] & ~0x1FF != 0xF607A200:
+        fail("p2_psram_stream_install does not load its cog image into r1")
+    if (
+        decode_augmented_source(install_words[6], install_words[7])
+        != symbols["p2_psram_stream_cog_image"]
+    ):
+        fail("p2_psram_stream_install AUGS/MOV target misses its cog image")
+
+    transfer = function_code(
+        elf, sections, symbols, "p2_psram_stream_transfer"
+    )
+    transfer_words = [
+        int.from_bytes(transfer[offset : offset + 4], "little")
+        for offset in range(0, len(transfer), 4)
+    ]
+    expected_transfer = [
+        0xFD641E28,  # SETQ #15
+        0xFC67A161,  # WRLONG r0, PTRA++
+        0xFDC00040,  # CALLA absolute cog RAM $040
+        0xFD641E28,  # SETQ #15
+        0xFB07A15F,  # RDLONG r0, --PTRA
+        0xFD64002E,  # RETA
+    ]
+    if transfer_words != expected_transfer:
+        fail("p2_psram_stream_transfer is not the fixed guarded cog wrapper")
+
+    table_start = symbols["p2_psram_stream_lut_table"]
+    image_start = symbols["p2_psram_stream_cog_image"]
+    image_end = symbols["p2_psram_stream_cog_image_end"]
+    if image_start - table_start != 64:
+        fail(
+            "p2_psram_stream_lut_table is not exactly 16 longs: "
+            f"{image_start - table_start} bytes"
+        )
+    if image_end - image_start != 512:
+        fail(
+            "p2_psram_stream_cog_image is not exactly 128 longs: "
+            f"{image_end - image_start} bytes"
+        )
+    table = executable_code(
+        sections, table_start, image_start - table_start,
+        "p2_psram_stream_lut_table"
+    )
+    image = executable_code(
+        sections, image_start, image_end - image_start,
+        "p2_psram_stream_cog_image"
+    )
+    expected_table = b"".join(
+        (nibble * 0x1111).to_bytes(4, "little")
+        for nibble in range(16)
+    )
+    if table != expected_table:
+        fail("p2_psram_stream_lut_table lost its nibble replication values")
+
+    # The fixed words below lock the board-specific Smart Pin clock and the
+    # streamer completion loop.  Address relocations and absolute cog-RAM
+    # branch targets elsewhere in the image are intentionally checked by
+    # assembly and source tests rather than duplicated here.
+
+    image_words = [
+        int.from_bytes(image[offset : offset + 4], "little")
+        for offset in range(0, len(image), 4)
+    ]
+    required_stream_words = {
+        0xFC0C9438,  # WRPIN #$4a, #56
+        0xFC1C0238,  # WXPIN #1, #56
+        0xFD701624,  # POLLXFI WC
+        0xFD647249,  # OUTH #57
+        0xF523FBD8,  # ANDN OUTB, r8 before streamer output starts
+        0xF523F7D8,  # ANDN DIRB, r8 after read-data XCONT
+        0xF543F7D8,  # OR DIRB, r8 to enable data output
+        0xFCA811D9,  # XINIT #8, r9
+        0xFD647258,  # DRVL #57
+        0xFCC7B400,  # XCONT r10, #0
+    }
+    missing_words = required_stream_words - set(image_words)
+    if missing_words:
+        fail(
+            "p2_psram_stream_cog_image lost fixed streamer words: "
+            + ", ".join(f"0x{word:08x}" for word in sorted(missing_words))
+        )
+
+    # Streamer pin output is ORed with OUTB.  Clear its 16 data bits while CE
+    # is high, before making the lanes outputs and before the first XINIT;
+    # otherwise stale scalar traffic corrupts command/address nibbles.  The
+    # read turnaround is the canonical late direction change: immediately
+    # after the data-capture XCONT has been queued.
+
+    ce_high = image_words.index(0xFD647249)       # OUTH #57
+    clear_outb = image_words.index(0xF523FBD8)    # ANDN OUTB, r8
+    enable_data = image_words.index(0xF543F7D8)   # OR DIRB, r8
+    first_xinit = image_words.index(0xFCA811D9)   # XINIT #8, r9
+    ce_low = image_words.index(0xFD647258)        # DRVL #57
+    if not ce_high < clear_outb < enable_data < first_xinit:
+        fail(
+            "p2_psram_stream_cog_image does not clear stale OUTB under "
+            "CE-high before enabling data output and XINIT"
+        )
+    if clear_outb >= ce_low:
+        fail("p2_psram_stream_cog_image clears stale OUTB after CE-low")
+
+    read_delay = 0x20D00016  # production offset 22 at the 180-MHz sysclk
+    if not any(
+        image_words[index + 1] & ~0x1FF == 0xF607AA00
+        and decode_augmented_source(
+            image_words[index], image_words[index + 1]
+        ) == read_delay
+        for index in range(len(image_words) - 1)
+    ):
+        fail(
+            "p2_psram_stream_cog_image does not use read capture offset 22"
+        )
+
+    read_xcont = 0xFCC7B400  # XCONT r10, #0 (P40..P55 to WFWORD)
+    late_dir_input = 0xF523F7D8  # ANDN DIRB, r8
+    turnaround = [read_xcont, late_dir_input]
+    if not any(
+        image_words[index : index + len(turnaround)] == turnaround
+        for index in range(len(image_words) - len(turnaround) + 1)
+    ):
+        fail(
+            "p2_psram_stream_cog_image lost the canonical late read "
+            "DIRB turnaround"
+        )
+
+    xmem_helpers = (
+        "__p2_xmem_load8",
+        "__p2_xmem_load16",
+        "__p2_xmem_load32",
+        "__p2_xmem_load64",
+        "__p2_xmem_store8",
+        "__p2_xmem_store16",
+        "__p2_xmem_store32",
+        "__p2_xmem_store64",
+        "__p2_xmem_memcpy",
+        "__p2_xmem_memmove",
+        "__p2_xmem_memset",
+    )
+    generic_memory = ("memcpy", "memmove", "memset")
+    forbidden_targets = {
+        symbols[name]: name
+        for name in xmem_helpers + generic_memory
+        if name in symbols
+    }
+
+    symtab = elf.get_section_by_name(".symtab")
+    if symtab is None:
+        fail("missing .symtab")
+    functions_by_address: dict[int, list[str]] = {}
+    for symbol in symtab.iter_symbols():
+        if (
+            symbol.name
+            and symbol["st_info"]["type"] == "STT_FUNC"
+            and int(symbol["st_size"]) > 0
+        ):
+            functions_by_address.setdefault(
+                int(symbol["st_value"]), []
+            ).append(symbol.name)
+
+    audit_roots = psram_runtime_audit_roots(symbols, cache_runtime)
+    verify_psram_native_call_graph(
+        audit_roots,
+        lambda runtime: direct_calla_targets(
+            function_code(elf, sections, symbols, runtime)
+        ),
+        functions_by_address,
+        forbidden_targets,
+    )
 
     timing = executable_code(
         sections,
@@ -457,6 +1007,56 @@ def symbol_values(elf: ELFFile) -> tuple[dict[str, int], list[str]]:
             symbols.setdefault(name, int(symbol["st_value"]))
 
     return symbols, sorted(set(unresolved))
+
+
+def verify_callable_symbol_addresses(elf: ELFFile) -> None:
+    """Reject callable symbols whose byte VMA aliases a LUT word address."""
+
+    symtab = elf.get_section_by_name(".symtab")
+    if symtab is None:
+        fail("missing .symtab")
+
+    ambiguous: list[tuple[int, str, str]] = []
+    for symbol in symtab.iter_symbols():
+        name = symbol.name
+        address = int(symbol["st_value"])
+        if not name or not (
+            AMBIGUOUS_LUT_VMA_START <= address < AMBIGUOUS_LUT_VMA_END
+        ):
+            continue
+
+        symbol_type = symbol["st_info"]["type"]
+        binding = symbol["st_info"]["bind"]
+        shndx = symbol["st_shndx"]
+        section = elf.get_section(shndx) if isinstance(shndx, int) else None
+        section_name = section.name if section is not None else str(shndx)
+
+        if symbol_type in ("STT_FUNC", "STT_GNU_IFUNC"):
+            ambiguous.append((address, name, section_name))
+            continue
+
+        is_public_code = (
+            symbol_type == "STT_NOTYPE"
+            and binding in ("STB_GLOBAL", "STB_WEAK")
+        )
+        if section is None or not (
+            int(section["sh_flags"]) & SH_FLAGS.SHF_EXECINSTR
+        ):
+            continue
+        if is_public_code:
+            ambiguous.append((address, name, section.name))
+
+    if ambiguous:
+        detail = ", ".join(
+            f"{name}=0x{address:x}({section})"
+            for address, name, section in sorted(ambiguous)
+        )
+        fail(
+            "callable symbols occupy ambiguous LUT byte VMAs "
+            f"0x{AMBIGUOUS_LUT_VMA_START:x}-"
+            f"0x{AMBIGUOUS_LUT_VMA_END - 1:x}; generic R_P2_20 calls "
+            f"interpret these as LUT word PCs: {detail}"
+        )
 
 
 def verify_sections(elf: ELFFile) -> dict[str, object]:
@@ -737,10 +1337,13 @@ def verify(path: pathlib.Path) -> None:
         sections = verify_sections(elf)
         verify_instruction_policy(sections)
         symbols = verify_symbols(elf)
+        verify_callable_symbol_addresses(elf)
         verify_overlay_abi(sections, symbols)
         verify_startup(sections, symbols)
         verify_context_trigger(sections, symbols)
-        verify_psram_service(sections, symbols)
+        verify_uart_rx_cog(elf, sections, symbols)
+        verify_psram_service(elf, sections, symbols)
+        verify_xmem_fault_console(elf, sections, symbols)
         verify_psram_test_hotpath(elf, sections, symbols)
         load_count = verify_segments(elf, sections)
 

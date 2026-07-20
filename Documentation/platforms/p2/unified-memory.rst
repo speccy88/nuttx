@@ -7,7 +7,9 @@ The normal image proved the 32-MiB tagged user heap and absence of
 33,554,432-byte write/read, boundary, scalar, bulk, allocator, and concurrent
 access campaign.  The compiler checker is **HOST-TESTED**.  This result does
 not claim endurance, temperature qualification, externally measured QPI
-timing, or the separate raw-lock timeout fault injection.
+timing, or the separate raw-lock timeout fault injection.  It qualifies the
+tagged-pointer and user-heap mechanism, not the separate CPython container and
+Hub-overlay runtime; :doc:`python` records that profile's own HIL status.
 
 What ``unified`` means
 ----------------------

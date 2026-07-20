@@ -14,18 +14,25 @@ import subprocess
 import sys
 import tempfile
 
-PATCH_SHA256 = "9d32a27a01fc9391ae0eb73c92c80eabc3dc347d22e47de2196c4d9f790efe94"
+PATCH_SHA256 = "69ec3b1f9157df1b8f5a79400b33a767941c6dd27c0da97e33bcb852842a6108"
 EXPECTED_PATCH_PATHS = frozenset(
     {
         "build.py",
         "libp2/lib/builtins/CMakeLists.txt",
         "libp2/lib/builtins/floatdidf.c",
+        "libp2/lib/builtins/floatunsidf.c",
+        "libp2/lib/builtins/fp_add_impl.inc",
         "libp2/lib/builtins/fp_fixint_impl.inc",
+        "libp2/lib/builtins/fp_mul_impl.inc",
+        "libp2/lib/builtins/int_lib.h",
         "libp2/lib/builtins/memcpy.c",
+        "libp2/lib/builtins/memmove.c",
+        "libp2/lib/builtins/memset.c",
         "libp2/lib/builtins/powf.c",
         "libp2/lib/builtins/sqrtf.c",
         "libp2/lib/builtins/tests/runtime_builtins_test.c",
         "libp2/lib/builtins/tests/test_runtime_builtins.py",
+        "libp2/lib/builtins/udivmoddi4.c",
     }
 )
 ADDED_PATCH_PATHS = frozenset(
@@ -34,8 +41,23 @@ ADDED_PATCH_PATHS = frozenset(
         "libp2/lib/builtins/tests/test_runtime_builtins.py",
     }
 )
-RUNTIME_SYMBOLS = ("__truncdfsf2", "__fixdfdi", "__floatdidf")
-RUNTIME_MEMBERS = ("truncdfsf2.c.obj", "fixdfdi.c.obj", "floatdidf.c.obj")
+RUNTIME_SYMBOLS = (
+    "__truncdfsf2",
+    "__fixdfdi",
+    "__floatdidf",
+    "__floatunsidf",
+    "__adddf3",
+    "__muldf3",
+)
+RUNTIME_MEMBERS = (
+    "truncdfsf2.c.obj",
+    "fixdfdi.c.obj",
+    "floatdidf.c.obj",
+    "floatunsidf.c.obj",
+    "adddf3.c.obj",
+    "muldf3.c.obj",
+)
+FORBIDDEN_RUNTIME_SECTIONS = frozenset({"lut", ".lut", ".p2.lut"})
 
 
 class ValidationError(RuntimeError):
@@ -244,6 +266,7 @@ def verify_archive(toolchain_root: pathlib.Path) -> tuple[pathlib.Path, int, str
     archive = toolchain_root / "libp2" / "lib" / "libcompiler_builtins.a"
     llvm_ar = toolchain_root / "bin" / "llvm-ar"
     llvm_nm = toolchain_root / "bin" / "llvm-nm"
+    llvm_readelf = toolchain_root / "bin" / "llvm-readelf"
 
     if not archive.is_file() or archive.stat().st_size <= len(b"!<arch>\n"):
         raise ValidationError(
@@ -251,7 +274,7 @@ def verify_archive(toolchain_root: pathlib.Path) -> tuple[pathlib.Path, int, str
         )
     if archive.read_bytes()[:8] != b"!<arch>\n":
         raise ValidationError(f"compiler builtins archive has invalid magic: {archive}")
-    for tool in (llvm_ar, llvm_nm):
+    for tool in (llvm_ar, llvm_nm, llvm_readelf):
         if not tool.is_file() or not os.access(tool, os.X_OK):
             raise ValidationError(
                 f"required archive inspection tool is missing: {tool}"
@@ -289,11 +312,34 @@ def verify_archive(toolchain_root: pathlib.Path) -> tuple[pathlib.Path, int, str
         ):
             raise ValidationError(f"compiler builtins archive does not export {symbol}")
 
+    sections_result = subprocess.run(
+        [str(llvm_readelf), "-SW", str(archive)],
+        capture_output=True,
+        text=True,
+    )
+    if sections_result.returncode != 0:
+        raise ValidationError(
+            sections_result.stderr.strip() or "llvm-readelf failed"
+        )
+    section_names = set(
+        re.findall(
+            r"(?m)^\s*\[\s*\d+\]\s+(\S+)",
+            sections_result.stdout,
+        )
+    )
+    forbidden_sections = section_names & FORBIDDEN_RUNTIME_SECTIONS
+    if forbidden_sections:
+        raise ValidationError(
+            "compiler builtins archive contains callable LUT sections: "
+            + ", ".join(sorted(forbidden_sections))
+        )
+
     size = archive.stat().st_size
     digest = sha256(archive)
     print(
         f"P2LLVM_RUNTIME:ARCHIVE={archive}:BYTES={size}:"
-        f"SHA256={digest}:SYMBOLS={','.join(RUNTIME_SYMBOLS)}"
+        f"SHA256={digest}:SYMBOLS={','.join(RUNTIME_SYMBOLS)}:"
+        "PLACEMENT=HUB_TEXT"
     )
     return archive, size, digest
 

@@ -26,6 +26,7 @@
 
 #include <nuttx/config.h>
 
+#include <stdint.h>
 #include <string.h>
 #include <assert.h>
 #include <nuttx/debug.h>
@@ -43,6 +44,8 @@
 #if CONFIG_MM_HEAP_MEMPOOL_THRESHOLD > 0
 #  define MEMPOOL_NPOOLS (CONFIG_MM_HEAP_MEMPOOL_THRESHOLD / MM_MIN_CHUNK)
 #endif
+
+#define MM_MIN_REGION_SIZE (2 * MM_SIZEOF_ALLOCNODE + MM_MIN_CHUNK)
 
 /****************************************************************************
  * Private Functions
@@ -104,8 +107,13 @@ void mm_addregion(FAR struct mm_heap_s *heap, FAR void *heapstart,
                   size_t heapsize)
 {
   FAR struct mm_freenode_s *node;
+  uintptr_t heapaddr;
   uintptr_t heapbase;
   uintptr_t heapend;
+  size_t adjustment;
+#ifdef CONFIG_MM_FILL_ALLOCATIONS
+  size_t regionsize = heapsize;
+#endif
 #if CONFIG_MM_REGIONS > 1
   int idx;
 
@@ -132,13 +140,41 @@ void mm_addregion(FAR struct mm_heap_s *heap, FAR void *heapstart,
    * crazy.
    */
 
+  if (heapsize > MMSIZE_MAX + 1)
+    {
+      mm_unlock(heap);
+      return;
+    }
+
   DEBUGASSERT(heapsize <= MMSIZE_MAX + 1);
 #endif
+
+  /* Reject invalid regions in release builds too.  In particular, never
+   * subtract a leading alignment adjustment or the two guard nodes until
+   * the complete aligned region has been proven large enough.
+   */
+
+  heapaddr = (uintptr_t)heapstart;
+  adjustment = (-(heapaddr + 2 * MM_SIZEOF_ALLOCNODE)) & MM_GRAN_MASK;
+  if (adjustment > heapsize || heapaddr > UINTPTR_MAX - adjustment)
+    {
+      mm_unlock(heap);
+      return;
+    }
+
+  heapbase = heapaddr + adjustment;
+  heapsize -= adjustment;
+  if (heapsize < MM_MIN_REGION_SIZE ||
+      heapsize > UINTPTR_MAX - heapbase)
+    {
+      mm_unlock(heap);
+      return;
+    }
 
 #ifdef CONFIG_MM_FILL_ALLOCATIONS
   /* Use the fill value to mark uninitialized user memory */
 
-  memset(heapstart, MM_INIT_MAGIC, heapsize);
+  memset(heapstart, MM_INIT_MAGIC, regionsize);
 #endif
 
   /* Adjust the provided heap start and size.
@@ -147,10 +183,6 @@ void mm_addregion(FAR struct mm_heap_s *heap, FAR void *heapstart,
    * returned to the malloc user, which should have natural alignment.
    * (that is, in this implementation, MM_MIN_CHUNK-alignment.)
    */
-
-  heapbase = MM_ALIGN_UP((uintptr_t)heapstart + 2 * MM_SIZEOF_ALLOCNODE) -
-             2 * MM_SIZEOF_ALLOCNODE;
-  heapsize = heapsize - (heapbase - (uintptr_t)heapstart);
 
   /* Register KASan for access rights check. We need to register after
    * address alignment.
@@ -161,7 +193,19 @@ void mm_addregion(FAR struct mm_heap_s *heap, FAR void *heapstart,
       kasan_register((void *)heapbase, &heapsize);
     }
 
-  heapend  = MM_ALIGN_DOWN((uintptr_t)heapbase + (uintptr_t)heapsize);
+  heapend = MM_ALIGN_DOWN((uintptr_t)heapbase + (uintptr_t)heapsize);
+  if (heapend < heapbase ||
+      heapend - heapbase < MM_MIN_REGION_SIZE)
+    {
+      if (!heap->mm_nokasan)
+        {
+          kasan_unregister((void *)heapbase);
+        }
+
+      mm_unlock(heap);
+      return;
+    }
+
   heapsize = heapend - heapbase;
 
 #if defined(CONFIG_FS_PROCFS) && \
@@ -234,7 +278,8 @@ void mm_addregion(FAR struct mm_heap_s *heap, FAR void *heapstart,
 FAR struct mm_heap_s *
 mm_initialize_heap(FAR const struct mm_heap_config_s *config)
 {
-  FAR struct mm_heap_s *heap = config->heap;
+  FAR struct mm_heap_s *parent = config->heap;
+  FAR struct mm_heap_s *heap = parent;
   FAR const char *name = config->name;
   FAR void *heapstart = config->start;
   size_t heapsize = config->size;
@@ -245,15 +290,46 @@ mm_initialize_heap(FAR const struct mm_heap_config_s *config)
     {
       /* First ensure the memory to be used is aligned */
 
-      uintptr_t heap_adj = MM_ALIGN_UP((uintptr_t)heapstart);
-      heapsize -= heap_adj - (uintptr_t)heapstart;
+      uintptr_t heapaddr = (uintptr_t)heapstart;
+      uintptr_t heap_adj;
+      uintptr_t regionaddr;
+      size_t adjustment;
+      size_t regionadjustment;
+      size_t regionsize;
+
+      adjustment = (-heapaddr) & MM_GRAN_MASK;
+      if (adjustment > heapsize || heapaddr > UINTPTR_MAX - adjustment)
+        {
+          return NULL;
+        }
+
+      heap_adj = heapaddr + adjustment;
+      heapsize -= adjustment;
 
       /* Reserve a block space for mm_heap_s context */
 
-      DEBUGASSERT(heapsize > sizeof(struct mm_heap_s));
+      if (heapsize < sizeof(struct mm_heap_s) ||
+          heap_adj > UINTPTR_MAX - sizeof(struct mm_heap_s))
+        {
+          return NULL;
+        }
+
+      regionaddr = heap_adj + sizeof(struct mm_heap_s);
+      regionsize = heapsize - sizeof(struct mm_heap_s);
+      regionadjustment =
+        (-(regionaddr + 2 * MM_SIZEOF_ALLOCNODE)) & MM_GRAN_MASK;
+      if (regionadjustment > regionsize ||
+          regionaddr > UINTPTR_MAX - regionadjustment ||
+          regionsize - regionadjustment < MM_MIN_REGION_SIZE ||
+          regionsize - regionadjustment >
+            UINTPTR_MAX - regionaddr - regionadjustment)
+        {
+          return NULL;
+        }
+
       heap = (FAR struct mm_heap_s *)heap_adj;
       heapsize -= sizeof(struct mm_heap_s);
-      heapstart = (FAR char *)heap_adj + sizeof(struct mm_heap_s);
+      heapstart = (FAR void *)regionaddr;
 
       DEBUGASSERT(MM_MIN_CHUNK >= MM_SIZEOF_ALLOCNODE);
     }
@@ -299,6 +375,16 @@ mm_initialize_heap(FAR const struct mm_heap_config_s *config)
 
   heap->mm_curused = sizeof(struct mm_heap_s);
   mm_addregion(heap, heapstart, heapsize);
+  if (heap->mm_heapsize == 0)
+    {
+      nxmutex_destroy(&heap->mm_lock);
+      if (parent != NULL)
+        {
+          mm_free(parent, heap);
+        }
+
+      return NULL;
+    }
 
 #if defined(CONFIG_FS_PROCFS) && !defined(CONFIG_FS_PROCFS_EXCLUDE_MEMINFO)
 #  if defined(CONFIG_BUILD_FLAT) || defined(__KERNEL__)
@@ -346,6 +432,10 @@ mm_initialize_pool(FAR const struct mm_heap_config_s *config,
 #endif
 
   heap = mm_initialize_heap(config);
+  if (heap == NULL)
+    {
+      return NULL;
+    }
 
   /* Initialize the multiple mempool in heap */
 

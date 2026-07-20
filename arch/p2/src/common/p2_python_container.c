@@ -35,6 +35,10 @@
 #include <arch/overlay.h>
 #include <arch/python_container.h>
 
+#ifdef CONFIG_ARCH_P2
+#  include <arch/hub_crc32.h>
+#endif
+
 /* The initializer and loader must remain executable while the overlay slot
  * is empty or being replaced.  Newer p2llvm builds understand this
  * attribute; the feature test keeps the source buildable with the bootstrap
@@ -101,7 +105,9 @@
 #define P2_CONTAINER_HUB_LOAD_END               UINT32_C(0x0007c000)
 
 #define P2_CONTAINER_STATE_READY                UINT32_C(0x50325059)
-#define P2_CONTAINER_CRC_POLYNOMIAL              UINT32_C(0xedb88320)
+#ifndef CONFIG_ARCH_P2
+#  define P2_CONTAINER_CRC_POLYNOMIAL            UINT32_C(0xedb88320)
+#endif
 
 /****************************************************************************
  * Private Types
@@ -610,6 +616,31 @@ static int p2_container_check_zero(
   return 0;
 }
 
+static uint32_t p2_container_crc32_update(uint32_t crc,
+                                          FAR const uint8_t *data,
+                                          size_t size)
+{
+#ifdef CONFIG_ARCH_P2
+  return p2_hub_crc32_update(crc, data, size);
+#else
+  size_t index;
+
+  for (index = 0; index < size; index++)
+    {
+      unsigned int bit;
+
+      crc ^= data[index];
+      for (bit = 0; bit < 8; bit++)
+        {
+          crc = crc >> 1 ^
+                ((crc & 1) != 0 ? P2_CONTAINER_CRC_POLYNOMIAL : 0);
+        }
+    }
+
+  return crc;
+#endif
+}
+
 static int p2_container_crc32(
   FAR const struct p2_python_container_source_s *source, uint64_t offset,
   uint64_t size, FAR uint32_t *result)
@@ -621,25 +652,13 @@ static int p2_container_crc32(
   while (size != 0)
     {
       size_t chunk = size < sizeof(buffer) ? (size_t)size : sizeof(buffer);
-      size_t index;
-
       ret = p2_container_read(source, offset, buffer, chunk);
       if (ret < 0)
         {
           return ret;
         }
 
-      for (index = 0; index < chunk; index++)
-        {
-          unsigned int bit;
-
-          crc ^= buffer[index];
-          for (bit = 0; bit < 8; bit++)
-            {
-              crc = crc >> 1 ^
-                    ((crc & 1) != 0 ? P2_CONTAINER_CRC_POLYNOMIAL : 0);
-            }
-        }
+      crc = p2_container_crc32_update(crc, buffer, chunk);
 
       offset += chunk;
       size -= chunk;
@@ -1675,6 +1694,7 @@ int p2_python_container_initialize(
 {
   struct p2_container_backing_s backing_arg;
   struct p2_python_container_source_s backing;
+  FAR const struct p2_python_container_source_s *validated_source;
   struct p2_container_header_s header;
   uint64_t end;
   int ret;
@@ -1686,6 +1706,7 @@ int p2_python_container_initialize(
 
   memset(container, 0, sizeof(*container));
   if ((config->target.read == NULL) != (config->target.write == NULL) ||
+      config->source.read == NULL ||
       config->backing_address < P2_CONTAINER_PSRAM_BASE ||
       (config->backing_address & (P2_CONTAINER_ALIGNMENT - 1)) != 0 ||
       config->backing_capacity == 0 ||
@@ -1696,7 +1717,43 @@ int p2_python_container_initialize(
       return -EINVAL;
     }
 
-  ret = p2_container_validate_internal(&config->source, &config->contract,
+  /* An in-place claim is intentionally redundant: the enable bit, exact
+   * tagged address, and exact source size must all agree.  This prevents a
+   * partially initialized config or a range that merely overlaps the
+   * backing window from selecting the copy-free path.
+   */
+
+  if ((!config->source_is_backing &&
+       (config->source_backing_address != 0 ||
+        config->source_backing_size != 0)) ||
+      (config->source_is_backing &&
+       (config->source_backing_address != config->backing_address ||
+        config->source_backing_size == 0 ||
+        config->source_backing_size != config->source.size)))
+    {
+      return -EINVAL;
+    }
+
+  if (config->source_is_backing &&
+      config->source_backing_size > config->backing_capacity)
+    {
+      return -ENOSPC;
+    }
+
+  backing_arg.target = &config->target;
+  backing_arg.base = config->backing_address;
+  backing_arg.size = config->source.size;
+  backing.read = p2_container_backing_read;
+  backing.arg = &backing_arg;
+  backing.size = config->source.size;
+
+  /* In-place mode validates bytes through the target view, so a bad alias
+   * claim cannot cause unvalidated source bytes to be published as backing.
+   * The ordinary path continues to validate the independent source first.
+   */
+
+  validated_source = config->source_is_backing ? &backing : &config->source;
+  ret = p2_container_validate_internal(validated_source, &config->contract,
                                        &header);
   if (ret < 0)
     {
@@ -1710,32 +1767,29 @@ int p2_python_container_initialize(
       return -ENOSPC;
     }
 
-  ret = p2_container_backing_overlap(&config->source, &header,
+  ret = p2_container_backing_overlap(validated_source, &header,
                                      config->backing_address);
   if (ret < 0)
     {
       return ret;
     }
 
-  ret = p2_container_copy_to_backing(&config->source, &config->target,
-                                     config->backing_address,
-                                     header.file_size);
-  if (ret < 0)
+  if (!config->source_is_backing)
     {
-      return ret;
-    }
+      ret = p2_container_copy_to_backing(&config->source, &config->target,
+                                         config->backing_address,
+                                         header.file_size);
+      if (ret < 0)
+        {
+          return ret;
+        }
 
-  backing_arg.target = &config->target;
-  backing_arg.base = config->backing_address;
-  backing_arg.size = header.file_size;
-  backing.read = p2_container_backing_read;
-  backing.arg = &backing_arg;
-  backing.size = header.file_size;
-
-  ret = p2_container_validate_internal(&backing, &config->contract, &header);
-  if (ret < 0)
-    {
-      return ret;
+      ret = p2_container_validate_internal(&backing, &config->contract,
+                                           &header);
+      if (ret < 0)
+        {
+          return ret;
+        }
     }
 
   ret = p2_container_copy_groups(&backing, &header,
@@ -1778,8 +1832,10 @@ int p2_python_container_initialize(
                                    container);
   if (ret < 0)
     {
+      int rollback = p2_overlay_uninstall_groups();
+
       memset(container, 0, sizeof(*container));
-      return ret;
+      return rollback < 0 ? rollback : ret;
     }
 
   return 0;
@@ -1807,12 +1863,8 @@ int p2_python_container_overlay_loader(FAR void *arg, uint32_t group,
                                        size_t image_size)
 {
   FAR struct p2_python_container_s *container = arg;
-  uint8_t raw[P2_CONTAINER_GROUP_SIZE];
-  uint32_t stored_source;
-  uint32_t stored_size;
-  uint32_t stored_flags;
-  uint64_t offset;
-  uint64_t expected_source;
+  struct p2_overlay_group_s descriptor;
+  uint64_t source_offset;
   int ret;
 
   if (container == NULL || container->state != P2_CONTAINER_STATE_READY ||
@@ -1825,31 +1877,22 @@ int p2_python_container_overlay_loader(FAR void *arg, uint32_t group,
       return -EINVAL;
     }
 
-  offset = (uint64_t)container->group_table_offset +
-           (uint64_t)group * P2_CONTAINER_GROUP_SIZE;
-  if (offset > container->backing_size ||
-      sizeof(raw) > container->backing_size - offset)
-    {
-      return -EILSEQ;
-    }
-
-  ret = p2_container_target_read(&container->target,
-                                 container->backing_address + offset,
-                                 raw, sizeof(raw));
+  ret = p2_overlay_get_group(group, &descriptor);
   if (ret < 0)
     {
       return ret;
     }
 
-  stored_source = p2_container_getle32(raw);
-  stored_size = p2_container_getle32(raw + 4);
-  stored_flags = p2_container_getle32(raw + 12);
-  expected_source = (uint64_t)container->backing_address + stored_source;
-  if (expected_source > UINTPTR_MAX || source != expected_source ||
-      stored_size != image_size ||
-      stored_flags != P2_OVERLAY_GROUP_FLAGS_PACKED_V1 ||
-      stored_source > container->backing_size ||
-      stored_size > container->backing_size - stored_source)
+  if (descriptor.source != source || descriptor.image_size != image_size ||
+      descriptor.flags != P2_OVERLAY_GROUP_FLAGS_PACKED_V1 ||
+      source < container->backing_address)
+    {
+      return -EILSEQ;
+    }
+
+  source_offset = (uint64_t)source - container->backing_address;
+  if (source_offset > container->backing_size ||
+      image_size > container->backing_size - source_offset)
     {
       return -EILSEQ;
     }

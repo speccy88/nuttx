@@ -36,7 +36,8 @@ def complete_log():
         "P2PSRAM:GEOMETRY:SIZE=33554432:CHIPS=4:CHIP_SIZE=8388608:"
         "WORD=4:MAX_REQUEST=65536:COG=2",
         "P2PSRAM:PROFILE:MAX_REQUEST=65536:QPI_HZ=5000000:"
-        "TICK_USEC=10000:TIMEOUT_TICKS=500:CANCEL_GRACE_TICKS=100",
+        "BULK_QPI_HZ=90000000:TICK_USEC=10000:TIMEOUT_TICKS=500:"
+        "CANCEL_GRACE_TICKS=100",
         "P2PSRAM:WALKING:PASS:BITS=32",
         "P2PSRAM:ADDRESS:PASS:LINES=23",
         "P2PSRAM:BOUNDARY:PASS:COUNT=5",
@@ -50,10 +51,12 @@ def complete_log():
         (
             "P2PSRAM:FULL:PASS:BYTES=33554432:FNV1A={}".format(CHECKSUM),
             "P2PSRAM:THROUGHPUT:WRITE_BPS=900000:READ_BPS=1100000",
-            "P2PSRAM:CONCURRENT:PASS:WORK=32768:ELAPSED_TICKS=4:"
-            "CPU_AVAILABLE_PERMILLE=930:CPU_OCCUPANCY_PERMILLE=70",
+            "P2PSRAM:CONCURRENT:PASS:REQUESTS=64:BYTES=2097152:WORK=32768:"
+            "ELAPSED_CYCLES=72000000:BASELINE_WORK=65536:"
+            "BASELINE_CYCLES=72000000:COUNTER_HZ=180000000:"
+            "CPU_AVAILABLE_PERMILLE=500:CPU_OCCUPANCY_PERMILLE=500",
             "P2PSRAM:TIMEOUT:PASS:RESULT=110:BYTES=32768:"
-            "DEADLINE_TICKS=1:MIN_WIRE_USEC=24576:TICK_USEC=10000",
+            "DEADLINE_TICKS=1:FAULT=COOPERATIVE_STALL:TICK_USEC=10000",
             "P2PSRAM:RECOVERY:PASS",
             "P2PSRAM:CE_TIMING:PASS:MAX_CYCLES=711:LIMIT_CYCLES=1440",
             f"P2PSRAM:PASS:SEQUENCE={SEQUENCE}",
@@ -69,6 +72,9 @@ class PsramProtocolTests(unittest.TestCase):
         self.assertEqual(result["values"]["full_bytes"], 32 * 1024 * 1024)
         self.assertEqual(result["values"]["fnv1a"], int(CHECKSUM, 16))
         self.assertEqual(result["values"]["max_ce_cycles"], 711)
+        self.assertEqual(result["values"]["concurrent_requests"], 64)
+        self.assertEqual(result["values"]["concurrent_bytes"], 2 * 1024 * 1024)
+        self.assertEqual(result["values"]["cpu_available_permille"], 500)
 
     def test_exact_nsh_prompt_prefixed_begin_is_accepted(self):
         text = complete_log().replace(
@@ -142,12 +148,15 @@ class PsramProtocolTests(unittest.TestCase):
         replacements = (
             ("MAX_REQUEST=65536:COG=2", "MAX_REQUEST=32768:COG=2"),
             ("QPI_HZ=5000000", "QPI_HZ=4000000"),
+            ("BULK_QPI_HZ=90000000", "BULK_QPI_HZ=84000000"),
             ("FNV1A=" + CHECKSUM, "FNV1A=00000000"),
             (
-                "CPU_AVAILABLE_PERMILLE=930:CPU_OCCUPANCY_PERMILLE=70",
+                "CPU_AVAILABLE_PERMILLE=500:CPU_OCCUPANCY_PERMILLE=500",
                 "CPU_AVAILABLE_PERMILLE=0:CPU_OCCUPANCY_PERMILLE=1000",
             ),
-            ("MIN_WIRE_USEC=24576", "MIN_WIRE_USEC=9999"),
+            ("BASELINE_WORK=65536", "BASELINE_WORK=32768"),
+            ("ELAPSED_CYCLES=72000000", "ELAPSED_CYCLES=900000001"),
+            ("FAULT=COOPERATIVE_STALL", "FAULT=FAST_TRANSFER"),
         )
         for original, replacement in replacements:
             with self.subTest(replacement=replacement):

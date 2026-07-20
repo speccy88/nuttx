@@ -1,40 +1,13 @@
-From 11cac1aa0c4b32274c4f8bc0854aab2d5b4bbf68 Mon Sep 17 00:00:00 2001
-From: Frederick Blais <fred_blais5@hotmail.com>
-Date: Sat, 18 Jul 2026 03:53:54 -0400
-Subject: [PATCH] libp2: install standalone conversion builtins
-
----
- build.py                                      |  71 ++++-
- libp2/lib/builtins/CMakeLists.txt             |   5 +-
- libp2/lib/builtins/floatdidf.c                |  38 +--
- libp2/lib/builtins/fp_fixint_impl.inc         |   7 +-
- libp2/lib/builtins/memcpy.c                   |   1 -
- libp2/lib/builtins/powf.c                     |   4 +-
- libp2/lib/builtins/sqrtf.c                    |   4 +-
- .../builtins/tests/runtime_builtins_test.c    | 177 ++++++++++++
- .../builtins/tests/test_runtime_builtins.py   | 260 ++++++++++++++++++
- 9 files changed, 529 insertions(+), 38 deletions(-)
- create mode 100644 libp2/lib/builtins/tests/runtime_builtins_test.c
- create mode 100644 libp2/lib/builtins/tests/test_runtime_builtins.py
-
 diff --git a/build.py b/build.py
-index 07567d4..a8361e3 100644
+index 07567d4a288d0542a5c87ff74b02cd906cf113bd..a8361e3a7222b81a2d777e9b1029b6c984ab9d50 100644
 --- a/build.py
 +++ b/build.py
-@@ -1,6 +1,9 @@
- import argparse
- import os
+@@ -2,0 +3 @@ import os
 +import shutil
- import subprocess
+@@ -3,0 +5,2 @@ import subprocess
 +import sys
 +import tempfile
- 
- DEBUG_BUILD_DIR = "llvm-project/build_debug"
- RELEASE_BUILD_DIR = "llvm-project/build_release"
-@@ -24,6 +27,41 @@ def copy(src, dst, cwd=None, recurse=False):
- 
-     return True
- 
+@@ -26,0 +30,35 @@ def copy(src, dst, cwd=None, recurse=False):
 +def install_regular_file(src, dst):
 +    """Atomically install one non-empty regular file with a stable mode."""
 +
@@ -70,13 +43,7 @@ index 07567d4..a8361e3 100644
 +
 +    return True
 +
- def build_llvm(configure=True, debug=False, install_dest=None):
-     '''
-     if install_dest is None, then don't run install
-@@ -120,6 +158,16 @@ def build_libp2(install_dest, llvm, clean=False, configure=True):
-     if not copy(os.path.join(build_dir, 'lib', 'libp2.a'), os.path.join(install_dir, 'lib', 'libp2.a')):
-         return False
- 
+@@ -122,0 +161,10 @@ def build_libp2(install_dest, llvm, clean=False, configure=True):
 +    # NuttX links with ld.lld directly, so keep the compiler ABI runtime in a
 +    # standalone archive as well as embedding it in libp2.a.  Consumers which
 +    # already supply their own C runtime can then use the soft-float/integer
@@ -87,26 +54,17 @@ index 07567d4..a8361e3 100644
 +            os.path.join(install_dir, 'lib', 'libcompiler_builtins.a')):
 +        return False
 +
-     if not copy(os.path.join(build_dir, 'lib', 'p2db', 'libp2db.a'), os.path.join(install_dir, 'lib', 'libp2db.a')):
-         return False
- 
-@@ -240,19 +288,20 @@ def main():
-     # build LLVM
-     if not skip_llvm:
-         if not build_llvm(configure, debug, install_dest):
+@@ -243 +291 @@ def main():
 -            return
 +            return 1
- 
-     # build libp2
-     if not skip_libp2:
-         if (install_dest):
+@@ -248,2 +296,4 @@ def main():
 -            r = build_libp2(install_dest, llvm, clean, configure)
 -            r = build_libp2pp(install_dest, llvm, clean, configure)
 +            if not build_libp2(install_dest, llvm, clean, configure):
 +                return 1
 +            if not build_libp2pp(install_dest, llvm, clean, configure):
 +                return 1
-         else:
+@@ -251,5 +301,4 @@ def main():
 -            r = build_libp2(build_dir, llvm, clean, configure)
 -            r = build_libp2pp(build_dir, llvm, clean, configure)
 -
@@ -116,197 +74,419 @@ index 07567d4..a8361e3 100644
 +                return 1
 +            if not build_libp2pp(build_dir, llvm, clean, configure):
 +                return 1
- 
-     # build libc
-     if not skip_libc:
-@@ -262,8 +311,10 @@ def main():
-             r = build_libc(build_dir, llvm, clean, configure)
- 
-         if not r:
+@@ -265 +314,3 @@ def main():
 -            return
 +            return 1
 +
 +    return 0
- 
- 
- if __name__ == "__main__":
+@@ -269 +320 @@ if __name__ == "__main__":
 -    main();
 +    raise SystemExit(main())
 diff --git a/libp2/lib/builtins/CMakeLists.txt b/libp2/lib/builtins/CMakeLists.txt
-index b23c3ea..61dc786 100644
+index b23c3ea182af85269329e6148bca075cae3a0a9f..61dc786503343088194923bf91ad10b70108679f 100644
 --- a/libp2/lib/builtins/CMakeLists.txt
 +++ b/libp2/lib/builtins/CMakeLists.txt
-@@ -10,6 +10,7 @@ add_library(builtins OBJECT
-     divsi3.c
-     divsf3.c
-     extendsfdf2.c
+@@ -12,0 +13 @@ add_library(builtins OBJECT
 +    fixdfdi.c
-     fixdfsi.c
-     fixsfdi.c
-     fixsfsi.c
-@@ -17,6 +18,7 @@ add_library(builtins OBJECT
-     fixunsdfsi.c
-     fixunssfdi.c
-     fixunssfsi.c
+@@ -19,0 +21 @@ add_library(builtins OBJECT
 +    floatdidf.c
-     floatdisf.c
-     floatsidf.c
-     floatundidf.c
-@@ -37,6 +39,7 @@ add_library(builtins OBJECT
-     negdi2.c
-     subdf3.c
-     subsf3.c
+@@ -39,0 +42 @@ add_library(builtins OBJECT
 +    truncdfsf2.c
-     udivdi3.c
-     udivmoddi4.c
-     umoddi3.c
-@@ -50,4 +53,4 @@ target_include_directories(builtins PRIVATE ${CMAKE_SOURCE_DIR}/include)
- # create a compiler_builtins library for rust
- add_library(compiler_builtins STATIC)
- 
+@@ -53 +56 @@ add_library(compiler_builtins STATIC)
 -target_link_libraries(compiler_builtins builtins)
 \ No newline at end of file
 +target_link_libraries(compiler_builtins builtins)
 diff --git a/libp2/lib/builtins/floatdidf.c b/libp2/lib/builtins/floatdidf.c
-index dcef670..6231ffc 100644
+index dcef670a5bbf5da83b4b6f3371045b80c1e44200..9200cf63be4f0de4587f88c43683ec5181b5d211 100644
 --- a/libp2/lib/builtins/floatdidf.c
 +++ b/libp2/lib/builtins/floatdidf.c
-@@ -24,9 +24,9 @@ COMPILER_RT_ABI double __floatdidf(di_int a) {
-   if (a == 0)
-     return 0.0;
-   const unsigned N = sizeof(di_int) * CHAR_BIT;
+@@ -24,33 +24,76 @@ COMPILER_RT_ABI double __floatdidf(di_int a) {
+-  if (a == 0)
+-    return 0.0;
+-  const unsigned N = sizeof(di_int) * CHAR_BIT;
 -  const di_int s = a >> (N - 1);
 -  a = (a ^ s) - s;
 -  int sd = N - __builtin_clzll(a); // number of significant digits
-+  const du_int s = (du_int)(a >> (N - 1));
-+  du_int magnitude = ((du_int)a ^ s) - s;
-+  int sd = N - __builtin_clzll(magnitude); // number of significant digits
-   int e = sd - 1;                  // exponent
-   if (sd > DBL_MANT_DIG) {
-     //  start:  0000000000000000000001xxxxxxxxxxxxxxxxxxxxxxPQxxxxxxxxxxxxxxxxxx
-@@ -38,32 +38,34 @@ COMPILER_RT_ABI double __floatdidf(di_int a) {
-     //  R = "or" of all bits to the right of Q
-     switch (sd) {
-     case DBL_MANT_DIG + 1:
+-  int e = sd - 1;                  // exponent
+-  if (sd > DBL_MANT_DIG) {
+-    //  start:  0000000000000000000001xxxxxxxxxxxxxxxxxxxxxxPQxxxxxxxxxxxxxxxxxx
+-    //  finish: 000000000000000000000000000000000000001xxxxxxxxxxxxxxxxxxxxxxPQR
+-    //                                                12345678901234567890123456
+-    //  1 = msb 1 bit
+-    //  P = bit DBL_MANT_DIG-1 bits to the right of 1
+-    // Q = bit DBL_MANT_DIG bits to the right of 1
+-    //  R = "or" of all bits to the right of Q
+-    switch (sd) {
+-    case DBL_MANT_DIG + 1:
 -      a <<= 1;
-+      magnitude <<= 1;
-       break;
-     case DBL_MANT_DIG + 2:
-       break;
-     default:
+-      break;
+-    case DBL_MANT_DIG + 2:
+-      break;
+-    default:
 -      a = ((du_int)a >> (sd - (DBL_MANT_DIG + 2))) |
 -          ((a & ((du_int)(-1) >> ((N + DBL_MANT_DIG + 2) - sd))) != 0);
-+      magnitude =
-+          (magnitude >> (sd - (DBL_MANT_DIG + 2))) |
-+          ((magnitude &
-+            ((du_int)(-1) >> ((N + DBL_MANT_DIG + 2) - sd))) != 0);
-     };
-     // finish:
+-    };
+-    // finish:
 -    a |= (a & 4) != 0; // Or P into R
 -    ++a;               // round - this step may add a significant bit
 -    a >>= 2;           // dump Q and R
 -    // a is now rounded to DBL_MANT_DIG or DBL_MANT_DIG+1 bits
 -    if (a & ((du_int)1 << DBL_MANT_DIG)) {
 -      a >>= 1;
-+    magnitude |= (magnitude & 4) != 0; // Or P into R
-+    ++magnitude;                       // round; may add a significant bit
-+    magnitude >>= 2;                   // dump Q and R
-+    // magnitude is now rounded to DBL_MANT_DIG or DBL_MANT_DIG+1 bits
-+    if (magnitude & ((du_int)1 << DBL_MANT_DIG)) {
-+      magnitude >>= 1;
-       ++e;
-     }
+-      ++e;
++  volatile dwords input;
++  volatile double_bits result;
++  input.all = a;
++  su_int low = input.s.low;
++  su_int high = (su_int)input.s.high;
++  const su_int sign = high >> 31;
++  const su_int sign_mask = (su_int)0 - sign;
++  su_int magnitude_low;
++  su_int magnitude_high;
++  su_int significand_low;
++  su_int significand_high;
++  int exponent;
++
++  /*
++   * Keep this conversion entirely in 32-bit words.  On P2, variable shifts
++   * and multiplication of a 64-bit C value call other compiler-rt routines.
++   * A compiler-rt conversion routine must not depend on that nested LUT call
++   * chain merely to handle zero or construct an IEEE-754 representation.
++   */
++  if ((low | high) == 0) {
++    result.u.s.low = 0;
++    result.u.s.high = 0;
++    return result.f;
++  }
++
++  low ^= sign_mask;
++  high ^= sign_mask;
++  magnitude_low = low + sign;
++  magnitude_high = high + (magnitude_low < low);
++
++  /*
++   * Inline the target-proven uint32 conversion rather than nesting another
++   * runtime call inside __floatdidf.  The zero case above guarantees that a
++   * low-word magnitude is nonzero here.
++   */
++  if (__builtin_expect(magnitude_high == 0, 1)) {
++    const unsigned int word_exponent =
++        31U - (unsigned int)clzsi(magnitude_low | 1U);
++    const unsigned int shift = 52U - word_exponent;
++
++    if (shift < 32) {
++      significand_low = magnitude_low << shift;
++      significand_high = magnitude_low >> (32 - shift);
++    } else {
++      significand_low = 0;
++      significand_high = magnitude_low << (shift - 32);
++    }
++    result.u.s.low = significand_low;
++    result.u.s.high = (sign << 31) | ((word_exponent + 1023U) << 20) |
++                      (significand_high & UINT32_C(0x000fffff));
++    return result.f;
++  }
++
++  /* The remaining magnitude has a nonzero high word and 33 to 64 bits. */
++  {
++    volatile su_int scan = magnitude_high;
++    exponent = 31;
++    do {
++      scan >>= 1;
++      ++exponent;
++    } while (scan != 0);
++  }
++
++  if (exponent <= 52) {
++    const unsigned int shift = 52U - (unsigned int)exponent;
++
++    if (shift == 0) {
++      significand_low = magnitude_low;
++      significand_high = magnitude_high;
++    } else if (shift < 32) {
++      significand_low = magnitude_low << shift;
++      significand_high =
++          (magnitude_high << shift) | (magnitude_low >> (32 - shift));
++    } else {
++      significand_low = 0;
++      significand_high = magnitude_low << (shift - 32);
+@@ -58 +100,0 @@ COMPILER_RT_ABI double __floatdidf(di_int a) {
 -    // a is now rounded to DBL_MANT_DIG bits
-+    // magnitude is now rounded to DBL_MANT_DIG bits
-   } else {
+@@ -60,2 +102,25 @@ COMPILER_RT_ABI double __floatdidf(di_int a) {
 -    a <<= (DBL_MANT_DIG - sd);
 -    // a is now rounded to DBL_MANT_DIG bits
-+    magnitude <<= (DBL_MANT_DIG - sd);
-+    // magnitude is now rounded to DBL_MANT_DIG bits
-   }
-   double_bits fb;
-   fb.u.s.high = ((su_int)s & 0x80000000) |        // sign
-                 ((su_int)(e + 1023) << 20) |      // exponent
++    /* A signed 64-bit input needs at most eleven discarded bits. */
++    const unsigned int shift = (unsigned int)exponent - 52U;
++    const su_int round_bit = (su_int)1 << (shift - 1);
++    const su_int sticky_mask = round_bit - 1;
++    const bool round_up =
++        (magnitude_low & round_bit) != 0 &&
++        ((magnitude_low & sticky_mask) != 0 ||
++         ((magnitude_low >> shift) & 1U) != 0);
++
++    significand_low =
++        (magnitude_low >> shift) | (magnitude_high << (32 - shift));
++    significand_high = magnitude_high >> shift;
++    if (round_up) {
++      ++significand_low;
++      if (significand_low == 0)
++        ++significand_high;
++    }
++
++    /* Rounding can carry a 53-bit significand into a 54th bit. */
++    if ((significand_high & UINT32_C(0x00200000)) != 0) {
++      significand_low =
++          (significand_low >> 1) | (significand_high << 31);
++      significand_high >>= 1;
++      ++exponent;
++    }
+@@ -63,7 +128,6 @@ COMPILER_RT_ABI double __floatdidf(di_int a) {
+-  double_bits fb;
+-  fb.u.s.high = ((su_int)s & 0x80000000) |        // sign
+-                ((su_int)(e + 1023) << 20) |      // exponent
 -                ((su_int)(a >> 32) & 0x000FFFFF); // mantissa-high
 -  fb.u.s.low = (su_int)a;                         // mantissa-low
-+                ((su_int)(magnitude >> 32) & 0x000FFFFF); // mantissa-high
-+  fb.u.s.low = (su_int)magnitude;                 // mantissa-low
-   return fb.f;
+-  return fb.f;
+-}
+\ No newline at end of file
++
++  result.u.s.low = significand_low;
++  result.u.s.high = (sign << 31) | ((su_int)(exponent + 1023) << 20) |
++                    (significand_high & UINT32_C(0x000fffff));
++  return result.f;
++}
+diff --git a/libp2/lib/builtins/floatunsidf.c b/libp2/lib/builtins/floatunsidf.c
+index 7f288e637a94d3e99a712dd815dba5199c794e95..64f68c3e6e1d2af48cae710e8b7fcf97e39c38bb 100644
+--- a/libp2/lib/builtins/floatunsidf.c
++++ b/libp2/lib/builtins/floatunsidf.c
+@@ -20,19 +20,28 @@
+-fp_t __attribute__ ((noinline)) ___floatunsidf(su_int a) {
+-
+-  const int aWidth = sizeof a * CHAR_BIT;
+-
+-  // Handle zero as a special case to protect clz
+-  if (a == 0)
+-    return fromRep(0);
+-
+-  // Exponent of (fp_t)a is the width of abs(a).
+-  const int exponent = (aWidth - 1) - clzsi(a);
+-  rep_t result;
+-
+-  // Shift a into the significand field and clear the implicit bit.
+-  const int shift = significandBits - exponent;
+-  result = (rep_t)a << shift ^ implicitBit;
+-
+-  // Insert the exponent
+-  result += (rep_t)(exponent + exponentBias) << significandBits;
+-  return fromRep(result);
++fp_t __attribute__((noinline)) ___floatunsidf(su_int a) {
++  volatile double_bits result;
++  su_int significand_low;
++  su_int significand_high;
++  unsigned int shift;
++  int exponent;
++
++  /* All uint32_t values are exactly representable in binary64. */
++  if (a == 0) {
++    result.u.s.low = 0;
++    result.u.s.high = 0;
++    return result.f;
++  }
++
++  exponent = 31 - clzsi(a);
++  shift = 52U - (unsigned int)exponent;
++  if (shift < 32) {
++    significand_low = a << shift;
++    significand_high = a >> (32 - shift);
++  } else {
++    significand_low = 0;
++    significand_high = a << (shift - 32);
++  }
++
++  result.u.s.low = significand_low;
++  result.u.s.high = ((su_int)(exponent + exponentBias) << 20) |
++                    (significand_high & UINT32_C(0x000fffff));
++  return result.f;
+@@ -43 +52 @@ COMPILER_RT_ABI fp_t __floatunsidf(unsigned int a) {
 -}
 \ No newline at end of file
 +}
+diff --git a/libp2/lib/builtins/fp_add_impl.inc b/libp2/lib/builtins/fp_add_impl.inc
+index eda093348ef2804335fe88b52582c8435b518405..7471414942b52476f5aa3f80206f0d183431e77d 100644
+--- a/libp2/lib/builtins/fp_add_impl.inc
++++ b/libp2/lib/builtins/fp_add_impl.inc
+@@ -12,2 +12,2 @@
+-// Modified for P2LLVM by N. Ermoshkin
+-// Only change is to disable inlining for wrapper functions to live in lut
++// Modified for P2LLVM to keep wrapper functions in LUT and to make the
++// binary64 zero path independent of nested 64-bit runtime calls.
+@@ -20,0 +21,39 @@ static __attribute__ ((noinline)) fp_t __addXf3__(fp_t a, fp_t b) {
++#if defined(DOUBLE_PRECISION)
++  volatile double_bits aBits;
++  volatile double_bits bBits;
++  aBits.f = a;
++  bBits.f = b;
++  const su_int aAbsHigh = aBits.u.s.high & UINT32_C(0x7fffffff);
++  const su_int bAbsHigh = bBits.u.s.high & UINT32_C(0x7fffffff);
++  const bool aZero = (aAbsHigh | aBits.u.s.low) == 0;
++  const bool bZero = (bAbsHigh | bBits.u.s.low) == 0;
++
++  /* Handle additive identities before P2 needs a 64-bit alignment shift. */
++  if (aZero) {
++    if (bZero) {
++      volatile double_bits result;
++      result.u.s.low = 0;
++      result.u.s.high = aBits.u.s.high & bBits.u.s.high;
++      return result.f;
++    }
++    {
++      volatile double_bits result;
++      result.u.s.low = bBits.u.s.low;
++      result.u.s.high = bBits.u.s.high;
++      if ((bAbsHigh > UINT32_C(0x7ff00000)) ||
++          (bAbsHigh == UINT32_C(0x7ff00000) && result.u.s.low != 0))
++        result.u.s.high |= UINT32_C(0x00080000);
++      return result.f;
++    }
++  }
++  if (bZero) {
++    volatile double_bits result;
++    result.u.s.low = aBits.u.s.low;
++    result.u.s.high = aBits.u.s.high;
++    if ((aAbsHigh > UINT32_C(0x7ff00000)) ||
++        (aAbsHigh == UINT32_C(0x7ff00000) && result.u.s.low != 0))
++      result.u.s.high |= UINT32_C(0x00080000);
++    return result.f;
++  }
++#endif
++
 diff --git a/libp2/lib/builtins/fp_fixint_impl.inc b/libp2/lib/builtins/fp_fixint_impl.inc
-index 9b794ba..3ac9bf3 100644
+index 9b794ba937817397aee8613c664cf662e22413f0..3ac9bf33a35be677c872a6da330fd71c85cdce4f 100644
 --- a/libp2/lib/builtins/fp_fixint_impl.inc
 +++ b/libp2/lib/builtins/fp_fixint_impl.inc
-@@ -37,7 +37,10 @@ static __attribute__ ((noinline))  fixint_t __fixint(fp_t a) {
-   // If 0 <= exponent < significandBits, right shift to get the result.
-   // Otherwise, shift left.
-   if (exponent < significandBits)
+@@ -40 +40,2 @@ static __attribute__ ((noinline))  fixint_t __fixint(fp_t a) {
 -    return sign * (significand >> (significandBits - exponent));
 +    return (fixint_t)(sign *
 +                      (significand >> (significandBits - exponent)));
-   else
+@@ -42 +43,3 @@ static __attribute__ ((noinline))  fixint_t __fixint(fp_t a) {
 -    return sign * ((fixint_t)significand << (exponent - significandBits));
 +    return (fixint_t)(sign *
 +                      ((fixuint_t)significand <<
 +                       (exponent - significandBits)));
- }
+diff --git a/libp2/lib/builtins/fp_mul_impl.inc b/libp2/lib/builtins/fp_mul_impl.inc
+index 8cc8ed02e487dce4d89c7dfdac21f546a178910c..0f10102ad3e2c09936b396fc9f018f2d3b6c1dc4 100644
+--- a/libp2/lib/builtins/fp_mul_impl.inc
++++ b/libp2/lib/builtins/fp_mul_impl.inc
+@@ -12,2 +12,2 @@
+-// Modified for P2LLVM by N. Ermoshkin
+-// Only change is to disable inlining for wrapper functions to live in lut
++// Modified for P2LLVM to keep wrapper functions in LUT and to make the
++// binary64 zero path independent of nested 64-bit runtime calls.
+@@ -19,0 +20,40 @@ static __attribute__ ((noinline))  fp_t __mulXf3__(fp_t a, fp_t b) {
++#if defined(DOUBLE_PRECISION)
++  volatile double_bits aBits;
++  volatile double_bits bBits;
++  aBits.f = a;
++  bBits.f = b;
++  const su_int aAbsHigh = aBits.u.s.high & UINT32_C(0x7fffffff);
++  const su_int bAbsHigh = bBits.u.s.high & UINT32_C(0x7fffffff);
++  const bool aZero = (aAbsHigh | aBits.u.s.low) == 0;
++  const bool bZero = (bAbsHigh | bBits.u.s.low) == 0;
++
++  /*
++   * Extracting a binary64 exponent normally emits __lshrdi3 on P2.  Handle
++   * zero using volatile 32-bit words before any nested compiler-rt call.
++   */
++  if (aZero || bZero) {
++    const su_int otherLow = aZero ? bBits.u.s.low : aBits.u.s.low;
++    const su_int otherHigh = aZero ? bBits.u.s.high : aBits.u.s.high;
++    const su_int otherAbsHigh = otherHigh & UINT32_C(0x7fffffff);
++    volatile double_bits result;
++
++    if ((otherAbsHigh & UINT32_C(0x7ff00000)) ==
++        UINT32_C(0x7ff00000)) {
++      /* Preserve and quiet a NaN; infinity times zero is a canonical qNaN. */
++      if (otherAbsHigh != UINT32_C(0x7ff00000) || otherLow != 0) {
++        result.u.s.low = otherLow;
++        result.u.s.high = otherHigh | UINT32_C(0x00080000);
++        return result.f;
++      }
++      result.u.s.low = 0;
++      result.u.s.high = UINT32_C(0x7ff80000);
++      return result.f;
++    }
++
++    result.u.s.low = 0;
++    result.u.s.high =
++        (aBits.u.s.high ^ bBits.u.s.high) & UINT32_C(0x80000000);
++    return result.f;
++  }
++#endif
++
+diff --git a/libp2/lib/builtins/int_lib.h b/libp2/lib/builtins/int_lib.h
+index da71445123589700f4063c0b5e4fc14eb14b02d1..88ba6b064ea69a8ee06be3109bd8b098865c06a4 100644
+--- a/libp2/lib/builtins/int_lib.h
++++ b/libp2/lib/builtins/int_lib.h
+@@ -30 +30,7 @@
+-#define COMPILER_RT_ABI __attribute__ ((section ("lut"), cogtext)) 
++/*
++ * NuttX calls compiler-rt helpers as ordinary Hub functions.  Do not place
++ * them in the P2 LUT image: an absolute CALLA whose encoded address is in
++ * 0x200..0x3ff selects a LUT word address, not the same Hub byte address.
++ * The linker script keeps ordinary .text at 0x0a00 or above.
++ */
++#define COMPILER_RT_ABI
 diff --git a/libp2/lib/builtins/memcpy.c b/libp2/lib/builtins/memcpy.c
-index d586d71..92f4125 100755
+index d586d714876255a66b5bf2b578a412b49676e250..c21de3610aab2432428fc9062a50a2a0e8a4a5a7 100755
 --- a/libp2/lib/builtins/memcpy.c
 +++ b/libp2/lib/builtins/memcpy.c
-@@ -7,7 +7,6 @@
-  * MIT licensed (see terms at end of file)
-  */
- #include <propeller.h>
+@@ -10 +9,0 @@
 -#include <stdio.h>
- 
- __attribute__ ((section ("lut"), cogtext, no_builtin("memcpy")))
- void *memcpy(void *dst, const void *src, size_t n) {
+@@ -12 +11 @@
+-__attribute__ ((section ("lut"), cogtext, no_builtin("memcpy")))
++__attribute__ ((no_builtin("memcpy")))
+diff --git a/libp2/lib/builtins/memmove.c b/libp2/lib/builtins/memmove.c
+index e5e34334462f73afe784b68c0b188b6438fbd343..f51df971b8a65546b806f825a98bed3565b375dd 100755
+--- a/libp2/lib/builtins/memmove.c
++++ b/libp2/lib/builtins/memmove.c
+@@ -15 +15 @@
+-__attribute__ ((section ("lut"), cogtext, no_builtin("memmove")))
++__attribute__ ((no_builtin("memmove")))
+diff --git a/libp2/lib/builtins/memset.c b/libp2/lib/builtins/memset.c
+index d7a3a3f4a54803d1f2dc5e638bf2b895e2c65807..f577ef08335962391dcf53c3f317af95b5cd570d 100755
+--- a/libp2/lib/builtins/memset.c
++++ b/libp2/lib/builtins/memset.c
+@@ -12 +12 @@
+-__attribute__ ((section ("lut"), cogtext, no_builtin("memset")))
++__attribute__ ((no_builtin("memset")))
 diff --git a/libp2/lib/builtins/powf.c b/libp2/lib/builtins/powf.c
-index b3bf3a4..efcb666 100755
+index b3bf3a4283c6ab9fbc254d72ab8e02700e5e2cae..efcb6663961e5ca5543408134307c68ad24f7952 100755
 --- a/libp2/lib/builtins/powf.c
 +++ b/libp2/lib/builtins/powf.c
-@@ -1,10 +1,8 @@
- #define SINGLE_PRECISION
- #include "fp_lib.h"
- 
+@@ -4,2 +3,0 @@
 -#include "math.h"
 -
- extern fp_t __powf(fp_t a, fp_t _b);
- 
- COMPILER_RT_ABI fp_t powf(fp_t a, fp_t b) {
-     return __powf(a, b);
+@@ -10 +8 @@ COMPILER_RT_ABI fp_t powf(fp_t a, fp_t b) {
 -}
 \ No newline at end of file
 +}
 diff --git a/libp2/lib/builtins/sqrtf.c b/libp2/lib/builtins/sqrtf.c
-index ab3b3d3..11bb2f7 100644
+index ab3b3d3ad387b64b8c2f807552c251bab99f80b2..11bb2f74832e7a11c5a2e8aacc42992a0d2e3652 100644
 --- a/libp2/lib/builtins/sqrtf.c
 +++ b/libp2/lib/builtins/sqrtf.c
-@@ -1,8 +1,6 @@
- #define SINGLE_PRECISION
- #include "fp_lib.h"
- 
+@@ -4,2 +3,0 @@
 -#include <stdio.h>
 -
- static const fp_t one = 1.0, tiny=1.0e-30;
- 
- fp_t __attribute__ ((noinline)) __sqrtf(fp_t x) {
-@@ -76,4 +74,4 @@ fp_t __attribute__ ((noinline)) __sqrtf(fp_t x) {
- 
- COMPILER_RT_ABI fp_t sqrtf(fp_t a) {
-     return __sqrtf(a);
+@@ -79 +77 @@ COMPILER_RT_ABI fp_t sqrtf(fp_t a) {
 -}
 \ No newline at end of file
 +}
 diff --git a/libp2/lib/builtins/tests/runtime_builtins_test.c b/libp2/lib/builtins/tests/runtime_builtins_test.c
 new file mode 100644
-index 0000000..a3fd657
+index 0000000000000000000000000000000000000000..cb2a9143b5daeba38af9ded284c132595998e077
 --- /dev/null
 +++ b/libp2/lib/builtins/tests/runtime_builtins_test.c
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,329 @@
 +//===-- runtime_builtins_test.c - P2 runtime builtin tests ----------------===//
 +//
 +// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -326,6 +506,9 @@ index 0000000..a3fd657
 +float p2_test_truncdfsf2(double value);
 +int64_t p2_test_fixdfdi(double value);
 +double p2_test_floatdidf(int64_t value);
++double p2_test_floatunsidf(uint32_t value);
++double p2_test_adddf3(double left, double right);
++double p2_test_muldf3(double left, double right);
 +
 +static uint64_t random_state = UINT64_C(0x4d595df4d0f33173);
 +
@@ -419,6 +602,58 @@ index 0000000..a3fd657
 +  return 1;
 +}
 +
++static int check_unsigned_float(uint32_t input) {
++  volatile uint32_t source = input;
++  const uint64_t got = double_to_bits(p2_test_floatunsidf(source));
++  const uint64_t expected = double_to_bits((double)source);
++
++  if (got == expected)
++    return 0;
++
++  fprintf(stderr,
++          "__floatunsidf(0x%08" PRIx32 ") = 0x%016" PRIx64
++          ", expected 0x%016" PRIx64 "\n",
++          input, got, expected);
++  return 1;
++}
++
++static int check_binary(const char *name, double (*operation)(double, double),
++                        uint64_t left_bits, uint64_t right_bits,
++                        int multiply) {
++  volatile double left = double_from_bits(left_bits);
++  volatile double right = double_from_bits(right_bits);
++  volatile double expected = multiply ? left * right : left + right;
++  const uint64_t got = double_to_bits(operation(left, right));
++  const uint64_t expected_bits = double_to_bits(expected);
++
++  if (got == expected_bits)
++    return 0;
++
++  fprintf(stderr,
++          "%s(0x%016" PRIx64 ", 0x%016" PRIx64 ") = 0x%016" PRIx64
++          ", expected 0x%016" PRIx64 "\n",
++          name, left_bits, right_bits, got, expected_bits);
++  return 1;
++}
++
++static int check_binary_exact(const char *name,
++                              double (*operation)(double, double),
++                              uint64_t left_bits, uint64_t right_bits,
++                              uint64_t expected) {
++  volatile double left = double_from_bits(left_bits);
++  volatile double right = double_from_bits(right_bits);
++  const uint64_t got = double_to_bits(operation(left, right));
++
++  if (got == expected)
++    return 0;
++
++  fprintf(stderr,
++          "%s(0x%016" PRIx64 ", 0x%016" PRIx64 ") = 0x%016" PRIx64
++          ", expected 0x%016" PRIx64 "\n",
++          name, left_bits, right_bits, got, expected);
++  return 1;
++}
++
 +int main(void) {
 +  static const uint64_t trunc_edges[] = {
 +      UINT64_C(0x0000000000000000), UINT64_C(0x8000000000000000),
@@ -456,6 +691,66 @@ index 0000000..a3fd657
 +      INT64_MIN,
 +      INT64_MIN + INT64_C(1),
 +  };
++  static const uint32_t unsigned_float_edges[] = {
++      UINT32_C(0),          UINT32_C(1),          UINT32_C(2),
++      UINT32_C(0x007fffff), UINT32_C(0x00800000), UINT32_C(0x00ffffff),
++      UINT32_C(0x01000000), UINT32_C(0x7fffffff), UINT32_C(0x80000000),
++      UINT32_MAX,
++  };
++  static const uint64_t finite_double_edges[] = {
++      UINT64_C(0x0000000000000001), UINT64_C(0x000fffffffffffff),
++      UINT64_C(0x0010000000000000), UINT64_C(0x3ca0000000000000),
++      UINT64_C(0x3ff0000000000000), UINT64_C(0x4000000000000000),
++      UINT64_C(0x7fefffffffffffff), UINT64_C(0x8000000000000001),
++      UINT64_C(0x800fffffffffffff), UINT64_C(0xbff0000000000000),
++      UINT64_C(0xffefffffffffffff),
++  };
++  static const struct {
++    uint64_t left;
++    uint64_t right;
++    uint64_t expected;
++  } add_zero_edges[] = {
++      {UINT64_C(0x0000000000000000), UINT64_C(0x0000000000000000),
++       UINT64_C(0x0000000000000000)},
++      {UINT64_C(0x8000000000000000), UINT64_C(0x0000000000000000),
++       UINT64_C(0x0000000000000000)},
++      {UINT64_C(0x0000000000000000), UINT64_C(0x8000000000000000),
++       UINT64_C(0x0000000000000000)},
++      {UINT64_C(0x8000000000000000), UINT64_C(0x8000000000000000),
++       UINT64_C(0x8000000000000000)},
++      {UINT64_C(0x0000000000000000), UINT64_C(0x3e112e0be826d695),
++       UINT64_C(0x3e112e0be826d695)},
++      {UINT64_C(0xbe112e0be826d695), UINT64_C(0x8000000000000000),
++       UINT64_C(0xbe112e0be826d695)},
++      {UINT64_C(0x0000000000000000), UINT64_C(0x7ff0000000000001),
++       UINT64_C(0x7ff8000000000001)},
++      {UINT64_C(0xfff0000000000123), UINT64_C(0x8000000000000000),
++       UINT64_C(0xfff8000000000123)},
++  };
++  static const struct {
++    uint64_t left;
++    uint64_t right;
++    uint64_t expected;
++  } multiply_zero_edges[] = {
++      {UINT64_C(0x0000000000000000), UINT64_C(0x3e112e0be826d695),
++       UINT64_C(0x0000000000000000)},
++      {UINT64_C(0x8000000000000000), UINT64_C(0x3e112e0be826d695),
++       UINT64_C(0x8000000000000000)},
++      {UINT64_C(0x8000000000000000), UINT64_C(0xbe112e0be826d695),
++       UINT64_C(0x0000000000000000)},
++      {UINT64_C(0x0000000000000000), UINT64_C(0xbe112e0be826d695),
++       UINT64_C(0x8000000000000000)},
++      {UINT64_C(0x8000000000000000), UINT64_C(0x0000000000000000),
++       UINT64_C(0x8000000000000000)},
++      {UINT64_C(0x0000000000000000), UINT64_C(0x7ff0000000000000),
++       UINT64_C(0x7ff8000000000000)},
++      {UINT64_C(0xfff0000000000000), UINT64_C(0x8000000000000000),
++       UINT64_C(0x7ff8000000000000)},
++      {UINT64_C(0x0000000000000000), UINT64_C(0x7ff0000000000001),
++       UINT64_C(0x7ff8000000000001)},
++      {UINT64_C(0xfff0000000000123), UINT64_C(0x8000000000000000),
++       UINT64_C(0xfff8000000000123)},
++  };
 +  unsigned int index;
 +  unsigned int failures = 0;
 +
@@ -471,12 +766,49 @@ index 0000000..a3fd657
 +    failures += check_fix(fix_edges[index]);
 +  for (index = 0; index < sizeof(float_edges) / sizeof(float_edges[0]); index++)
 +    failures += check_float(float_edges[index]);
++  for (index = 0;
++       index < sizeof(unsigned_float_edges) / sizeof(unsigned_float_edges[0]);
++       index++)
++    failures += check_unsigned_float(unsigned_float_edges[index]);
++  for (index = 0; index < sizeof(add_zero_edges) / sizeof(add_zero_edges[0]);
++       index++)
++    failures += check_binary_exact("__adddf3", p2_test_adddf3,
++                                   add_zero_edges[index].left,
++                                   add_zero_edges[index].right,
++                                   add_zero_edges[index].expected);
++  for (index = 0;
++       index < sizeof(multiply_zero_edges) / sizeof(multiply_zero_edges[0]);
++       index++)
++    failures += check_binary_exact("__muldf3", p2_test_muldf3,
++                                   multiply_zero_edges[index].left,
++                                   multiply_zero_edges[index].right,
++                                   multiply_zero_edges[index].expected);
++  for (index = 0;
++       index < sizeof(finite_double_edges) / sizeof(finite_double_edges[0]);
++       index++) {
++    const uint64_t left = finite_double_edges[index];
++    const uint64_t right = finite_double_edges
++        [(index * 7U + 3U) %
++         (sizeof(finite_double_edges) / sizeof(finite_double_edges[0]))];
++    failures += check_binary("__adddf3", p2_test_adddf3, left, right, 0);
++    failures += check_binary("__muldf3", p2_test_muldf3, left, right, 1);
++  }
 +
 +  for (index = 0; index < 250000; index++) {
 +    const uint64_t bits = next_random();
++    const uint64_t left = next_random();
++    const uint64_t right = next_random();
 +    failures += check_trunc(bits);
 +    failures += check_fix(bits);
 +    failures += check_float((int64_t)next_random());
++    failures += check_unsigned_float((uint32_t)next_random());
++    if ((left & UINT64_C(0x7ff0000000000000)) !=
++            UINT64_C(0x7ff0000000000000) &&
++        (right & UINT64_C(0x7ff0000000000000)) !=
++            UINT64_C(0x7ff0000000000000)) {
++      failures += check_binary("__adddf3", p2_test_adddf3, left, right, 0);
++      failures += check_binary("__muldf3", p2_test_muldf3, left, right, 1);
++    }
 +    if (failures != 0)
 +      return 1;
 +  }
@@ -486,10 +818,10 @@ index 0000000..a3fd657
 +}
 diff --git a/libp2/lib/builtins/tests/test_runtime_builtins.py b/libp2/lib/builtins/tests/test_runtime_builtins.py
 new file mode 100644
-index 0000000..023790d
+index 0000000000000000000000000000000000000000..d945378a19eb562c05d1a0ac6c416b4b24349cb0
 --- /dev/null
 +++ b/libp2/lib/builtins/tests/test_runtime_builtins.py
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,483 @@
 +#!/usr/bin/env python3
 +
 +# Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -513,6 +845,7 @@ index 0000000..023790d
 +
 +BUILTINS = pathlib.Path(__file__).resolve().parents[1]
 +ROOT = BUILTINS.parents[2]
++P2_INCLUDE = BUILTINS.parents[1] / "include"
 +HARNESS = pathlib.Path(__file__).with_name("runtime_builtins_test.c")
 +
 +
@@ -548,6 +881,9 @@ index 0000000..023790d
 +            ("truncdfsf2.c", "__truncdfsf2", "p2_test_truncdfsf2"),
 +            ("fixdfdi.c", "__fixdfdi", "p2_test_fixdfdi"),
 +            ("floatdidf.c", "__floatdidf", "p2_test_floatdidf"),
++            ("floatunsidf.c", "__floatunsidf", "p2_test_floatunsidf"),
++            ("adddf3.c", "__adddf3", "p2_test_adddf3"),
++            ("muldf3.c", "__muldf3", "p2_test_muldf3"),
 +        )
 +        for source, original, replacement in sources:
 +            output = pathlib.Path(directory) / (source + ".o")
@@ -565,6 +901,16 @@ index 0000000..023790d
 +                text=True,
 +            )
 +            objects.append(output)
++
++        fp_mode = pathlib.Path(directory) / "fp_mode.c.o"
++        subprocess.run(
++            common
++            + ["-c", str(BUILTINS / "fp_mode.c"), "-o", str(fp_mode)],
++            check=True,
++            capture_output=True,
++            text=True,
++        )
++        objects.append(fp_mode)
 +
 +        executable = pathlib.Path(directory) / "runtime-builtins-test"
 +        subprocess.run(
@@ -640,21 +986,50 @@ index 0000000..023790d
 +            libp2.assert_called_once()
 +            libp2pp.assert_not_called()
 +
-+    def test_p2_objects_and_archive_export_all_three_helpers(self):
++    def test_p2_objects_and_archive_export_all_helpers(self):
 +        p2llvm_root = os.environ.get("P2LLVM_ROOT")
 +        if not p2llvm_root:
 +            self.skipTest("set P2LLVM_ROOT for P2 object validation")
 +
 +        tools = {
 +            name: pathlib.Path(p2llvm_root) / "bin" / name
-+            for name in ("clang", "ld.lld", "llvm-ar", "llvm-nm")
++            for name in (
++                "clang",
++                "ld.lld",
++                "llvm-ar",
++                "llvm-nm",
++                "llvm-objdump",
++                "llvm-readelf",
++            )
 +        }
 +        if not all(path.is_file() for path in tools.values()):
-+            self.skipTest("P2LLVM_ROOT lacks clang, ld.lld, llvm-ar, or llvm-nm")
++            self.skipTest(
++                "P2LLVM_ROOT lacks a required P2 compiler or ELF inspection tool"
++            )
 +
 +        with tempfile.TemporaryDirectory() as directory:
 +            objects = []
-+            for source in ("truncdfsf2.c", "fixdfdi.c", "floatdidf.c"):
++            objects_by_source = {}
++            runtime_sources = (
++                "truncdfsf2.c",
++                "fixdfdi.c",
++                "floatdidf.c",
++                "floatunsidf.c",
++                "adddf3.c",
++                "muldf3.c",
++                "fp_mode.c",
++                "ashldi3.c",
++                "ashrdi3.c",
++                "lshrdi3.c",
++                "muldi3.c",
++            )
++            explicit_placement_sources = (
++                "memcpy.c",
++                "memmove.c",
++                "memset.c",
++                "udivmoddi4.c",
++            )
++            for source in runtime_sources + explicit_placement_sources:
 +                output = pathlib.Path(directory) / (source + ".o")
 +                subprocess.run(
 +                    [
@@ -665,6 +1040,7 @@ index 0000000..023790d
 +                        "-fdata-sections",
 +                        "-fno-exceptions",
 +                        "-I" + str(BUILTINS),
++                        "-I" + str(P2_INCLUDE),
 +                        "-c",
 +                        str(BUILTINS / source),
 +                        "-o",
@@ -675,6 +1051,102 @@ index 0000000..023790d
 +                    text=True,
 +                )
 +                objects.append(output)
++                objects_by_source[source] = output
++
++                section_headers = subprocess.run(
++                    [str(tools["llvm-readelf"]), "-S", str(output)],
++                    check=True,
++                    capture_output=True,
++                    text=True,
++                ).stdout
++                self.assertNotRegex(
++                    section_headers,
++                    r"(?m)^\s*\[\s*\d+\]\s+(?:lut|\.p2\.lut)\s",
++                    source + " still emits executable code into the LUT image",
++                )
++
++            expected_undefined = {
++                "floatdidf.c": set(),
++                "floatunsidf.c": set(),
++            }
++            for source, expected in expected_undefined.items():
++                undefined = subprocess.run(
++                    [str(tools["llvm-nm"]), "-u", str(objects_by_source[source])],
++                    check=True,
++                    capture_output=True,
++                    text=True,
++                ).stdout
++                self.assertEqual(
++                    {line.split()[-1] for line in undefined.splitlines() if line},
++                    expected,
++                    source + " has an unexpected runtime dependency",
++                )
++
++            floatdidf_disassembly = subprocess.run(
++                [
++                    str(tools["llvm-objdump"]),
++                    "-d",
++                    "--no-show-raw-insn",
++                    "--disassemble-symbols=__floatdidf",
++                    str(objects_by_source["floatdidf.c"]),
++                ],
++                check=True,
++                capture_output=True,
++                text=True,
++            ).stdout
++            self.assertIn(
++                "Disassembly of section .text.__floatdidf",
++                floatdidf_disassembly,
++            )
++            self.assertNotIn(
++                "calla ",
++                floatdidf_disassembly,
++                "__floatdidf must not nest another runtime call",
++            )
++
++            for symbol, source, wrapper in (
++                ("__addXf3__", "adddf3.c", "__adddf3"),
++                ("__mulXf3__", "muldf3.c", "__muldf3"),
++            ):
++                defined = subprocess.run(
++                    [
++                        str(tools["llvm-nm"]),
++                        "--print-size",
++                        "--defined-only",
++                        str(objects_by_source[source]),
++                    ],
++                    check=True,
++                    capture_output=True,
++                    text=True,
++                ).stdout
++                self.assertRegex(
++                    defined,
++                    r"(?m)^\S+ \S+ T " + wrapper + r"$",
++                    wrapper + " must remain a public Hub-text helper",
++                )
++                disassembly = subprocess.run(
++                    [
++                        str(tools["llvm-objdump"]),
++                        "-d",
++                        "--no-show-raw-insn",
++                        "--disassemble-symbols=" + symbol,
++                        str(objects_by_source[source]),
++                    ],
++                    check=True,
++                    capture_output=True,
++                    text=True,
++                ).stdout
++                first_zero_branch = min(
++                    offset
++                    for offset in (disassembly.find("tjz"), disassembly.find("tjnz"))
++                    if offset >= 0
++                )
++                first_call = disassembly.find("calla")
++                self.assertGreater(
++                    first_call,
++                    first_zero_branch,
++                    symbol + " must classify zero before calling a 64-bit helper",
++                )
 +
 +            archive = pathlib.Path(directory) / "libcompiler_builtins.a"
 +            subprocess.run(
@@ -696,6 +1168,9 @@ index 0000000..023790d
 +                "float narrow(double value) { return value; }\n"
 +                "long long fix(double value) { return value; }\n"
 +                "double widen(long long value) { return value; }\n"
++                "double widen_unsigned(unsigned value) { return value; }\n"
++                "double add(double left, double right) { return left + right; }\n"
++                "double multiply(double left, double right) { return left * right; }\n"
 +            )
 +            probe = pathlib.Path(directory) / "conversion-probe.o"
 +            subprocess.run(
@@ -742,7 +1217,87 @@ index 0000000..023790d
 +                text=True,
 +            ).stdout
 +
-+        for symbol in ("__truncdfsf2", "__fixdfdi", "__floatdidf"):
++            layout_script = pathlib.Path(directory) / "hub-layout.ld"
++            layout_script.write_text(
++                "SECTIONS\n"
++                "{\n"
++                "  .p2.lut 0x200 : { *(lut) *(.p2.lut) }\n"
++                "  .text 0xa00 : { *(.text .text.*) }\n"
++                "  .rodata : { *(.rodata .rodata.*) }\n"
++                "  .data : { *(.data .data.*) }\n"
++                "  .bss : { *(.bss .bss.* COMMON) }\n"
++                "}\n",
++                encoding="utf-8",
++            )
++            image = pathlib.Path(directory) / "hub-layout.elf"
++            subprocess.run(
++                [
++                    str(tools["ld.lld"]),
++                    "-T",
++                    str(layout_script),
++                    "--entry=widen",
++                    str(probe),
++                    str(archive),
++                    "-o",
++                    str(image),
++                ],
++                check=True,
++                capture_output=True,
++                text=True,
++            )
++            image_sections = subprocess.run(
++                [str(tools["llvm-readelf"]), "-S", str(image)],
++                check=True,
++                capture_output=True,
++                text=True,
++            ).stdout
++            self.assertNotRegex(
++                image_sections,
++                r"(?m)^\s*\[\s*\d+\]\s+\.p2\.lut\s",
++                "runtime helpers unexpectedly populated the low-Hub LUT image",
++            )
++            self.assertRegex(
++                image_sections,
++                r"(?m)^\s*\[\s*\d+\]\s+\.text\s+\S+\s+00000a00\s",
++                "ordinary Hub text must begin at byte address 0x0a00",
++            )
++            image_symbols = subprocess.run(
++                [str(tools["llvm-nm"]), "--defined-only", str(image)],
++                check=True,
++                capture_output=True,
++                text=True,
++            ).stdout
++            symbol_addresses = {
++                fields[-1]: int(fields[0], 16)
++                for line in image_symbols.splitlines()
++                if len(fields := line.split()) >= 3
++            }
++            for symbol in (
++                "__truncdfsf2",
++                "__fixdfdi",
++                "__floatdidf",
++                "__floatunsidf",
++                "__adddf3",
++                "__muldf3",
++                "__ashldi3",
++                "__ashrdi3",
++                "__lshrdi3",
++                "__muldi3",
++            ):
++                self.assertGreaterEqual(
++                    symbol_addresses[symbol],
++                    0x0A00,
++                    symbol + " linked below the legal ordinary Hub-text window",
++                )
++
++        for symbol in (
++            "__truncdfsf2",
++            "__fixdfdi",
++            "__floatdidf",
++            "__floatunsidf",
++            "__adddf3",
++            "__muldf3",
++        ):
 +            self.assertRegex(symbols, r"(?m)^\S+ T " + symbol + r"$")
 +            self.assertIn(symbol, before_link)
 +            self.assertNotIn(symbol, after_link)
@@ -750,6 +1305,15 @@ index 0000000..023790d
 +
 +if __name__ == "__main__":
 +    unittest.main()
--- 
-2.54.0
-
+diff --git a/libp2/lib/builtins/udivmoddi4.c b/libp2/lib/builtins/udivmoddi4.c
+index 255bb5d70d8ecbc2ad6c28ac881ef5149e9bb715..8c3930195356b8e9d70fe7b24ff719d0726774ba 100644
+--- a/libp2/lib/builtins/udivmoddi4.c
++++ b/libp2/lib/builtins/udivmoddi4.c
+@@ -30 +30,2 @@
+-__attribute__ ((section ("lut"), cogtext)) unsigned long long __udivmoddi4(unsigned long long a, unsigned long long b, unsigned long long *r) {
++unsigned long long __udivmoddi4(unsigned long long a, unsigned long long b,
++                                unsigned long long *r) {
+@@ -273 +274 @@ COMPILER_RT_ABI du_int __udivmoddi4(du_int a, du_int b, du_int *rem) {
+-#endif
+\ No newline at end of file
++#endif

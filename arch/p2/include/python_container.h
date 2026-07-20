@@ -105,6 +105,11 @@ struct p2_python_container_info_s
  * group_workspace before publishing it through p2_overlay_install_groups().
  * The workspace is caller-owned Hub memory and may be reused after the
  * initializer returns because the overlay runtime installs its own copy.
+ * A caller that exclusively owns a pristine overlay domain may use the Hub
+ * execution slot as this temporary workspace: group staging completes before
+ * the group install, and loader registration is the initializer's final
+ * publication step.  The caller must capacity-check the complete workspace
+ * and must not expose or execute the slot concurrently with initialization.
  */
 
 struct p2_python_container_config_s
@@ -114,6 +119,19 @@ struct p2_python_container_config_s
   struct p2_python_container_contract_s contract;
   uintptr_t backing_address;
   size_t backing_capacity;
+
+  /* The default, false mode validates source, copies it to backing_address,
+   * and validates the copied target image.  In the true mode the caller
+   * guarantees that the complete source already occupies the exact target
+   * range below and remains unchanged until initialization returns.  The
+   * initializer then validates the target backing view directly and skips
+   * the same-address copy.  The address and size fields must both be zero
+   * when source_is_backing is false; partial or mismatched claims fail.
+   */
+
+  bool source_is_backing;
+  uintptr_t source_backing_address;
+  size_t source_backing_size;
   FAR struct p2_overlay_group_s *group_workspace;
   size_t group_workspace_count;
 };
@@ -171,7 +189,9 @@ int p2_python_container_validate(
 
 /* Validate, copy to tagged PSRAM, validate the copied image again,
  * initialize external data/zero ranges, install overlay groups, and finally
- * publish the loader.  The result is cleared on every failure and is never
+ * publish the loader.  An exact source_is_backing contract validates the
+ * already-resident target image once and skips only the copy and redundant
+ * second validation.  The result is cleared on every failure and is never
  * published to the overlay dispatcher before all preceding checks succeed.
  */
 
@@ -183,9 +203,11 @@ int p2_python_container_get_stdlib(
   FAR const struct p2_python_container_s *container,
   FAR const void **address, FAR size_t *size);
 
-/* This callback is registered with the resident overlay runtime.  It accepts
- * only exact group records from the validated container backing image and
- * copies tagged PSRAM to the one configured Hub execution slot.
+/* This callback is registered with the resident overlay runtime.  It validates
+ * callback arguments against the installed resident descriptor copied from
+ * the validated container, bounds the source within that container's backing
+ * range, and copies tagged PSRAM to the one configured Hub execution slot.
+ * The overlay runtime independently checks the copied image CRC before use.
  */
 
 int p2_python_container_overlay_loader(FAR void *arg, uint32_t group,
